@@ -1,0 +1,134 @@
+// Parses Claude Code transcript JSONL lines into spend-relevant events.
+import type { Usage } from "./pricing";
+
+export type Event =
+  | { t: "prompt"; sessionId: string; promptId: string; text: string; sidechain: boolean; ts: number }
+  | { t: "api"; sessionId: string; requestId: string; model?: string; usage: Usage; sidechain: boolean; ts: number }
+  | { t: "tooluse"; sessionId: string; requestId: string; id: string; name: string; argChars: number; sub?: string; ts: number }
+  | { t: "toolresult"; sessionId: string; id: string; chars: number; ts: number };
+
+// "<command-name>/goal</command-name>...<command-args>x</command-args>..." -> "/goal x"
+export function cleanPromptText(text: string): string {
+  const name = text.match(/<command-name>(.*?)<\/command-name>/s);
+  if (!name) return text;
+  const args = text.match(/<command-args>(.*?)<\/command-args>/s);
+  return `${name[1]}${args?.[1] ? " " + args[1] : ""}`.trim();
+}
+
+// First meaningful executable in a bash command: skips env assignments,
+// wrappers (sudo/env/...), and setup segments like `cd X &&` / `export Y=...;`.
+const SETUP_HEADS = new Set(["cd", "export", "set", "source", "pushd", "true", "mkdir"]);
+const WRAPPERS = new Set(["sudo", "env", "nohup", "time", "command"]);
+
+function segmentHead(segment: string): string {
+  const tokens = segment.trim().split(/\s+/);
+  let i = 0;
+  while (i < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]) || WRAPPERS.has(tokens[i]))) i++;
+  const tok = tokens[i] ?? "";
+  return tok.split("/").pop() || tok;
+}
+
+export function bashHead(command: string): string {
+  const segments = command.split(/&&|;|\|\||\n/);
+  let first = "";
+  for (const seg of segments) {
+    const head = segmentHead(seg);
+    if (!head) continue;
+    if (!first) first = head;
+    if (!SETUP_HEADS.has(head)) return head;
+  }
+  return first || "?";
+}
+
+function blockChars(content: unknown): number {
+  if (typeof content === "string") return content.length;
+  if (Array.isArray(content)) {
+    let n = 0;
+    for (const c of content) {
+      if (typeof c?.text === "string") n += c.text.length;
+      else n += JSON.stringify(c ?? "").length;
+    }
+    return n;
+  }
+  return content == null ? 0 : JSON.stringify(content).length;
+}
+
+export function* parseLine(line: string): Generator<Event> {
+  if (!line || line[0] !== "{") return;
+  let d: any;
+  try {
+    d = JSON.parse(line);
+  } catch {
+    return;
+  }
+  const sessionId = d.sessionId ?? "?";
+  const ts = d.timestamp ? Date.parse(d.timestamp) : 0;
+  const sidechain = d.isSidechain === true;
+
+  if (d.type === "assistant" && d.message) {
+    const m = d.message;
+    const requestId = d.requestId ?? d.uuid ?? "?";
+    if (m.usage) {
+      const u = m.usage;
+      const cc = u.cache_creation ?? {};
+      yield {
+        t: "api",
+        sessionId,
+        requestId,
+        model: m.model,
+        usage: {
+          input: u.input_tokens ?? 0,
+          output: u.output_tokens ?? 0,
+          cacheRead: u.cache_read_input_tokens ?? 0,
+          cache5m: cc.ephemeral_5m_input_tokens ?? (cc.ephemeral_1h_input_tokens != null ? 0 : (u.cache_creation_input_tokens ?? 0)),
+          cache1h: cc.ephemeral_1h_input_tokens ?? 0,
+        },
+        sidechain,
+        ts,
+      };
+    }
+    if (Array.isArray(m.content)) {
+      for (const c of m.content) {
+        if (c?.type === "tool_use") {
+          yield {
+            t: "tooluse",
+            sessionId,
+            requestId,
+            id: c.id ?? "?",
+            name: c.name ?? "?",
+            argChars: JSON.stringify(c.input ?? {}).length,
+            sub: c.name === "Bash" && typeof c.input?.command === "string" ? bashHead(c.input.command) : undefined,
+            ts,
+          };
+        }
+      }
+    }
+    return;
+  }
+
+  if (d.type === "user" && d.message) {
+    const content = d.message.content;
+    if (typeof content === "string") {
+      if (d.promptId && d.promptSource !== "hook") {
+        yield { t: "prompt", sessionId, promptId: d.promptId, text: cleanPromptText(content), sidechain, ts };
+      }
+      return;
+    }
+    if (Array.isArray(content)) {
+      let sawResult = false;
+      for (const c of content) {
+        if (c?.type === "tool_result") {
+          sawResult = true;
+          yield { t: "toolresult", sessionId, id: c.tool_use_id ?? "?", chars: blockChars(c.content), ts };
+        }
+      }
+      if (!sawResult && d.promptId && d.promptSource !== "hook") {
+        const text = content
+          .filter((c: any) => c?.type === "text")
+          .map((c: any) => c.text)
+          .join(" ");
+        if (text) yield { t: "prompt", sessionId, promptId: d.promptId, text: cleanPromptText(text), sidechain, ts };
+      }
+    }
+  }
+}
