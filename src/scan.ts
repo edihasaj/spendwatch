@@ -1,43 +1,8 @@
-// File discovery + incremental JSONL reading (shared by report and watch).
+// File discovery helpers + incremental JSONL reading (shared by report and watch).
 import { readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
-import { join, basename } from "node:path";
+import { join } from "node:path";
 import { Aggregator } from "./aggregate";
-import { parseLine } from "./parse";
-
-export interface ScanOpts {
-  dir: string; // ~/.claude/projects
-  sinceMs: number; // skip files older than this mtime
-  project?: string; // substring filter on project dir name
-}
-
-export function listTranscripts(opts: ScanOpts): Array<{ path: string; project: string }> {
-  const out: Array<{ path: string; project: string }> = [];
-  let projDirs: string[] = [];
-  try {
-    projDirs = readdirSync(opts.dir);
-  } catch {
-    return out;
-  }
-  for (const p of projDirs) {
-    const project = humanProject(p);
-    if (opts.project && !project.toLowerCase().includes(opts.project.toLowerCase())) continue;
-    const dir = join(opts.dir, p);
-    let files: string[] = [];
-    try {
-      files = readdirSync(dir);
-    } catch {
-      continue;
-    }
-    for (const f of files) {
-      if (!f.endsWith(".jsonl")) continue;
-      const path = join(dir, f);
-      try {
-        if (statSync(path).mtimeMs >= opts.sinceMs) out.push({ path, project });
-      } catch {}
-    }
-  }
-  return out;
-}
+import type { SourceFile } from "./sources";
 
 export function humanProject(dirName: string): string {
   // "-Users-edihasaj-Projects-foo-bar" -> "foo-bar"; bare workspace -> "~/Projects"
@@ -48,15 +13,46 @@ export function humanProject(dirName: string): string {
   return rest.replace(/^(Projects|Documents)-/, "");
 }
 
+export function humanCodexProject(cwd: string): string {
+  // "/Users/edihasaj/Projects/foo" -> "foo"; home -> "~"
+  const m = cwd.match(/\/(?:Projects|Documents)\/(.+)$/);
+  if (m) return m[1];
+  const parts = cwd.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? cwd;
+}
+
+// Recursively yield every *.jsonl under a directory.
+export function* walkJsonl(dir: string): Generator<string> {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    const p = join(dir, e);
+    let st;
+    try {
+      st = statSync(p);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) yield* walkJsonl(p);
+    else if (e.endsWith(".jsonl")) yield p;
+  }
+}
+
 // Tracks per-file read offsets so watch mode only parses appended bytes.
+// Parser is supplied per-file via SourceFile, so one reader serves all sources.
 export class IncrementalReader {
   private offsets = new Map<string, number>();
   private partial = new Map<string, string>();
 
   constructor(private agg: Aggregator) {}
 
-  /** Read new bytes from file into the aggregator. Returns bytes consumed. */
-  poll(path: string, project: string): number {
+  /** Read new bytes from a file into the aggregator. Returns bytes consumed. */
+  poll(file: SourceFile): number {
+    const { path, project, source, parse, ctx } = file;
     let size: number;
     try {
       size = statSync(path).size;
@@ -68,7 +64,7 @@ export class IncrementalReader {
     const fd = openSync(path, "r");
     let consumed = 0;
     try {
-      const fold = this.agg.stream(`${project}/${basename(path)}`, project);
+      const fold = this.agg.stream(path, project, source);
       const buf = Buffer.alloc(1 << 20);
       let carry = this.partial.get(path) ?? "";
       while (off < size) {
@@ -79,7 +75,7 @@ export class IncrementalReader {
         const chunk = carry + buf.toString("utf8", 0, n);
         const lines = chunk.split("\n");
         carry = lines.pop() ?? "";
-        for (const line of lines) for (const e of parseLine(line)) fold(e);
+        for (const line of lines) for (const ev of parse(line, ctx)) fold(ev);
       }
       this.partial.set(path, carry);
       this.offsets.set(path, off);
@@ -90,11 +86,11 @@ export class IncrementalReader {
   }
 
   /** Flush a trailing line with no newline (end-of-scan for report mode). */
-  flush(path: string, project: string) {
-    const carry = this.partial.get(path);
+  flush(file: SourceFile) {
+    const carry = this.partial.get(file.path);
     if (!carry) return;
-    const fold = this.agg.stream(`${project}/${basename(path)}`, project);
-    for (const e of parseLine(carry)) fold(e);
-    this.partial.set(path, "");
+    const fold = this.agg.stream(file.path, file.project, file.source);
+    for (const ev of file.parse(carry, file.ctx)) fold(ev);
+    this.partial.set(file.path, "");
   }
 }

@@ -5,10 +5,18 @@ export interface ModelPrice {
 }
 
 const PRICES: Array<[RegExp, ModelPrice]> = [
+  // Anthropic (Claude Code)
   [/fable/, { input: 10, output: 50 }],
   [/opus/, { input: 5, output: 25 }],
   [/sonnet/, { input: 3, output: 15 }],
   [/haiku/, { input: 1, output: 5 }],
+  // OpenAI (Codex). Approximate — Codex is largely subscription/credit-billed,
+  // so $ is an estimate for ranking. gpt-5 tier list pricing.
+  [/gpt-5|gpt5|o[34]|codex/, { input: 1.25, output: 10 }],
+  [/gpt-4|gpt4/, { input: 2.5, output: 10 }],
+  // Google (Gemini), best-effort 2.5-pro tier.
+  [/gemini.*pro/, { input: 1.25, output: 10 }],
+  [/gemini/, { input: 0.3, output: 2.5 }],
 ];
 
 export function priceFor(model: string | undefined): ModelPrice {

@@ -1,42 +1,35 @@
 #!/usr/bin/env bun
-// spendwatch — find which tool calls and prompts burn the most tokens/$ in Claude Code.
-import { homedir } from "node:os";
-import { join } from "node:path";
+// spendwatch — across coding agents (Claude Code, Codex, …), find which tool
+// calls and prompts spend the most tokens/$, so you know what to automate/fix.
 import { Aggregator } from "./aggregate";
-import { renderReport } from "./render";
-import { IncrementalReader, listTranscripts } from "./scan";
+import { renderOverview, renderReport } from "./render";
+import { IncrementalReader } from "./scan";
+import { discover, type SourceStatus } from "./sources";
 
 interface Args {
   cmd: "report" | "watch";
   days: number;
-  dir: string;
   project?: string;
+  agents?: Set<string>;
   top: number;
   json: boolean;
   interval: number;
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = {
-    cmd: "report",
-    days: 30,
-    dir: join(homedir(), ".claude", "projects"),
-    top: 15,
-    json: false,
-    interval: 2000,
-  };
+  const a: Args = { cmd: "report", days: 30, top: 12, json: false, interval: 2000 };
   const rest = [...argv];
   while (rest.length) {
     const x = rest.shift()!;
     if (x === "report" || x === "watch") a.cmd = x;
     else if (x === "--days") a.days = Number(rest.shift());
-    else if (x === "--dir") a.dir = rest.shift()!;
     else if (x === "--project") a.project = rest.shift();
+    else if (x === "--agent" || x === "--source") a.agents = new Set((rest.shift() ?? "").split(",").map((s) => s.trim()).filter(Boolean));
     else if (x === "--top") a.top = Number(rest.shift());
     else if (x === "--json") a.json = true;
     else if (x === "--interval") a.interval = Number(rest.shift());
     else if (x === "--help" || x === "-h") {
-      console.log(`spendwatch — token/$ leaderboards for Claude Code transcripts
+      console.log(`spendwatch — token/$ leaderboards across coding agents
 
 usage: spendwatch [report|watch] [options]
 
@@ -45,49 +38,103 @@ usage: spendwatch [report|watch] [options]
 
 options:
   --days N          look back N days (default 30; watch default 1)
-  --project STR     filter project dir by substring
-  --top N           prompt rows to show (default 15)
+  --agent LIST      comma list: claude,codex,copilot,gemini (default all)
+  --project STR     filter project by substring
+  --top N           prompt rows to show (default 12)
   --json            machine-readable output (report only)
-  --dir PATH        transcript root (default ~/.claude/projects)
-  --interval MS     watch poll interval (default 2000)`);
+  --interval MS     watch poll interval (default 2000)
+
+sources:
+  claude   ~/.claude/projects/**/*.jsonl        (token usage ✓)
+  codex    ~/.codex/sessions/**/rollout-*.jsonl (token usage ✓)
+  copilot  ~/.config/github-copilot             (binary store, no usage)
+  gemini   ~/.gemini                             (when present)`);
       process.exit(0);
     }
   }
   return a;
 }
 
-function buildOnce(a: Args): { agg: Aggregator; reader: IncrementalReader; files: Array<{ path: string; project: string }> } {
-  const agg = new Aggregator();
-  const reader = new IncrementalReader(agg);
+function matchesProject(project: string, filter?: string): boolean {
+  return !filter || project.toLowerCase().includes(filter.toLowerCase());
+}
+
+interface Built {
+  statuses: SourceStatus[];
+  readers: Map<string, { reader: IncrementalReader; agg: Aggregator; status: SourceStatus }>;
+}
+
+function build(a: Args): Built {
   const sinceMs = Date.now() - a.days * 86400_000;
-  const files = listTranscripts({ dir: a.dir, sinceMs, project: a.project });
-  for (const f of files) {
-    reader.poll(f.path, f.project);
-    reader.flush(f.path, f.project);
+  // Codex project lives inside the file, so don't pre-filter codex by project name.
+  const statuses = discover({ sinceMs, agents: a.agents, project: undefined });
+  const readers = new Map<string, { reader: IncrementalReader; agg: Aggregator; status: SourceStatus }>();
+  for (const st of statuses) {
+    const agg = new Aggregator();
+    const reader = new IncrementalReader(agg);
+    for (const f of st.files) {
+      // Claude can pre-filter by project (it's in the dir name).
+      if (st.id === "claude" && !matchesProject(f.project, a.project)) continue;
+      reader.poll(f);
+      reader.flush(f);
+    }
+    readers.set(st.id, { reader, agg, status: st });
   }
-  return { agg, reader, files };
+  return { statuses, readers };
+}
+
+function reportsFrom(built: Built, a: Args) {
+  const reports = [];
+  for (const { agg, status } of built.readers.values()) {
+    if (!status.parseable) continue;
+    const r = agg.report(a.top);
+    // Post-filter projects for codex/gemini (project known only after parse).
+    if (a.project) {
+      r.prompts = r.prompts.filter((p) => matchesProject(p.project, a.project));
+      r.projects = r.projects.filter((p) => matchesProject(p.project, a.project));
+    }
+    reports.push(r);
+  }
+  return reports;
 }
 
 function report(a: Args) {
-  const { agg } = buildOnce(a);
-  const r = agg.report(a.top);
-  if (a.json) console.log(JSON.stringify(r, null, 2));
-  else process.stdout.write(renderReport(r));
+  const built = build(a);
+  const reports = reportsFrom(built, a);
+  if (a.json) {
+    console.log(JSON.stringify(reports, null, 2));
+    return;
+  }
+  const live = reports.filter((r) => r.apiCalls > 0);
+  const buf: string[] = [];
+  if (live.length > 1) buf.push(renderOverview(reports));
+  for (const r of live) buf.push(renderReport(r, { heading: false }));
+  // Footnotes for sources present but not parseable / no data.
+  for (const st of built.statuses) {
+    const had = live.some((r) => r.source === st.id);
+    if (!had && st.note) buf.push(`\x1b[2m· ${st.id}: ${st.note}\x1b[0m`);
+  }
+  process.stdout.write(buf.join("\n\n") + "\n");
 }
 
-async function watch(a: Args) {
-  if (a.days === 30) a.days = 1; // watch defaults to today-ish
-  const { agg, reader } = buildOnce(a);
+function watch(a: Args) {
+  if (a.days === 30) a.days = 1;
+  const built = build(a);
   const sinceMs = Date.now() - a.days * 86400_000;
   const draw = () => {
-    const body = renderReport(agg.report(a.top));
-    process.stdout.write("\x1b[2J\x1b[H" + body + `\n\x1b[2m${new Date().toLocaleTimeString()} watching ${a.dir} (ctrl-c to exit)\x1b[0m\n`);
+    const reports = reportsFrom(built, a).filter((r) => r.apiCalls > 0);
+    const buf: string[] = [];
+    if (reports.length > 1) buf.push(renderOverview(reports));
+    for (const r of reports) buf.push(renderReport(r, { heading: false }));
+    process.stdout.write("\x1b[2J\x1b[H" + buf.join("\n\n") + `\n\n\x1b[2m${new Date().toLocaleTimeString()} watching — ctrl-c to exit\x1b[0m\n`);
   };
   draw();
   setInterval(() => {
     let changed = 0;
-    for (const f of listTranscripts({ dir: a.dir, sinceMs, project: a.project })) {
-      changed += reader.poll(f.path, f.project);
+    for (const st of discover({ sinceMs, agents: a.agents })) {
+      const slot = built.readers.get(st.id);
+      if (!slot) continue;
+      for (const f of st.files) changed += slot.reader.poll(f);
     }
     if (changed > 0) draw();
   }, a.interval);

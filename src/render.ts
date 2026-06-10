@@ -38,13 +38,45 @@ function clip(s: string, n: number): string {
   return one.length > n ? one.slice(0, n - 1) + "…" : one;
 }
 
-export function renderReport(r: Report, opts: { width?: number } = {}): string {
+// Cross-agent comparison line + per-agent totals, shown above the sections.
+export function renderOverview(reports: Report[]): string {
+  const live = reports.filter((r) => r.apiCalls > 0);
+  const total = live.reduce((s, r) => s + r.totalCost, 0);
+  const since = Math.min(...live.map((r) => r.sinceTs).filter(Boolean));
+  const out: string[] = [];
+  out.push(
+    c(C.bold, "spendwatch") +
+      c(C.dim, `  since ${since && isFinite(since) ? new Date(since).toISOString().slice(0, 10) : "?"}  ·  all agents  `) +
+      `${c(C.green, fmtUsd(total))} est`,
+  );
+  out.push(
+    table(
+      ["agent", "$", "share", "API calls", "sessions"],
+      live
+        .sort((a, b) => b.totalCost - a.totalCost)
+        .map((r) => [SOURCE_LABEL[r.source] ?? r.source, fmtUsd(r.totalCost), total ? `${((r.totalCost / total) * 100).toFixed(0)}%` : "0%", String(r.apiCalls), String(r.sessions)]),
+      new Set([1, 2, 3, 4]),
+    ),
+  );
+  return out.join("\n") + "\n";
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  copilot: "Copilot",
+  gemini: "Gemini",
+  all: "all agents",
+};
+
+export function renderReport(r: Report, opts: { width?: number; heading?: boolean } = {}): string {
   const w = opts.width ?? Math.min(process.stdout.columns ?? 120, 140);
   const out: string[] = [];
   const since = r.sinceTs ? new Date(r.sinceTs).toISOString().slice(0, 10) : "?";
+  const label = SOURCE_LABEL[r.source] ?? r.source;
   out.push(
-    c(C.bold, `spendwatch`) +
-      c(C.dim, `  since ${since}  `) +
+    c(C.bold, opts.heading === false ? `▌ ${label}` : `spendwatch`) +
+      c(C.dim, `  ${label !== "all agents" && opts.heading !== false ? "" : ""}since ${since}  `) +
       `${c(C.green, fmtUsd(r.totalCost))} est  ·  ${r.apiCalls} API calls  ·  ${r.sessions} sessions`,
   );
 
@@ -58,11 +90,22 @@ export function renderReport(r: Report, opts: { width?: number } = {}): string {
   );
 
   if (r.bash.length) {
-    out.push("\n" + c(C.bold, "BY BASH COMMAND") + c(C.dim, "  (Bash calls split by executable)"));
+    out.push("\n" + c(C.bold, "BY COMMAND") + c(C.dim, "  (shell calls split by executable)"));
     out.push(
       table(
         ["command", "calls", "arg tok", "result tok", "ctx $"],
-        r.bash.slice(0, 15).map((t) => [clip(t.name, 30), String(t.calls), fmtTok(t.argTok), fmtTok(t.resultTok), fmtUsd(t.ctxCost)]),
+        r.bash.slice(0, 12).map((t) => [clip(t.name, 30), String(t.calls), fmtTok(t.argTok), fmtTok(t.resultTok), fmtUsd(t.ctxCost)]),
+        new Set([1, 2, 3, 4]),
+      ),
+    );
+  }
+
+  if (r.deep.length) {
+    out.push("\n" + c(C.bold, "BY COMMAND — DEEP") + c(C.dim, "  (executable + subcommand / ssh remote — what to build a CLI for)"));
+    out.push(
+      table(
+        ["command", "calls", "arg tok", "result tok", "ctx $"],
+        r.deep.filter((t) => t.name.includes(" ")).slice(0, 18).map((t) => [clip(t.name, 34), String(t.calls), fmtTok(t.argTok), fmtTok(t.resultTok), fmtUsd(t.ctxCost)]),
         new Set([1, 2, 3, 4]),
       ),
     );
