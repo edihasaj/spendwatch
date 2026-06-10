@@ -1,7 +1,10 @@
 #!/usr/bin/env bun
 // spendwatch — across coding agents (Claude Code, Codex, …), find which tool
 // calls and prompts spend the most tokens/$, so you know what to automate/fix.
+import { writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { Aggregator } from "./aggregate";
+import { renderHtml } from "./html";
 import { renderOverview, renderReport } from "./render";
 import { IncrementalReader } from "./scan";
 import { discover, type SourceStatus } from "./sources";
@@ -13,11 +16,13 @@ interface Args {
   agents?: Set<string>;
   top: number;
   json: boolean;
+  html?: string; // output path when --html given
+  open: boolean;
   interval: number;
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { cmd: "report", days: 30, top: 12, json: false, interval: 2000 };
+  const a: Args = { cmd: "report", days: 30, top: 12, json: false, open: false, interval: 2000 };
   const rest = [...argv];
   while (rest.length) {
     const x = rest.shift()!;
@@ -27,6 +32,8 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--agent" || x === "--source") a.agents = new Set((rest.shift() ?? "").split(",").map((s) => s.trim()).filter(Boolean));
     else if (x === "--top") a.top = Number(rest.shift());
     else if (x === "--json") a.json = true;
+    else if (x === "--html") a.html = rest[0] && !rest[0].startsWith("-") ? rest.shift()! : "spendwatch-report.html";
+    else if (x === "--open") a.open = true;
     else if (x === "--interval") a.interval = Number(rest.shift());
     else if (x === "--help" || x === "-h") {
       console.log(`spendwatch — token/$ leaderboards across coding agents
@@ -42,6 +49,8 @@ options:
   --project STR     filter project by substring
   --top N           prompt rows to show (default 12)
   --json            machine-readable output (report only)
+  --html [PATH]     also write a standalone HTML report (default spendwatch-report.html)
+  --open            open the HTML report in your browser (implies --html)
   --interval MS     watch poll interval (default 2000)
 
 sources:
@@ -115,6 +124,22 @@ function report(a: Args) {
     if (!had && st.note) buf.push(`\x1b[2m· ${st.id}: ${st.note}\x1b[0m`);
   }
   process.stdout.write(buf.join("\n\n") + "\n");
+
+  if (a.html || a.open) {
+    const out = resolve(a.html ?? "spendwatch-report.html");
+    writeFileSync(out, renderHtml(reports, { generatedAt: nowMs(), days: a.days }));
+    process.stdout.write(`\n\x1b[2m→ HTML report written to ${out}\x1b[0m\n`);
+    if (a.open) Bun.spawn(["open", out]);
+  }
+}
+
+// Date.now is unavailable in some sandboxed contexts; tolerate it.
+function nowMs(): number {
+  try {
+    return Date.now();
+  } catch {
+    return 0;
+  }
 }
 
 function watch(a: Args) {
