@@ -1,11 +1,18 @@
 // Parses Claude Code transcript JSONL lines into spend-relevant events.
 import type { Usage } from "./pricing";
 
+// {sub, deep} for a shell command, for spreading onto a tooluse event.
+export function cmdParts(command: string): { sub: string; deep: string } {
+  const { head, deep } = commandPath(command);
+  return { sub: head, deep };
+}
+
 export type Event =
   | { t: "prompt"; sessionId: string; promptId: string; text: string; sidechain: boolean; ts: number }
   | { t: "api"; sessionId: string; requestId: string; model?: string; usage: Usage; sidechain: boolean; ts: number }
-  | { t: "tooluse"; sessionId: string; requestId: string; id: string; name: string; argChars: number; sub?: string; ts: number }
-  | { t: "toolresult"; sessionId: string; id: string; chars: number; ts: number };
+  | { t: "tooluse"; sessionId: string; requestId: string; id: string; name: string; argChars: number; sub?: string; deep?: string; ts: number }
+  | { t: "toolresult"; sessionId: string; id: string; chars: number; ts: number }
+  | { t: "meta"; sessionId: string; project?: string; model?: string; ts: number };
 
 // "<command-name>/goal</command-name>...<command-args>x</command-args>..." -> "/goal x"
 export function cleanPromptText(text: string): string {
@@ -29,15 +36,46 @@ function segmentHead(segment: string): string {
 }
 
 export function bashHead(command: string): string {
-  const segments = command.split(/&&|;|\|\||\n/);
-  let first = "";
+  return commandPath(command).head;
+}
+
+const SUBCMD = /^[a-z][a-z0-9:_-]*$/; // looks like a subcommand, not a flag/path/file
+
+// Two-level view of a shell command: head (executable) and deep (head + the
+// meaningful next token — subcommand, or the remote command for ssh). Lets you
+// see e.g. `git push` vs `git status`, `az vm` vs `az group`, or what `ssh` runs.
+export function commandPath(command: string): { head: string; deep: string } {
+  const segments = command.split(/&&|\|\||;|\n|\|/);
+  let firstSeg = "";
+  let chosen = "";
   for (const seg of segments) {
-    const head = segmentHead(seg);
-    if (!head) continue;
-    if (!first) first = head;
-    if (!SETUP_HEADS.has(head)) return head;
+    if (!segmentHead(seg)) continue;
+    if (!firstSeg) firstSeg = seg;
+    if (!SETUP_HEADS.has(segmentHead(seg))) {
+      chosen = seg;
+      break;
+    }
   }
-  return first || "?";
+  const seg = chosen || firstSeg;
+  const head = segmentHead(seg) || "?";
+  const tokens = seg.trim().split(/\s+/);
+  let i = tokens.findIndex((t) => segmentHead(seg) && t.split("/").pop() === head);
+  i = i < 0 ? 0 : i + 1;
+
+  if (head === "ssh" || head === "scp") {
+    // skip flags + option values + the host, then take the remote command head
+    const bare = tokens.slice(i).filter((t) => !t.startsWith("-") && !t.includes("="));
+    const remote = bare[1]; // bare[0] = host
+    return { head, deep: remote && SUBCMD.test(remote) ? `${head} ${remote}` : head };
+  }
+  for (let j = i; j < tokens.length; j++) {
+    const t = tokens[j];
+    if (t.startsWith("-")) continue; // flag (its value, if any, gets skipped next iter only if it also fails SUBCMD)
+    if (t.includes("/") || t.includes("=")) break; // path/file/assignment → no subcommand
+    if (SUBCMD.test(t)) return { head, deep: `${head} ${t}` };
+    break;
+  }
+  return { head, deep: head };
 }
 
 function blockChars(content: unknown): number {
@@ -97,7 +135,7 @@ export function* parseLine(line: string): Generator<Event> {
             id: c.id ?? "?",
             name: c.name ?? "?",
             argChars: JSON.stringify(c.input ?? {}).length,
-            sub: c.name === "Bash" && typeof c.input?.command === "string" ? bashHead(c.input.command) : undefined,
+            ...(c.name === "Bash" && typeof c.input?.command === "string" ? cmdParts(c.input.command) : {}),
             ts,
           };
         }

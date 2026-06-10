@@ -4,14 +4,15 @@ import { contextCost, estTokens, usageCost, type Usage } from "./pricing";
 
 interface StreamState {
   project: string;
+  source: string;
   sessionId: string;
   sidechain: boolean;
   model?: string;
   nCalls: number;
   callIdx: Map<string, number>; // requestId -> 0-based call index
   currentPromptKey?: string;
-  toolUse: Map<string, { name: string; argChars: number; idx: number; promptKey?: string; sub?: string }>;
-  results: Array<{ name: string; tokens: number; idx: number; promptKey?: string; sub?: string }>;
+  toolUse: Map<string, { name: string; argChars: number; idx: number; promptKey?: string; sub?: string; deep?: string }>;
+  results: Array<{ name: string; tokens: number; idx: number; promptKey?: string; sub?: string; deep?: string }>;
   usage: Map<string, { model?: string; usage: Usage; promptKey?: string; lastTs: number }>;
   firstUserText?: string;
 }
@@ -47,9 +48,11 @@ export interface Report {
   sessions: number;
   tools: ToolRow[];
   bash: ToolRow[];
+  deep: ToolRow[];
   prompts: PromptRow[];
   models: ModelRow[];
   projects: Array<{ project: string; cost: number }>;
+  source: string;
   sinceTs: number;
 }
 
@@ -57,11 +60,12 @@ export class Aggregator {
   private streams = new Map<string, StreamState>();
   private promptText = new Map<string, { text: string; project: string; ts: number }>();
 
-  stream(fileKey: string, project: string): (e: Event) => void {
+  stream(fileKey: string, project: string, source = "claude"): (e: Event) => void {
     let s = this.streams.get(fileKey);
     if (!s) {
       s = {
         project,
+        source,
         sessionId: "?",
         sidechain: fileKey.includes("agent-"),
         nCalls: 0,
@@ -78,6 +82,11 @@ export class Aggregator {
   private fold(s: StreamState, e: Event) {
     s.sessionId = e.sessionId;
     switch (e.t) {
+      case "meta": {
+        if (e.project) s.project = e.project;
+        if (e.model) s.model = e.model;
+        return;
+      }
       case "prompt": {
         if (e.sidechain || s.sidechain) {
           // Subagent task — synthesize a labelled prompt once per stream.
@@ -103,12 +112,12 @@ export class Aggregator {
       }
       case "tooluse": {
         const idx = s.callIdx.get(e.requestId) ?? s.nCalls;
-        s.toolUse.set(e.id, { name: e.name, argChars: e.argChars, idx, promptKey: s.currentPromptKey, sub: e.sub });
+        s.toolUse.set(e.id, { name: e.name, argChars: e.argChars, idx, promptKey: s.currentPromptKey, sub: e.sub, deep: e.deep });
         break;
       }
       case "toolresult": {
         const tu = s.toolUse.get(e.id);
-        if (tu) s.results.push({ name: tu.name, tokens: estTokens(e.chars), idx: tu.idx, promptKey: tu.promptKey, sub: tu.sub });
+        if (tu) s.results.push({ name: tu.name, tokens: estTokens(e.chars), idx: tu.idx, promptKey: tu.promptKey, sub: tu.sub, deep: tu.deep });
         break;
       }
     }
@@ -117,6 +126,8 @@ export class Aggregator {
   report(top = 15): Report {
     const tools = new Map<string, ToolRow>();
     const bash = new Map<string, ToolRow>();
+    const deep = new Map<string, ToolRow>();
+    const sources = new Set<string>();
     const prompts = new Map<string, PromptRow>();
     const models = new Map<string, ModelRow>();
     const projects = new Map<string, number>();
@@ -127,6 +138,7 @@ export class Aggregator {
 
     for (const s of this.streams.values()) {
       sessions.add(s.sessionId);
+      sources.add(s.source);
       for (const [, u] of s.usage) {
         apiCalls++;
         const cost = usageCost(u.model, u.usage);
@@ -151,7 +163,10 @@ export class Aggregator {
         }
       }
       for (const [, tu] of s.toolUse) {
-        for (const [map, key] of [[tools, tu.name], tu.sub ? [bash, tu.sub] : null].filter(Boolean) as Array<[Map<string, ToolRow>, string]>) {
+        const targets: Array<[Map<string, ToolRow>, string]> = [[tools, tu.name]];
+        if (tu.sub) targets.push([bash, tu.sub]);
+        if (tu.deep) targets.push([deep, tu.deep]);
+        for (const [map, key] of targets) {
           let t = map.get(key);
           if (!t) map.set(key, (t = { name: key, calls: 0, argTok: 0, resultTok: 0, ctxCost: 0 }));
           t.calls++;
@@ -164,7 +179,10 @@ export class Aggregator {
       }
       for (const r of s.results) {
         const cost = contextCost(r.tokens, s.model, s.nCalls - r.idx - 1);
-        for (const [map, key] of [[tools, r.name], r.sub ? [bash, r.sub] : null].filter(Boolean) as Array<[Map<string, ToolRow>, string]>) {
+        const targets: Array<[Map<string, ToolRow>, string]> = [[tools, r.name]];
+        if (r.sub) targets.push([bash, r.sub]);
+        if (r.deep) targets.push([deep, r.deep]);
+        for (const [map, key] of targets) {
           const t = map.get(key);
           if (!t) continue;
           t.resultTok += r.tokens;
@@ -180,9 +198,11 @@ export class Aggregator {
       sessions: sessions.size,
       tools: by([...tools.values()], (t) => t.ctxCost),
       bash: by([...bash.values()], (t) => t.ctxCost),
+      deep: by([...deep.values()], (t) => t.ctxCost),
       prompts: by([...prompts.values()], (p) => p.cost).slice(0, top),
       models: by([...models.values()], (m) => m.cost),
       projects: by([...projects.entries()].map(([project, cost]) => ({ project, cost })), (p) => p.cost),
+      source: sources.size === 1 ? [...sources][0] : "all",
       sinceTs: sinceTs === Infinity ? 0 : sinceTs,
     };
   }
