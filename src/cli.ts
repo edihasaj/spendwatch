@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { Aggregator } from "./aggregate";
 import { writeSnapshot } from "./db";
 import { renderHtml } from "./html";
-import { renderOverview, renderReport } from "./render";
+import { renderBrief, renderOverview, renderReport } from "./render";
 import { IncrementalReader } from "./scan";
 import { discover, type SourceStatus } from "./sources";
 
@@ -18,6 +18,7 @@ interface Args {
   agents?: Set<string>;
   top: number;
   json: boolean;
+  brief: boolean;
   html?: string; // output path when --html given
   open: boolean;
   sqlite?: string; // output db path when --sqlite given
@@ -25,7 +26,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { cmd: "report", days: 30, top: 12, json: false, open: false, interval: 2000 };
+  const a: Args = { cmd: "report", days: 30, top: 12, json: false, brief: false, open: false, interval: 2000 };
   const rest = [...argv];
   while (rest.length) {
     const x = rest.shift()!;
@@ -36,6 +37,7 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--account") a.account = rest.shift();
     else if (x === "--top") a.top = Number(rest.shift());
     else if (x === "--json") a.json = true;
+    else if (x === "--brief") a.brief = true;
     else if (x === "--html") a.html = rest[0] && !rest[0].startsWith("-") ? rest.shift()! : "spendwatch-report.html";
     else if (x === "--open") a.open = true;
     else if (x === "--sqlite" || x === "--db") a.sqlite = rest[0] && !rest[0].startsWith("-") ? rest.shift()! : "spendwatch.db";
@@ -54,6 +56,7 @@ options:
   --account STR     filter by account substring (email/label)
   --project STR     filter project by substring
   --top N           prompt rows to show (default 12)
+  --brief           TL;DR only: total, biggest hog, top automate targets
   --json            machine-readable output (report only)
   --html [PATH]     also write a standalone HTML report (default spendwatch-report.html)
   --open            open the HTML report in your browser (implies --html)
@@ -133,15 +136,19 @@ function report(a: Args) {
     return;
   }
   const live = reports.filter((r) => r.apiCalls > 0);
-  const buf: string[] = [];
-  if (live.length > 1) buf.push(renderOverview(reports));
-  for (const r of live) buf.push(renderReport(r, { heading: false }));
-  // Footnotes for sources present but not parseable / no data.
-  for (const st of built.statuses) {
-    const had = live.some((r) => r.source === st.id);
-    if (!had && st.note) buf.push(`\x1b[2m· ${st.id}: ${st.note}\x1b[0m`);
+  if (a.brief) {
+    process.stdout.write(renderBrief(reports));
+  } else {
+    const buf: string[] = [];
+    if (live.length > 1) buf.push(renderOverview(reports));
+    for (const r of live) buf.push(renderReport(r, { heading: false }));
+    // Footnotes for sources present but not parseable / no data.
+    for (const st of built.statuses) {
+      const had = live.some((r) => r.source === st.id);
+      if (!had && st.note) buf.push(`\x1b[2m· ${st.id}: ${st.note}\x1b[0m`);
+    }
+    process.stdout.write(buf.join("\n\n") + "\n");
   }
-  process.stdout.write(buf.join("\n\n") + "\n");
 
   if (a.html || a.open) {
     const out = resolve(a.html ?? "spendwatch-report.html");

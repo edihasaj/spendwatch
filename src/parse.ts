@@ -46,7 +46,7 @@ export type Event =
   | { t: "prompt"; sessionId: string; promptId: string; text: string; sidechain: boolean; ts: number }
   | { t: "api"; sessionId: string; requestId: string; model?: string; usage: Usage; sidechain: boolean; ts: number }
   | { t: "tooluse"; sessionId: string; requestId: string; id: string; name: string; argChars: number; sub?: string; deep?: string; detail?: string; ts: number }
-  | { t: "toolresult"; sessionId: string; id: string; chars: number; ts: number }
+  | { t: "toolresult"; sessionId: string; id: string; chars: number; error?: boolean; exit?: number; ts: number }
   | { t: "meta"; sessionId: string; project?: string; model?: string; ts: number };
 
 // "<command-name>/goal</command-name>...<command-args>x</command-args>..." -> "/goal x"
@@ -193,7 +193,7 @@ export function* parseLine(line: string): Generator<Event> {
       for (const c of content) {
         if (c?.type === "tool_result") {
           sawResult = true;
-          yield { t: "toolresult", sessionId, id: c.tool_use_id ?? "?", chars: blockChars(c.content), ts };
+          yield { t: "toolresult", sessionId, id: c.tool_use_id ?? "?", chars: blockChars(c.content), error: c.is_error === true, ts };
         }
       }
       if (!sawResult && d.promptId && d.promptSource !== "hook") {

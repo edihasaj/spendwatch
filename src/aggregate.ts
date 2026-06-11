@@ -13,7 +13,7 @@ interface StreamState {
   callIdx: Map<string, number>; // requestId -> 0-based call index
   currentPromptKey?: string;
   toolUse: Map<string, { name: string; argChars: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string }>;
-  results: Array<{ name: string; tokens: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string }>;
+  results: Array<{ name: string; tokens: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string; error?: boolean; exit?: number }>;
   usage: Map<string, { model?: string; usage: Usage; promptKey?: string; lastTs: number }>;
   firstUserText?: string;
 }
@@ -29,7 +29,18 @@ export interface ToolRow {
   argTok: number;
   resultTok: number;
   ctxCost: number;
+  resultCalls: number; // calls that produced a result (denominator for err%)
+  errCalls: number; // results flagged error / nonzero exit
+  exit127: number; // command-not-found (agent guessing at a tool)
   samples?: SampleRow[]; // top distinct invocations (drill-down)
+}
+export interface TargetRow {
+  command: string;
+  calls: number;
+  ctxCost: number;
+  errPct: number;
+  reason: string;
+  score: number;
 }
 export interface AccountRow {
   account: string;
@@ -62,6 +73,7 @@ export interface Report {
   tools: ToolRow[];
   bash: ToolRow[];
   deep: ToolRow[];
+  targets: TargetRow[]; // ranked "what to automate" shortlist (cost × frequency × friction)
   prompts: PromptRow[];
   models: ModelRow[];
   projects: Array<{ project: string; cost: number }>;
@@ -132,13 +144,13 @@ export class Aggregator {
       }
       case "toolresult": {
         const tu = s.toolUse.get(e.id);
-        if (tu) s.results.push({ name: tu.name, tokens: estTokens(e.chars), idx: tu.idx, promptKey: tu.promptKey, sub: tu.sub, deep: tu.deep, detail: tu.detail });
+        if (tu) s.results.push({ name: tu.name, tokens: estTokens(e.chars), idx: tu.idx, promptKey: tu.promptKey, sub: tu.sub, deep: tu.deep, detail: tu.detail, error: e.error, exit: e.exit });
         break;
       }
     }
   }
 
-  report(top = 15): Report {
+  report(topN = 15): Report {
     const tools = new Map<string, ToolRow>();
     const bash = new Map<string, ToolRow>();
     const deep = new Map<string, ToolRow>();
@@ -203,7 +215,7 @@ export class Aggregator {
         if (tu.deep) targets.push([deep, samp.deep, tu.deep]);
         for (const [map, store, key] of targets) {
           let t = map.get(key);
-          if (!t) map.set(key, (t = { name: key, calls: 0, argTok: 0, resultTok: 0, ctxCost: 0 }));
+          if (!t) map.set(key, (t = { name: key, calls: 0, argTok: 0, resultTok: 0, ctxCost: 0, resultCalls: 0, errCalls: 0, exit127: 0 }));
           t.calls++;
           t.argTok += estTokens(tu.argChars);
           if (tu.detail) bumpSample(store, key, tu.detail, 1, 0);
@@ -223,6 +235,9 @@ export class Aggregator {
           if (!t) continue;
           t.resultTok += r.tokens;
           t.ctxCost += cost;
+          t.resultCalls++;
+          if (r.error) t.errCalls++;
+          if (r.exit === 127) t.exit127++;
           if (r.detail) bumpSample(store, key, r.detail, 0, r.tokens);
         }
       }
@@ -240,6 +255,33 @@ export class Aggregator {
     attach(bash, samp.bash);
     attach(deep, samp.deep);
 
+    // AUTOMATE shortlist: rank deep commands by cost × friction, then make sure
+    // any "command not found" (exit 127 — the agent guessing) is surfaced even
+    // if cheap. Frequency is already baked into ctxCost (more calls → more cost).
+    const targetRows: TargetRow[] = [...deep.values()]
+      .filter((t) => t.name.includes(" ")) // executable + subcommand only
+      .map((t) => {
+        const errPct = t.resultCalls ? t.errCalls / t.resultCalls : 0;
+        // "agent guessing" only when command-not-found is a real share, not a one-off in a huge bucket
+        const cnf = t.exit127 >= 2 && t.exit127 / Math.max(1, t.resultCalls) >= 0.1;
+        const score = t.ctxCost * (1 + 2 * errPct) + (cnf ? 0.5 : 0);
+        let reason: string;
+        if (cnf) reason = `exit-127 ×${t.exit127} · agent guessing`;
+        else if (errPct >= 0.5 && t.resultCalls >= 3) reason = `fails ${Math.round(errPct * 100)}% · flaky`;
+        else if (errPct >= 0.15) reason = `flaky (${Math.round(errPct * 100)}% err)`;
+        else if (t.calls >= 150) reason = "frequent + costly";
+        else reason = "costly";
+        return { command: t.name, calls: t.calls, ctxCost: t.ctxCost, errPct, reason, score, cnf };
+      });
+    targetRows.sort((a, b) => b.score - a.score);
+    const top: TargetRow[] = targetRows.slice(0, 12).map(({ cnf, ...t }) => t);
+    // ensure a few significant command-not-found offenders are visible even if low-cost
+    for (const t of targetRows.filter((t) => t.cnf)) {
+      if (top.length >= 16) break;
+      const { cnf, ...row } = t;
+      if (!top.some((x) => x.command === row.command)) top.push(row);
+    }
+
     const by = <T>(arr: T[], f: (x: T) => number) => arr.sort((a, b) => f(b) - f(a));
     return {
       totalCost,
@@ -248,7 +290,8 @@ export class Aggregator {
       tools: by([...tools.values()], (t) => t.ctxCost),
       bash: by([...bash.values()], (t) => t.ctxCost),
       deep: by([...deep.values()], (t) => t.ctxCost),
-      prompts: by([...prompts.values()], (p) => p.cost).slice(0, top),
+      targets: top,
+      prompts: by([...prompts.values()], (p) => p.cost).slice(0, topN),
       models: by([...models.values()], (m) => m.cost),
       projects: by([...projects.entries()].map(([project, cost]) => ({ project, cost })), (p) => p.cost),
       accounts: by([...accounts.entries()].map(([account, a]) => ({ account, cost: a.cost, calls: a.calls, sessions: a.sessions.size })), (a) => a.cost),

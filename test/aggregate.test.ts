@@ -148,6 +148,40 @@ describe("codex aggregate from fixture", () => {
   });
 });
 
+describe("friction + automate targets", () => {
+  test("error rate and exit-127 surface in targets", () => {
+    const root = mkdtempSync(join(tmpdir(), "spendwatch-fr-"));
+    const file = join(root, `${SESS}.jsonl`);
+    const lines: string[] = [];
+    const push = (cmd: string, id: string, isErr: boolean) => {
+      lines.push(JSON.stringify({ type: "assistant", requestId: "r" + id, sessionId: SESS, timestamp: TS, message: { model: "claude-opus-4-8", usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, content: [{ type: "tool_use", id, name: "Bash", input: { command: cmd } }] } }));
+      lines.push(JSON.stringify({ type: "user", sessionId: SESS, timestamp: TS, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "x".repeat(800), is_error: isErr }] } }));
+    };
+    // git diff: frequent + costly, no errors
+    for (let i = 0; i < 5; i++) push("git diff HEAD~1", "g" + i, false);
+    // flaky deploy: fails most of the time
+    for (let i = 0; i < 4; i++) push("kubectl rollout status x", "k" + i, i < 3);
+    writeFileSync(file, lines.join("\n") + "\n");
+
+    const agg = new Aggregator();
+    new IncrementalReader(agg).poll(claudeFile(file));
+    const r = agg.report();
+
+    const gitDiff = r.deep.find((d) => d.name === "git diff")!;
+    expect(gitDiff.errCalls).toBe(0);
+    const kube = r.deep.find((d) => d.name === "kubectl rollout")!;
+    expect(kube.errCalls).toBe(3);
+    expect(kube.resultCalls).toBe(4);
+
+    // targets list includes both, and the flaky one is flagged
+    const tNames = r.targets.map((t) => t.command);
+    expect(tNames).toContain("git diff");
+    const kt = r.targets.find((t) => t.command === "kubectl rollout")!;
+    expect(kt.errPct).toBeCloseTo(0.75, 2);
+    expect(kt.reason).toMatch(/flaky|fails/);
+  });
+});
+
 describe("command path", () => {
   test("deep breakdown for common shells", () => {
     expect(commandPath("git push origin main")).toEqual({ head: "git", deep: "git push" });
