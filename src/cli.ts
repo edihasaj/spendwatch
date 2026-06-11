@@ -4,6 +4,7 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Aggregator } from "./aggregate";
+import { writeSnapshot } from "./db";
 import { renderHtml } from "./html";
 import { renderOverview, renderReport } from "./render";
 import { IncrementalReader } from "./scan";
@@ -13,11 +14,13 @@ interface Args {
   cmd: "report" | "watch";
   days: number;
   project?: string;
+  account?: string;
   agents?: Set<string>;
   top: number;
   json: boolean;
   html?: string; // output path when --html given
   open: boolean;
+  sqlite?: string; // output db path when --sqlite given
   interval: number;
 }
 
@@ -30,10 +33,12 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--days") a.days = Number(rest.shift());
     else if (x === "--project") a.project = rest.shift();
     else if (x === "--agent" || x === "--source") a.agents = new Set((rest.shift() ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+    else if (x === "--account") a.account = rest.shift();
     else if (x === "--top") a.top = Number(rest.shift());
     else if (x === "--json") a.json = true;
     else if (x === "--html") a.html = rest[0] && !rest[0].startsWith("-") ? rest.shift()! : "spendwatch-report.html";
     else if (x === "--open") a.open = true;
+    else if (x === "--sqlite" || x === "--db") a.sqlite = rest[0] && !rest[0].startsWith("-") ? rest.shift()! : "spendwatch.db";
     else if (x === "--interval") a.interval = Number(rest.shift());
     else if (x === "--help" || x === "-h") {
       console.log(`spendwatch — token/$ leaderboards across coding agents
@@ -46,18 +51,29 @@ usage: spendwatch [report|watch] [options]
 options:
   --days N          look back N days (default 30; watch default 1)
   --agent LIST      comma list: claude,codex,copilot,gemini (default all)
+  --account STR     filter by account substring (email/label)
   --project STR     filter project by substring
   --top N           prompt rows to show (default 12)
   --json            machine-readable output (report only)
   --html [PATH]     also write a standalone HTML report (default spendwatch-report.html)
   --open            open the HTML report in your browser (implies --html)
+  --sqlite [PATH]   append a snapshot to a SQLite db (default spendwatch.db)
   --interval MS     watch poll interval (default 2000)
 
 sources:
   claude   ~/.claude/projects/**/*.jsonl        (token usage ✓)
   codex    ~/.codex/sessions/**/rollout-*.jsonl (token usage ✓)
   copilot  ~/.config/github-copilot             (binary store, no usage)
-  gemini   ~/.gemini                             (when present)`);
+  gemini   ~/.gemini                             (when present)
+
+multi-account:
+  Accounts are auto-detected (Claude email, Codex JWT). For multiple roots
+  (e.g. work + personal config dirs), create ~/.config/spendwatch/config.json:
+    { "roots": [
+        { "agent": "claude", "account": "work", "path": "~/.claude/projects" },
+        { "agent": "claude", "account": "personal", "path": "~/personal/.claude/projects" }
+    ] }
+  Each account is tagged and shown under BY ACCOUNT; agent totals sum across them.`);
       process.exit(0);
     }
   }
@@ -84,6 +100,7 @@ function build(a: Args): Built {
     for (const f of st.files) {
       // Claude can pre-filter by project (it's in the dir name).
       if (st.id === "claude" && !matchesProject(f.project, a.project)) continue;
+      if (a.account && !f.account.toLowerCase().includes(a.account.toLowerCase())) continue;
       reader.poll(f);
       reader.flush(f);
     }
@@ -102,6 +119,7 @@ function reportsFrom(built: Built, a: Args) {
       r.prompts = r.prompts.filter((p) => matchesProject(p.project, a.project));
       r.projects = r.projects.filter((p) => matchesProject(p.project, a.project));
     }
+    if (a.account) r.accounts = r.accounts.filter((ac) => ac.account.toLowerCase().includes(a.account!.toLowerCase()));
     reports.push(r);
   }
   return reports;
@@ -130,6 +148,12 @@ function report(a: Args) {
     writeFileSync(out, renderHtml(reports, { generatedAt: nowMs(), days: a.days }));
     process.stdout.write(`\n\x1b[2m→ HTML report written to ${out}\x1b[0m\n`);
     if (a.open) Bun.spawn(["open", out]);
+  }
+
+  if (a.sqlite) {
+    const out = resolve(a.sqlite);
+    const { runId, rows } = writeSnapshot(out, reports, { generatedAt: nowMs(), days: a.days });
+    process.stdout.write(`\x1b[2m→ SQLite snapshot run #${runId} (${rows} rows) appended to ${out}\x1b[0m\n`);
   }
 }
 

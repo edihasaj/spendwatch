@@ -32,13 +32,34 @@ function dataTable(cols: Col[], rows: string[][], barValues?: number[]): string 
   return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
+// Tool/command table with a click-to-expand drill-down of actual invocations.
 function toolTable(rows: ToolRow[], firstHead: string, limit: number): string {
   const r = rows.slice(0, limit);
-  return dataTable(
-    [{ head: firstHead, bar: true }, { head: "calls", num: true }, { head: "arg tok", num: true }, { head: "result tok", num: true }, { head: "ctx $", num: true }],
-    r.map((t) => [t.name, String(t.calls), fmtTok(t.argTok), fmtTok(t.resultTok), fmtUsd(t.ctxCost)]),
-    r.map((t) => t.ctxCost),
-  );
+  const max = Math.max(1, ...r.map((t) => t.ctxCost));
+  const body = r
+    .map((t, ri) => {
+      const pct = Math.round((t.ctxCost / max) * 100);
+      const samples = (t.samples ?? []).filter((s) => s.detail && s.detail.trim()).slice(0, 30);
+      const has = samples.length > 0;
+      const cells =
+        `<td class="barcell ${has ? "expand" : ""}"><span class="bar" style="width:${pct}%"></span><span class="v">${has ? '<span class="caret">▸</span>' : ""}${esc(t.name)}</span></td>` +
+        `<td class="num"><span class="v">${t.calls}</span></td>` +
+        `<td class="num"><span class="v">${fmtTok(t.argTok)}</span></td>` +
+        `<td class="num"><span class="v">${fmtTok(t.resultTok)}</span></td>` +
+        `<td class="num"><span class="v">${fmtUsd(t.ctxCost)}</span></td>`;
+      const main = `<tr class="trow ${has ? "has-drill" : ""}" style="--i:${ri}">${cells}</tr>`;
+      if (!has) return main;
+      const drillRows = samples
+        .map(
+          (s) =>
+            `<div class="drow"><span class="dcmd">${esc(s.detail.length > 160 ? s.detail.slice(0, 159) + "…" : s.detail)}</span><span class="dn">×${s.count}</span><span class="dt">${fmtTok(s.resultTok)} tok</span></div>`,
+        )
+        .join("");
+      const drill = `<tr class="drill"><td colspan="5"><div class="drillbox"><div class="dhead">top invocations by result tokens — what to automate</div>${drillRows}</div></td></tr>`;
+      return main + drill;
+    })
+    .join("");
+  return `<table><thead><tr><th>${esc(firstHead)}</th><th class="num">calls</th><th class="num">arg tok</th><th class="num">result tok</th><th class="num">ctx $</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 
 function promptTable(rows: PromptRow[]): string {
@@ -57,6 +78,18 @@ function agentPanel(r: Report, idx: number): string {
   const stat = (label: string, val: string) => `<div class="stat"><span class="n">${val}</span><span class="l">${esc(label)}</span></div>`;
   const stats = `<div class="stats">${stat("est spend", fmtUsd(r.totalCost))}${stat("API calls", r.apiCalls.toLocaleString())}${stat("sessions", String(r.sessions))}</div>`;
   const parts: string[] = [stats];
+  if (r.accounts.length > 1)
+    parts.push(
+      section(
+        "By account",
+        `same agent — summed above (${fmtUsd(r.totalCost)})`,
+        dataTable(
+          [{ head: "account", bar: true }, { head: "$", num: true }, { head: "calls", num: true }, { head: "sessions", num: true }],
+          r.accounts.map((x) => [x.account, fmtUsd(x.cost), x.calls.toLocaleString(), String(x.sessions)]),
+          r.accounts.map((x) => x.cost),
+        ),
+      ),
+    );
   if (r.tools.length) parts.push(section("By tool", "ctx $ = cost results impose via cache write + rereads", toolTable(r.tools, "tool", 20)));
   if (r.bash.length) parts.push(section("By command", "shell calls split by executable", toolTable(r.bash, "command", 14)));
   const deep = r.deep.filter((t) => t.name.includes(" "));
@@ -165,6 +198,19 @@ td.barcell{position:relative}
 td.barcell .bar{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,rgba(240,136,62,.22),rgba(255,180,84,.05));border-left:2px solid var(--amber2);z-index:0}
 td .v{position:relative;z-index:1}
 td.num .v{color:var(--ink)}
+td.expand{cursor:pointer}
+.caret{display:inline-block;color:var(--amber);margin-right:7px;transition:transform .15s;font-size:10px}
+tr.has-drill.open .caret{transform:rotate(90deg)}
+tr.has-drill:hover td{background:rgba(255,180,84,.06)}
+tr.drill{display:none}tr.drill.open{display:table-row}
+tr.drill td{padding:0;background:#0b0c10}
+.drillbox{padding:10px 14px 12px 30px;border-left:2px solid var(--amber2);margin:0 0 2px}
+.dhead{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px}
+.drow{display:flex;align-items:baseline;gap:12px;padding:3px 0;border-bottom:1px solid rgba(35,38,47,.5)}
+.drow:last-child{border-bottom:none}
+.dcmd{flex:1;color:#cfd3da;white-space:pre-wrap;word-break:break-word;font-size:12px}
+.dn{color:var(--amber);flex:none;width:64px;text-align:right;font-variant-numeric:tabular-nums}
+.dt{color:var(--dim);flex:none;width:90px;text-align:right;font-variant-numeric:tabular-nums}
 footer{margin-top:48px;color:var(--dim);font-size:11px;border-top:1px solid var(--line);padding-top:18px;line-height:1.8}
 footer b{color:var(--amber)}
 @keyframes grow{from{width:0}}
@@ -194,6 +240,13 @@ tabs.forEach(t=>t.addEventListener('click',()=>{
   tabs.forEach(x=>x.classList.toggle('active',x===t));
   panels.forEach(p=>p.classList.toggle('active',p.dataset.panel===k));
 }));
+// drill-down: click a tool/command row to reveal its actual invocations
+document.querySelectorAll('tr.has-drill').forEach(row=>{
+  row.addEventListener('click',()=>{
+    const drill=row.nextElementSibling;
+    if(drill&&drill.classList.contains('drill')){row.classList.toggle('open');drill.classList.toggle('open');}
+  });
+});
 </script>
 </body></html>`;
 }

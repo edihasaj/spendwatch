@@ -7,10 +7,45 @@ export function cmdParts(command: string): { sub: string; deep: string } {
   return { sub: head, deep };
 }
 
+// A short, human-meaningful "what was actually called" string for a tool, used
+// for the drill-down (e.g. the bash command, the file read, the search query).
+export function toolDetail(name: string, input: any): string | undefined {
+  if (input == null) return undefined;
+  const s = (v: unknown) => (typeof v === "string" ? v : undefined);
+  switch (name) {
+    case "Bash":
+      return s(input.command);
+    case "Read":
+    case "Edit":
+    case "Write":
+    case "NotebookEdit":
+      return s(input.file_path) ?? s(input.path) ?? s(input.notebook_path);
+    case "Glob":
+      return s(input.pattern);
+    case "Grep":
+      return s(input.pattern) ? `${input.pattern}${input.path ? " · " + input.path : ""}` : undefined;
+    case "WebFetch":
+      return s(input.url);
+    case "WebSearch":
+      return s(input.query);
+    case "Task":
+    case "Agent":
+      return s(input.description) ?? s(input.subagent_type);
+    default: {
+      if (name.startsWith("mcp__")) {
+        const first = Object.values(input).find((v) => typeof v === "string") as string | undefined;
+        return first ? first.slice(0, 120) : undefined;
+      }
+      const first = Object.values(input).find((v) => typeof v === "string") as string | undefined;
+      return first?.slice(0, 120);
+    }
+  }
+}
+
 export type Event =
   | { t: "prompt"; sessionId: string; promptId: string; text: string; sidechain: boolean; ts: number }
   | { t: "api"; sessionId: string; requestId: string; model?: string; usage: Usage; sidechain: boolean; ts: number }
-  | { t: "tooluse"; sessionId: string; requestId: string; id: string; name: string; argChars: number; sub?: string; deep?: string; ts: number }
+  | { t: "tooluse"; sessionId: string; requestId: string; id: string; name: string; argChars: number; sub?: string; deep?: string; detail?: string; ts: number }
   | { t: "toolresult"; sessionId: string; id: string; chars: number; ts: number }
   | { t: "meta"; sessionId: string; project?: string; model?: string; ts: number };
 
@@ -136,6 +171,7 @@ export function* parseLine(line: string): Generator<Event> {
             name: c.name ?? "?",
             argChars: JSON.stringify(c.input ?? {}).length,
             ...(c.name === "Bash" && typeof c.input?.command === "string" ? cmdParts(c.input.command) : {}),
+            detail: toolDetail(c.name ?? "?", c.input),
             ts,
           };
         }

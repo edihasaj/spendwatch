@@ -89,14 +89,20 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
         const argChars = (p.arguments ?? "").length;
         const id = p.call_id ?? `fc${ctx.callN++}`;
         let extra: { sub?: string; deep?: string } = {};
+        let detail: string | undefined;
         let toolName = name;
         if (SHELL_FNS.has(name)) {
           toolName = "exec_command";
           const cmd = readCmd(p.arguments);
-          if (cmd) extra = cmdParts(cmd);
+          if (cmd) {
+            extra = cmdParts(cmd);
+            detail = cmd;
+          }
+        } else {
+          detail = readFirstString(p.arguments);
         }
         ctx.callName.set(id, { name: toolName, ...extra });
-        yield { t: "tooluse", sessionId: ctx.sid, requestId: "c0", id, name: toolName, argChars, sub: extra.sub, deep: extra.deep, ts };
+        yield { t: "tooluse", sessionId: ctx.sid, requestId: "c0", id, name: toolName, argChars, sub: extra.sub, deep: extra.deep, detail, ts };
       } else if (p.type === "function_call_output") {
         const id = p.call_id ?? "?";
         const out = p.output;
@@ -105,6 +111,17 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
       }
       return;
     }
+  }
+}
+
+function readFirstString(args: unknown): string | undefined {
+  if (typeof args !== "string") return undefined;
+  try {
+    const o = JSON.parse(args);
+    const v = Object.values(o).find((x) => typeof x === "string") as string | undefined;
+    return v?.slice(0, 120);
+  } catch {
+    return undefined;
   }
 }
 

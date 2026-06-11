@@ -52,7 +52,7 @@ export class IncrementalReader {
 
   /** Read new bytes from a file into the aggregator. Returns bytes consumed. */
   poll(file: SourceFile): number {
-    const { path, project, source, parse, ctx } = file;
+    const { path, project, source, account, parse, ctx } = file;
     let size: number;
     try {
       size = statSync(path).size;
@@ -64,7 +64,7 @@ export class IncrementalReader {
     const fd = openSync(path, "r");
     let consumed = 0;
     try {
-      const fold = this.agg.stream(path, project, source);
+      const fold = this.agg.stream(path, project, source, account);
       const buf = Buffer.alloc(1 << 20);
       let carry = this.partial.get(path) ?? "";
       while (off < size) {
@@ -89,7 +89,7 @@ export class IncrementalReader {
   flush(file: SourceFile) {
     const carry = this.partial.get(file.path);
     if (!carry) return;
-    const fold = this.agg.stream(file.path, file.project, file.source);
+    const fold = this.agg.stream(file.path, file.project, file.source, file.account);
     for (const ev of file.parse(carry, file.ctx)) fold(ev);
     this.partial.set(file.path, "");
   }
