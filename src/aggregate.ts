@@ -5,24 +5,37 @@ import { contextCost, estTokens, usageCost, type Usage } from "./pricing";
 interface StreamState {
   project: string;
   source: string;
+  account: string;
   sessionId: string;
   sidechain: boolean;
   model?: string;
   nCalls: number;
   callIdx: Map<string, number>; // requestId -> 0-based call index
   currentPromptKey?: string;
-  toolUse: Map<string, { name: string; argChars: number; idx: number; promptKey?: string; sub?: string; deep?: string }>;
-  results: Array<{ name: string; tokens: number; idx: number; promptKey?: string; sub?: string; deep?: string }>;
+  toolUse: Map<string, { name: string; argChars: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string }>;
+  results: Array<{ name: string; tokens: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string }>;
   usage: Map<string, { model?: string; usage: Usage; promptKey?: string; lastTs: number }>;
   firstUserText?: string;
 }
 
+export interface SampleRow {
+  detail: string;
+  count: number;
+  resultTok: number;
+}
 export interface ToolRow {
   name: string;
   calls: number;
   argTok: number;
   resultTok: number;
   ctxCost: number;
+  samples?: SampleRow[]; // top distinct invocations (drill-down)
+}
+export interface AccountRow {
+  account: string;
+  cost: number;
+  calls: number;
+  sessions: number;
 }
 export interface PromptRow {
   key: string;
@@ -52,6 +65,7 @@ export interface Report {
   prompts: PromptRow[];
   models: ModelRow[];
   projects: Array<{ project: string; cost: number }>;
+  accounts: AccountRow[];
   source: string;
   sinceTs: number;
 }
@@ -60,12 +74,13 @@ export class Aggregator {
   private streams = new Map<string, StreamState>();
   private promptText = new Map<string, { text: string; project: string; ts: number }>();
 
-  stream(fileKey: string, project: string, source = "claude"): (e: Event) => void {
+  stream(fileKey: string, project: string, source = "claude", account = "default"): (e: Event) => void {
     let s = this.streams.get(fileKey);
     if (!s) {
       s = {
         project,
         source,
+        account,
         sessionId: "?",
         sidechain: fileKey.includes("agent-"),
         nCalls: 0,
@@ -112,12 +127,12 @@ export class Aggregator {
       }
       case "tooluse": {
         const idx = s.callIdx.get(e.requestId) ?? s.nCalls;
-        s.toolUse.set(e.id, { name: e.name, argChars: e.argChars, idx, promptKey: s.currentPromptKey, sub: e.sub, deep: e.deep });
+        s.toolUse.set(e.id, { name: e.name, argChars: e.argChars, idx, promptKey: s.currentPromptKey, sub: e.sub, deep: e.deep, detail: e.detail });
         break;
       }
       case "toolresult": {
         const tu = s.toolUse.get(e.id);
-        if (tu) s.results.push({ name: tu.name, tokens: estTokens(e.chars), idx: tu.idx, promptKey: tu.promptKey, sub: tu.sub, deep: tu.deep });
+        if (tu) s.results.push({ name: tu.name, tokens: estTokens(e.chars), idx: tu.idx, promptKey: tu.promptKey, sub: tu.sub, deep: tu.deep, detail: tu.detail });
         break;
       }
     }
@@ -132,6 +147,21 @@ export class Aggregator {
     const models = new Map<string, ModelRow>();
     const projects = new Map<string, number>();
     const sessions = new Set<string>();
+    const accounts = new Map<string, { cost: number; calls: number; sessions: Set<string> }>();
+    // detail samples per (table, key): map key -> map detail -> {count, resultTok}
+    const samp = { tools: new Map<string, Map<string, SampleRow>>(), bash: new Map<string, Map<string, SampleRow>>(), deep: new Map<string, Map<string, SampleRow>>() };
+    const SAMP_CAP = 1500; // max distinct details per key (bounds memory)
+    const bumpSample = (store: Map<string, Map<string, SampleRow>>, key: string, detail: string, count: number, resultTok: number) => {
+      let m = store.get(key);
+      if (!m) store.set(key, (m = new Map()));
+      let row = m.get(detail);
+      if (!row) {
+        if (m.size >= SAMP_CAP) return; // keep existing; drop new rare details
+        m.set(detail, (row = { detail, count: 0, resultTok: 0 }));
+      }
+      row.count += count;
+      row.resultTok += resultTok;
+    };
     let totalCost = 0;
     let apiCalls = 0;
     let sinceTs = Infinity;
@@ -139,10 +169,15 @@ export class Aggregator {
     for (const s of this.streams.values()) {
       sessions.add(s.sessionId);
       sources.add(s.source);
+      let acc = accounts.get(s.account);
+      if (!acc) accounts.set(s.account, (acc = { cost: 0, calls: 0, sessions: new Set() }));
+      acc.sessions.add(s.sessionId);
       for (const [, u] of s.usage) {
         apiCalls++;
         const cost = usageCost(u.model, u.usage);
         totalCost += cost;
+        acc.cost += cost;
+        acc.calls++;
         if (u.lastTs && u.lastTs < sinceTs) sinceTs = u.lastTs;
         projects.set(s.project, (projects.get(s.project) ?? 0) + cost);
         const mk = u.model ?? "unknown";
@@ -163,14 +198,15 @@ export class Aggregator {
         }
       }
       for (const [, tu] of s.toolUse) {
-        const targets: Array<[Map<string, ToolRow>, string]> = [[tools, tu.name]];
-        if (tu.sub) targets.push([bash, tu.sub]);
-        if (tu.deep) targets.push([deep, tu.deep]);
-        for (const [map, key] of targets) {
+        const targets: Array<[Map<string, ToolRow>, Map<string, Map<string, SampleRow>>, string]> = [[tools, samp.tools, tu.name]];
+        if (tu.sub) targets.push([bash, samp.bash, tu.sub]);
+        if (tu.deep) targets.push([deep, samp.deep, tu.deep]);
+        for (const [map, store, key] of targets) {
           let t = map.get(key);
           if (!t) map.set(key, (t = { name: key, calls: 0, argTok: 0, resultTok: 0, ctxCost: 0 }));
           t.calls++;
           t.argTok += estTokens(tu.argChars);
+          if (tu.detail) bumpSample(store, key, tu.detail, 1, 0);
         }
         if (tu.promptKey) {
           const p = this.promptRow(prompts, tu.promptKey);
@@ -179,17 +215,30 @@ export class Aggregator {
       }
       for (const r of s.results) {
         const cost = contextCost(r.tokens, s.model, s.nCalls - r.idx - 1);
-        const targets: Array<[Map<string, ToolRow>, string]> = [[tools, r.name]];
-        if (r.sub) targets.push([bash, r.sub]);
-        if (r.deep) targets.push([deep, r.deep]);
-        for (const [map, key] of targets) {
+        const targets: Array<[Map<string, ToolRow>, Map<string, Map<string, SampleRow>>, string]> = [[tools, samp.tools, r.name]];
+        if (r.sub) targets.push([bash, samp.bash, r.sub]);
+        if (r.deep) targets.push([deep, samp.deep, r.deep]);
+        for (const [map, store, key] of targets) {
           const t = map.get(key);
           if (!t) continue;
           t.resultTok += r.tokens;
           t.ctxCost += cost;
+          if (r.detail) bumpSample(store, key, r.detail, 0, r.tokens);
         }
       }
     }
+
+    // Attach top samples (by result tokens then count) to each row.
+    const attach = (rows: Map<string, ToolRow>, store: Map<string, Map<string, SampleRow>>) => {
+      for (const [key, t] of rows) {
+        const m = store.get(key);
+        if (!m) continue;
+        t.samples = [...m.values()].sort((a, b) => b.resultTok - a.resultTok || b.count - a.count).slice(0, 40);
+      }
+    };
+    attach(tools, samp.tools);
+    attach(bash, samp.bash);
+    attach(deep, samp.deep);
 
     const by = <T>(arr: T[], f: (x: T) => number) => arr.sort((a, b) => f(b) - f(a));
     return {
@@ -202,6 +251,7 @@ export class Aggregator {
       prompts: by([...prompts.values()], (p) => p.cost).slice(0, top),
       models: by([...models.values()], (m) => m.cost),
       projects: by([...projects.entries()].map(([project, cost]) => ({ project, cost })), (p) => p.cost),
+      accounts: by([...accounts.entries()].map(([account, a]) => ({ account, cost: a.cost, calls: a.calls, sessions: a.sessions.size })), (a) => a.cost),
       source: sources.size === 1 ? [...sources][0] : "all",
       sinceTs: sinceTs === Infinity ? 0 : sinceTs,
     };

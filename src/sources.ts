@@ -1,7 +1,13 @@
 // Registry of coding-agent transcript sources. Each knows where its logs live,
 // how to find recent files, and which line parser + per-file context to use.
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+//
+// Multi-account: a source can have several "roots" (directories), each tagged
+// with an account label. Reports tag by account but sum per agent. Roots come
+// from an optional config file (~/.config/spendwatch/config.json or
+// $SPENDWATCH_CONFIG); otherwise the default per-agent dir is auto-detected and
+// its account label resolved from local credentials (email).
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Event } from "./parse";
 import { parseLine } from "./parse";
@@ -12,6 +18,7 @@ export interface SourceFile {
   path: string;
   project: string;
   source: string;
+  account: string;
   parse: (line: string, ctx: any) => Iterable<Event>;
   ctx: any;
 }
@@ -24,73 +31,78 @@ export interface SourceStatus {
   files: SourceFile[];
 }
 
-const claudeParse = (line: string) => parseLine(line);
-
-export function discover(opts: { sinceMs: number; project?: string; agents?: Set<string> }): SourceStatus[] {
-  const out: SourceStatus[] = [];
-  const want = (id: string) => !opts.agents || opts.agents.has(id);
-
-  // Claude Code — ~/.claude/projects/<encoded-cwd>/<session>.jsonl
-  if (want("claude")) {
-    const dir = join(homedir(), ".claude", "projects");
-    const files: SourceFile[] = [];
-    if (existsSync(dir)) {
-      for (const proj of safeReaddir(dir)) {
-        const project = humanProject(proj);
-        if (opts.project && !project.toLowerCase().includes(opts.project.toLowerCase())) continue;
-        for (const f of safeReaddir(join(dir, proj))) {
-          if (!f.endsWith(".jsonl")) continue;
-          const path = join(dir, proj, f);
-          if (mtimeOk(path, opts.sinceMs)) files.push({ path, project, source: "claude", parse: claudeParse, ctx: null });
-        }
-      }
-    }
-    out.push({ id: "claude", present: existsSync(dir), parseable: true, files });
-  }
-
-  // Codex CLI — ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl (project from cwd inside)
-  if (want("codex")) {
-    const dir = join(homedir(), ".codex", "sessions");
-    const files: SourceFile[] = [];
-    if (existsSync(dir)) {
-      for (const path of walkJsonl(dir)) {
-        if (!path.includes("rollout-")) continue;
-        if (mtimeOk(path, opts.sinceMs)) files.push({ path, project: "?", source: "codex", parse: parseCodexLine, ctx: newCodexCtx() });
-      }
-    }
-    // project filter for codex happens after parse (cwd is inside the file); keep all, filter in report
-    out.push({ id: "codex", present: existsSync(dir), parseable: true, files });
-  }
-
-  // Copilot CLI — chat sessions are stored in a binary Xodus DB (.xd), not JSONL.
-  if (want("copilot")) {
-    const dir = join(homedir(), ".config", "github-copilot");
-    const present = existsSync(dir) || existsSync(join(homedir(), ".copilot"));
-    out.push({
-      id: "copilot",
-      present,
-      parseable: false,
-      note: present ? "found, but chat sessions are a binary Xodus DB (.xd) with no token usage — not parseable" : "not installed",
-      files: [],
-    });
-  }
-
-  // Gemini CLI — ~/.gemini (logs/telemetry); not present here.
-  if (want("gemini")) {
-    const dir = join(homedir(), ".gemini");
-    const present = existsSync(dir);
-    out.push({
-      id: "gemini",
-      present,
-      parseable: present, // structure TBD; treat as parseable-if-present once logs appear
-      note: present ? undefined : "not installed",
-      files: present ? [...walkJsonl(dir)].filter((p) => mtimeOk(p, opts.sinceMs)).map((path) => ({ path, project: "?", source: "gemini", parse: () => [], ctx: null })) : [],
-    });
-  }
-
-  return out;
+interface RootCfg {
+  agent: string;
+  path: string;
+  account?: string;
 }
 
+const claudeParse = (line: string) => parseLine(line);
+
+function expand(p: string): string {
+  return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
+}
+
+// ---- config -----------------------------------------------------------------
+function loadConfig(): RootCfg[] | null {
+  const paths = [process.env.SPENDWATCH_CONFIG, join(homedir(), ".config", "spendwatch", "config.json"), join(homedir(), ".spendwatch.json")].filter(Boolean) as string[];
+  for (const p of paths) {
+    try {
+      if (!existsSync(p)) continue;
+      const j = JSON.parse(readFileSync(p, "utf8"));
+      const roots = Array.isArray(j) ? j : j.roots;
+      if (Array.isArray(roots) && roots.length) return roots.map((r: any) => ({ agent: String(r.agent), path: expand(String(r.path)), account: r.account ? String(r.account) : undefined }));
+    } catch {}
+  }
+  return null;
+}
+
+// ---- account detection ------------------------------------------------------
+function shortEmail(email?: string): string | undefined {
+  if (!email) return undefined;
+  return email; // keep full email — it's the user's own, and disambiguates orgs
+}
+
+// Claude account: <home>/.claude.json (or <root>/../.claude.json) → oauthAccount.emailAddress
+function claudeAccount(projectsDir: string): string {
+  const candidates = [join(homedir(), ".claude.json"), join(dirname(dirname(projectsDir)), ".claude.json"), join(dirname(projectsDir) + ".json")];
+  for (const c of candidates) {
+    try {
+      if (!existsSync(c)) continue;
+      const j = JSON.parse(readFileSync(c, "utf8"));
+      const e = shortEmail(j?.oauthAccount?.emailAddress);
+      if (e) return e;
+    } catch {}
+  }
+  return "default";
+}
+
+// Codex account: <root>/../auth.json → tokens.id_token JWT → email
+function codexAccount(sessionsDir: string): string {
+  const auth = join(dirname(sessionsDir), "auth.json");
+  try {
+    if (!existsSync(auth)) return "default";
+    const j = JSON.parse(readFileSync(auth, "utf8"));
+    const tok = j?.tokens?.id_token;
+    if (typeof tok === "string") {
+      const part = tok.split(".")[1];
+      if (part) {
+        const json = JSON.parse(Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+        const e = shortEmail(json?.email);
+        if (e) return e;
+      }
+    }
+  } catch {}
+  return "default";
+}
+
+function mtimeOk(path: string, sinceMs: number): boolean {
+  try {
+    return statSync(path).mtimeMs >= sinceMs;
+  } catch {
+    return false;
+  }
+}
 function safeReaddir(d: string): string[] {
   try {
     return readdirSync(d);
@@ -98,10 +110,66 @@ function safeReaddir(d: string): string[] {
     return [];
   }
 }
-function mtimeOk(path: string, sinceMs: number): boolean {
-  try {
-    return statSync(path).mtimeMs >= sinceMs;
-  } catch {
-    return false;
+
+// ---- per-agent collectors ---------------------------------------------------
+function collectClaude(dir: string, account: string, sinceMs: number, project?: string): SourceFile[] {
+  const files: SourceFile[] = [];
+  if (!existsSync(dir)) return files;
+  const acct = account || claudeAccount(dir);
+  for (const proj of safeReaddir(dir)) {
+    const projectName = humanProject(proj);
+    if (project && !projectName.toLowerCase().includes(project.toLowerCase())) continue;
+    for (const f of safeReaddir(join(dir, proj))) {
+      if (!f.endsWith(".jsonl")) continue;
+      const path = join(dir, proj, f);
+      if (mtimeOk(path, sinceMs)) files.push({ path, project: projectName, source: "claude", account: acct, parse: claudeParse, ctx: null });
+    }
   }
+  return files;
+}
+
+function collectCodex(dir: string, account: string, sinceMs: number): SourceFile[] {
+  const files: SourceFile[] = [];
+  if (!existsSync(dir)) return files;
+  const acct = account || codexAccount(dir);
+  for (const path of walkJsonl(dir)) {
+    if (!path.includes("rollout-")) continue;
+    if (mtimeOk(path, sinceMs)) files.push({ path, project: "?", source: "codex", account: acct, parse: parseCodexLine, ctx: newCodexCtx() });
+  }
+  return files;
+}
+
+export function discover(opts: { sinceMs: number; project?: string; agents?: Set<string> }): SourceStatus[] {
+  const out: SourceStatus[] = [];
+  const want = (id: string) => !opts.agents || opts.agents.has(id);
+  const cfg = loadConfig();
+
+  // Resolve roots per agent: config overrides defaults.
+  const claudeRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "claude") : [{ agent: "claude", path: join(homedir(), ".claude", "projects") }];
+  const codexRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "codex") : [{ agent: "codex", path: join(homedir(), ".codex", "sessions") }];
+
+  if (want("claude")) {
+    const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project));
+    out.push({ id: "claude", present: claudeRoots.some((r) => existsSync(r.path)), parseable: true, files });
+  }
+
+  if (want("codex")) {
+    const files = codexRoots.flatMap((r) => collectCodex(r.path, r.account ?? "", opts.sinceMs));
+    out.push({ id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, files });
+  }
+
+  // Copilot CLI — chat sessions are stored in a binary Xodus DB (.xd), not JSONL.
+  if (want("copilot")) {
+    const present = existsSync(join(homedir(), ".config", "github-copilot")) || existsSync(join(homedir(), ".copilot"));
+    out.push({ id: "copilot", present, parseable: false, note: present ? "found, but chat sessions are a binary Xodus DB (.xd) with no token usage — not parseable" : "not installed", files: [] });
+  }
+
+  // Gemini CLI — ~/.gemini (logs/telemetry); structure TBD.
+  if (want("gemini")) {
+    const dir = join(homedir(), ".gemini");
+    const present = existsSync(dir);
+    out.push({ id: "gemini", present, parseable: present, note: present ? undefined : "not installed", files: present ? [...walkJsonl(dir)].filter((p) => mtimeOk(p, opts.sinceMs)).map((path) => ({ path, project: "?", source: "gemini", account: "default", parse: () => [], ctx: null })) : [] });
+  }
+
+  return out;
 }

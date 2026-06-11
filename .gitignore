@@ -3,3 +3,11 @@ node_modules/
 
 spendwatch-report.html
 index.html
+
+# generated artifacts
+spendwatch.db
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm

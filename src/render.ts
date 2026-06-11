@@ -74,11 +74,24 @@ export function renderReport(r: Report, opts: { width?: number; heading?: boolea
   const out: string[] = [];
   const since = r.sinceTs ? new Date(r.sinceTs).toISOString().slice(0, 10) : "?";
   const label = SOURCE_LABEL[r.source] ?? r.source;
+  const acctTag = r.accounts.length === 1 && r.accounts[0].account !== "default" ? c(C.dim, `  ⟨${r.accounts[0].account}⟩`) : "";
   out.push(
     c(C.bold, opts.heading === false ? `▌ ${label}` : `spendwatch`) +
-      c(C.dim, `  ${label !== "all agents" && opts.heading !== false ? "" : ""}since ${since}  `) +
+      acctTag +
+      c(C.dim, `  since ${since}  `) +
       `${c(C.green, fmtUsd(r.totalCost))} est  ·  ${r.apiCalls} API calls  ·  ${r.sessions} sessions`,
   );
+
+  if (r.accounts.length > 1) {
+    out.push("\n" + c(C.bold, "BY ACCOUNT") + c(C.dim, `  (same agent, summed above: ${fmtUsd(r.totalCost)})`));
+    out.push(
+      table(
+        ["account", "$", "calls", "sessions"],
+        r.accounts.map((a) => [clip(a.account, 40), fmtUsd(a.cost), String(a.calls), String(a.sessions)]),
+        new Set([1, 2, 3]),
+      ),
+    );
+  }
 
   out.push("\n" + c(C.bold, "BY TOOL") + c(C.dim, "  (ctx $ = est cost of result tokens via cache write + rereads)"));
   out.push(

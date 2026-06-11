@@ -11,8 +11,8 @@ import type { SourceFile } from "../src/sources";
 const SESS = "11111111-1111-1111-1111-111111111111";
 const TS = "2026-06-10T10:00:00.000Z";
 
-function claudeFile(path: string): SourceFile {
-  return { path, project: "demo", source: "claude", parse: (l) => parseLine(l), ctx: null };
+function claudeFile(path: string, account = "default"): SourceFile {
+  return { path, project: "demo", source: "claude", account, parse: (l) => parseLine(l), ctx: null };
 }
 
 function entries(): string[] {
@@ -62,10 +62,32 @@ describe("claude aggregate from fixture", () => {
     expect(bash.ctxCost).toBeCloseTo(0.00675, 6); // 1000 tok * $5/M * (1.25 + 0.1*1)
 
     expect(r.bash[0].name).toBe("make");
+    // drill-down: the Bash tool row carries the actual command invocation
+    const bashSamples = bash.samples ?? [];
+    expect(bashSamples.some((s) => s.detail === "make" && s.resultTok === 1000)).toBe(true);
+
     const p = r.prompts[0];
     expect(p.text).toBe("fix the build");
     expect(p.cost).toBeCloseTo(0.0485, 6);
     expect(p.toolCalls).toBe(1);
+  });
+
+  test("multi-account: tagged roots sum per agent but break out by account", () => {
+    const { file: f1 } = makeFixture();
+    const { file: f2 } = makeFixture();
+    const agg = new Aggregator();
+    const reader = new IncrementalReader(agg);
+    reader.poll(claudeFile(f1, "work@co.com"));
+    reader.poll(claudeFile(f2, "personal@me.com"));
+    const r = agg.report();
+    // summed per agent
+    expect(r.totalCost).toBeCloseTo(0.0485 * 2, 6);
+    // broken out per account, each = one fixture
+    expect(r.accounts.length).toBe(2);
+    const byName = Object.fromEntries(r.accounts.map((a) => [a.account, a]));
+    expect(byName["work@co.com"].cost).toBeCloseTo(0.0485, 6);
+    expect(byName["personal@me.com"].cost).toBeCloseTo(0.0485, 6);
+    expect(byName["work@co.com"].calls).toBe(2);
   });
 
   test("incremental poll picks up appended bytes (watch path)", () => {
@@ -107,7 +129,7 @@ describe("codex aggregate from fixture", () => {
     writeFileSync(file, codexEntries().join("\n") + "\n");
     const agg = new Aggregator();
     const reader = new IncrementalReader(agg);
-    reader.poll({ path: file, project: "?", source: "codex", parse: parseCodexLine, ctx: newCodexCtx() });
+    reader.poll({ path: file, project: "?", source: "codex", account: "edi@x.com", parse: parseCodexLine, ctx: newCodexCtx() });
     const r = agg.report();
 
     expect(r.source).toBe("codex");
@@ -142,5 +164,36 @@ describe("project naming", () => {
     expect(humanProject("-Users-edihasaj-Projects-paper-deck")).toBe("paper-deck");
     expect(humanProject("-Users-edihasaj-Projects")).toBe("~/Projects");
     expect(humanCodexProject("/Users/edihasaj/Projects/foretype")).toBe("foretype");
+  });
+});
+
+describe("sqlite snapshot", () => {
+  test("writes a run with agent/tool/sample rows that round-trip", async () => {
+    const { writeSnapshot } = await import("../src/db");
+    const { Database } = await import("bun:sqlite");
+    const { file } = makeFixture();
+    const agg = new Aggregator();
+    new IncrementalReader(agg).poll(claudeFile(file, "work@co.com"));
+    const report = agg.report();
+
+    const dbPath = join(mkdtempSync(join(tmpdir(), "spendwatch-db-")), "s.db");
+    const { runId, rows } = writeSnapshot(dbPath, [report], { generatedAt: 1_700_000_000_000, days: 30 });
+    expect(runId).toBe(1);
+    expect(rows).toBeGreaterThan(0);
+
+    const db = new Database(dbPath);
+    const run = db.query("SELECT day_span, total_cost FROM runs WHERE id=?").get(runId) as any;
+    expect(run.day_span).toBe(30);
+    expect(run.total_cost).toBeCloseTo(0.0485, 6);
+    const acct = db.query("SELECT account, cost FROM agent_account WHERE run_id=?").get(runId) as any;
+    expect(acct.account).toBe("work@co.com");
+    const sample = db.query("SELECT detail FROM samples WHERE scope='tool' AND key='Bash'").get() as any;
+    expect(sample.detail).toBe("make");
+
+    // a second run appends, doesn't overwrite
+    const second = writeSnapshot(dbPath, [report], { generatedAt: 1_700_000_100_000, days: 7 });
+    expect(second.runId).toBe(2);
+    expect((db.query("SELECT COUNT(*) c FROM runs").get() as any).c).toBe(2);
+    db.close();
   });
 });
