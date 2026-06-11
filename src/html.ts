@@ -90,6 +90,18 @@ function agentPanel(r: Report, idx: number): string {
         ),
       ),
     );
+  if (r.targets.length)
+    parts.push(
+      section(
+        "Automate — top targets",
+        "cost × frequency × friction — build a CLI/MCP for these",
+        dataTable(
+          [{ head: "command", bar: true }, { head: "calls", num: true }, { head: "ctx $", num: true }, { head: "err%", num: true }, { head: "why" }],
+          r.targets.map((t) => [t.command, t.calls.toLocaleString(), fmtUsd(t.ctxCost), t.errPct >= 0.01 ? `${Math.round(t.errPct * 100)}%` : "·", t.reason]),
+          r.targets.map((t) => t.score),
+        ),
+      ),
+    );
   if (r.tools.length) parts.push(section("By tool", "ctx $ = cost results impose via cache write + rereads", toolTable(r.tools, "tool", 20)));
   if (r.bash.length) parts.push(section("By command", "shell calls split by executable", toolTable(r.bash, "command", 14)));
   const deep = r.deep.filter((t) => t.name.includes(" "));

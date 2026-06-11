@@ -107,7 +107,12 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
         const id = p.call_id ?? "?";
         const out = p.output;
         const chars = typeof out === "string" ? out.length : JSON.stringify(out ?? "").length;
-        yield { t: "toolresult", sessionId: ctx.sid, id, chars, ts };
+        let exit: number | undefined;
+        if (typeof out === "string") {
+          const m = out.match(/exited with code (\d+)/);
+          if (m) exit = Number(m[1]);
+        }
+        yield { t: "toolresult", sessionId: ctx.sid, id, chars, exit, error: exit !== undefined && exit !== 0, ts };
       }
       return;
     }

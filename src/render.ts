@@ -38,6 +38,32 @@ function clip(s: string, n: number): string {
   return one.length > n ? one.slice(0, n - 1) + "…" : one;
 }
 
+// Compact daily-glance: total, biggest hog, and the automate shortlist per agent.
+export function renderBrief(reports: Report[]): string {
+  const live = reports.filter((r) => r.apiCalls > 0).sort((a, b) => b.totalCost - a.totalCost);
+  const total = live.reduce((s, r) => s + r.totalCost, 0);
+  const since = Math.min(...live.map((r) => r.sinceTs).filter(Boolean));
+  const out: string[] = [];
+  out.push(c(C.bold, "spendwatch") + c(C.dim, `  since ${since && isFinite(since) ? new Date(since).toISOString().slice(0, 10) : "?"}  ·  `) + `${c(C.green, fmtUsd(total))} est` + c(C.dim, "  (brief)"));
+  for (const r of live) {
+    const label = SOURCE_LABEL[r.source] ?? r.source;
+    const hog = r.tools[0];
+    out.push("");
+    out.push(c(C.bold, `▌ ${label}`) + c(C.dim, "  ") + `${c(C.green, fmtUsd(r.totalCost))}` + (hog ? c(C.dim, `  · biggest context: ${hog.name} (${fmtTok(hog.resultTok)} tok)`) : ""));
+    const targets = r.targets.slice(0, 5);
+    if (targets.length) {
+      out.push(
+        table(
+          ["automate", "calls", "ctx $", "err%", "why"],
+          targets.map((t) => [clip(t.command, 28), String(t.calls), fmtUsd(t.ctxCost), t.errPct >= 0.01 ? `${Math.round(t.errPct * 100)}%` : "·", t.reason]),
+          new Set([1, 2, 3]),
+        ),
+      );
+    }
+  }
+  return out.join("\n") + "\n";
+}
+
 // Cross-agent comparison line + per-agent totals, shown above the sections.
 export function renderOverview(reports: Report[]): string {
   const live = reports.filter((r) => r.apiCalls > 0);
@@ -88,6 +114,17 @@ export function renderReport(r: Report, opts: { width?: number; heading?: boolea
       table(
         ["account", "$", "calls", "sessions"],
         r.accounts.map((a) => [clip(a.account, 40), fmtUsd(a.cost), String(a.calls), String(a.sessions)]),
+        new Set([1, 2, 3]),
+      ),
+    );
+  }
+
+  if (r.targets.length) {
+    out.push("\n" + c(C.yellow, c(C.bold, "AUTOMATE — top targets")) + c(C.dim, "  (cost × frequency × friction · build a CLI/MCP for these)"));
+    out.push(
+      table(
+        ["command", "calls", "ctx $", "err%", "why"],
+        r.targets.map((t) => [clip(t.command, 30), String(t.calls), fmtUsd(t.ctxCost), t.errPct >= 0.01 ? `${Math.round(t.errPct * 100)}%` : "·", t.reason]),
         new Set([1, 2, 3]),
       ),
     );

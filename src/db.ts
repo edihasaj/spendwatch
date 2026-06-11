@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS commands (run_id INTEGER, agent TEXT, command TEXT, i
 CREATE TABLE IF NOT EXISTS prompts (run_id INTEGER, agent TEXT, project TEXT, cost REAL, tool_calls INTEGER, out_tok INTEGER, text TEXT);
 CREATE TABLE IF NOT EXISTS models (run_id INTEGER, agent TEXT, model TEXT, calls INTEGER, in_tok INTEGER, out_tok INTEGER, cache_rd INTEGER, cache_wr INTEGER, cost REAL);
 CREATE TABLE IF NOT EXISTS projects (run_id INTEGER, agent TEXT, project TEXT, cost REAL);
+CREATE TABLE IF NOT EXISTS targets (run_id INTEGER, agent TEXT, command TEXT, calls INTEGER, ctx_cost REAL, err_pct REAL, reason TEXT, score REAL);
 CREATE TABLE IF NOT EXISTS samples (run_id INTEGER, agent TEXT, scope TEXT, key TEXT, detail TEXT, count INTEGER, result_tok INTEGER);
 CREATE INDEX IF NOT EXISTS idx_runs_ts ON runs(ts);
 CREATE INDEX IF NOT EXISTS idx_aa_run ON agent_account(run_id);
@@ -37,6 +38,7 @@ export function writeSnapshot(path: string, reports: Report[], opts: { generated
     prompts: db.prepare("INSERT INTO prompts(run_id, agent, project, cost, tool_calls, out_tok, text) VALUES (?,?,?,?,?,?,?)"),
     models: db.prepare("INSERT INTO models(run_id, agent, model, calls, in_tok, out_tok, cache_rd, cache_wr, cost) VALUES (?,?,?,?,?,?,?,?,?)"),
     projects: db.prepare("INSERT INTO projects(run_id, agent, project, cost) VALUES (?,?,?,?)"),
+    targets: db.prepare("INSERT INTO targets(run_id, agent, command, calls, ctx_cost, err_pct, reason, score) VALUES (?,?,?,?,?,?,?,?)"),
     samples: db.prepare("INSERT INTO samples(run_id, agent, scope, key, detail, count, result_tok) VALUES (?,?,?,?,?,?,?)"),
   };
 
@@ -60,6 +62,7 @@ export function writeSnapshot(path: string, reports: Report[], opts: { generated
       for (const p of r.prompts) (stmt.prompts.run(runId, a, p.project, p.cost, p.toolCalls, p.outTok, p.text.replace(/\s+/g, " ").trim().slice(0, 400)), rows++);
       for (const m of r.models) (stmt.models.run(runId, a, m.model, m.calls, m.inTok, m.outTok, m.cacheReadTok, m.cacheWriteTok, m.cost), rows++);
       for (const pr of r.projects) (stmt.projects.run(runId, a, pr.project, pr.cost), rows++);
+      for (const t of r.targets) (stmt.targets.run(runId, a, t.command, t.calls, t.ctxCost, t.errPct, t.reason, t.score), rows++);
     }
     return runId;
   });
