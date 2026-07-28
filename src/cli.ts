@@ -7,6 +7,7 @@ import { Aggregator } from "./aggregate";
 import { writeSnapshot } from "./db";
 import { renderHtml } from "./html";
 import { renderBrief, renderOverview, renderReport } from "./render";
+import { labelReports, loadReports } from "./reports";
 import { IncrementalReader } from "./scan";
 import { discover, type SourceStatus } from "./sources";
 
@@ -22,11 +23,13 @@ interface Args {
   html?: string; // output path when --html given
   open: boolean;
   sqlite?: string; // output db path when --sqlite given
+  inputs: string[];
+  label?: string;
   interval: number;
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { cmd: "report", days: 30, top: 12, json: false, brief: false, open: false, interval: 2000 };
+  const a: Args = { cmd: "report", days: 30, top: 12, json: false, brief: false, open: false, inputs: [], interval: 2000 };
   const rest = [...argv];
   while (rest.length) {
     const x = rest.shift()!;
@@ -41,6 +44,8 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--html") a.html = rest[0] && !rest[0].startsWith("-") ? rest.shift()! : "spendwatch-report.html";
     else if (x === "--open") a.open = true;
     else if (x === "--sqlite" || x === "--db") a.sqlite = rest[0] && !rest[0].startsWith("-") ? rest.shift()! : "spendwatch.db";
+    else if (x === "--input") a.inputs.push(...(rest.shift() ?? "").split(",").filter(Boolean));
+    else if (x === "--label" || x === "--machine") a.label = rest.shift();
     else if (x === "--interval") a.interval = Number(rest.shift());
     else if (x === "--help" || x === "-h") {
       console.log(`spendwatch — token/$ leaderboards across coding agents
@@ -61,6 +66,8 @@ options:
   --html [PATH]     also write a standalone HTML report (default spendwatch-report.html)
   --open            open the HTML report in your browser (implies --html)
   --sqlite [PATH]   append a snapshot to a SQLite db (default spendwatch.db)
+  --input PATHS     render exported report JSON instead of local logs (repeatable or comma-separated)
+  --label STR       prefix local report tabs with a machine/site label
   --interval MS     watch poll interval (default 2000)
 
 sources:
@@ -129,8 +136,8 @@ function reportsFrom(built: Built, a: Args) {
 }
 
 function report(a: Args) {
-  const built = build(a);
-  const reports = reportsFrom(built, a);
+  const built = a.inputs.length ? { statuses: [], readers: new Map() } : build(a);
+  const reports = a.inputs.length ? loadReports(a.inputs) : labelReports(reportsFrom(built, a), a.label);
   if (a.json) {
     console.log(JSON.stringify(reports, null, 2));
     return;
@@ -174,6 +181,7 @@ function nowMs(): number {
 }
 
 function watch(a: Args) {
+  if (a.inputs.length) throw new Error("--input is only supported by report");
   if (a.days === 30) a.days = 1;
   const built = build(a);
   const sinceMs = Date.now() - a.days * 86400_000;

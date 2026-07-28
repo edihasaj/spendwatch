@@ -1,11 +1,10 @@
 // Renders a standalone, self-contained HTML report from spendwatch reports.
 import type { Report, ToolRow, PromptRow } from "./aggregate";
 import { fmtTok, fmtUsd } from "./render";
+import { sourceLabel } from "./reports";
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-
-const LABEL: Record<string, string> = { claude: "Claude Code", codex: "Codex", copilot: "Copilot", gemini: "Gemini" };
 
 interface Col {
   head: string;
@@ -144,11 +143,11 @@ export function renderHtml(reports: Report[], opts: { generatedAt: number; days:
   const overviewBars = live
     .map((r) => {
       const pct = total ? (r.totalCost / total) * 100 : 0;
-      return `<div class="ov-row"><span class="ov-name">${esc(LABEL[r.source] ?? r.source)}</span><div class="ov-track"><div class="ov-fill" style="width:${pct.toFixed(1)}%"></div></div><span class="ov-val">${fmtUsd(r.totalCost)} <em>${pct.toFixed(0)}%</em></span></div>`;
+      return `<div class="ov-row"><span class="ov-name">${esc(sourceLabel(r.source))}</span><div class="ov-track"><div class="ov-fill" style="width:${pct.toFixed(1)}%"></div></div><span class="ov-val">${fmtUsd(r.totalCost)} <em>${pct.toFixed(0)}%</em></span></div>`;
     })
     .join("");
 
-  const tabs = live.map((r, i) => `<button class="tab${i === 0 ? " active" : ""}" data-tab="${esc(r.source)}">${esc(LABEL[r.source] ?? r.source)} <em>${fmtUsd(r.totalCost)}</em></button>`).join("");
+  const tabs = live.map((r, i) => `<button class="tab${i === 0 ? " active" : ""}" data-tab="${esc(r.source)}">${esc(sourceLabel(r.source))} <em>${fmtUsd(r.totalCost)}</em></button>`).join("");
   const panels = live.map((r, i) => agentPanel(r, i)).join("");
 
   return `<!doctype html>
