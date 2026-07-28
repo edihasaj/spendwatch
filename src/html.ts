@@ -70,7 +70,7 @@ function promptTable(rows: PromptRow[]): string {
 }
 
 function section(title: string, sub: string, body: string): string {
-  return `<section class="block"><h3>${esc(title)}<span class="sub">${esc(sub)}</span></h3>${body}</section>`;
+  return `<section class="block"><h3>${esc(title)}<span class="sub">${esc(sub)}</span></h3><div class="section-body">${body}</div></section>`;
 }
 
 function breakdownTable(rows: SpendBreakdown[], total: number): string {
@@ -213,9 +213,10 @@ header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px 28px;margin-bot
 .stat{flex:1;min-width:150px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
 .stat .n{display:block;font-family:"Space Grotesk";font-size:26px;font-weight:700}
 .stat .l{display:block;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.12em;margin-top:4px}
-.block{margin-top:26px}
-.block h3{font-size:15px;margin:0 0 12px;display:flex;align-items:baseline;gap:12px}
+.block{margin-top:26px;min-width:0;max-width:100%}
+.block h3{font-size:15px;margin:0 0 12px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
 .block h3 .sub{font-family:"JetBrains Mono";font-size:11px;color:var(--dim);font-weight:400;letter-spacing:0}
+.section-body{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 thead th{text-align:left;font-weight:500;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.08em;
   padding:11px 14px;border-bottom:1px solid var(--line);background:var(--panel2)}
