@@ -16,6 +16,7 @@ interface Col {
   head: string;
   num?: boolean;
   bar?: boolean; // draw a heat bar behind this cell
+  html?: boolean;
 }
 
 function dataTable(cols: Col[], rows: string[][], barValues?: number[]): string {
@@ -28,7 +29,7 @@ function dataTable(cols: Col[], rows: string[][], barValues?: number[]): string 
           const c = cols[ci];
           const pct = c.bar && barValues ? Math.round((barValues[ri] / max) * 100) : 0;
           const bar = c.bar ? `<span class="bar" style="width:${pct}%"></span>` : "";
-          return `<td class="${c.num ? "num" : ""} ${c.bar ? "barcell" : ""}">${bar}<span class="v">${esc(cell)}</span></td>`;
+          return `<td class="${c.num ? "num" : ""} ${c.bar ? "barcell" : ""}">${bar}<span class="v">${c.html ? cell : esc(cell)}</span></td>`;
         })
         .join("");
       return `<tr style="--i:${ri}">${cells}</tr>`;
@@ -79,20 +80,64 @@ function section(title: string, sub: string, body: string): string {
   return `<section class="block"><h3>${esc(title)}<span class="sub">${esc(sub)}</span></h3><div class="section-body">${body}</div></section>`;
 }
 
-function breakdownTable(rows: SpendBreakdown[], total: number): string {
+function serviceName(source: string): string {
+  const split = source.lastIndexOf(":");
+  return sourceLabel(split > 0 ? source.slice(split + 1) : source);
+}
+
+function accountKey(source: string, account: string, grouping: AccountGrouping): string {
+  return grouping === "email" ? account : `${serviceName(source)} · ${account}`;
+}
+
+function accountChipNumbers(reports: Report[], grouping: AccountGrouping): Map<string, number> {
+  const identities = new Map<string, Set<string>>();
+  for (const report of reports) {
+    const scope = grouping === "email" ? "all" : serviceName(report.source);
+    const accounts = identities.get(scope) ?? new Set<string>();
+    for (const account of report.accounts) accounts.add(account.account);
+    identities.set(scope, accounts);
+  }
+  const numbers = new Map<string, number>();
+  for (const [scope, accounts] of identities) {
+    [...accounts].sort((a, b) => a.localeCompare(b)).forEach((account, index) => {
+      const key = grouping === "email" ? account : `${scope} · ${account}`;
+      numbers.set(key, index + 1);
+    });
+  }
+  return numbers;
+}
+
+function accountIdentity(label: string, number?: number): string {
+  const chip = number
+    ? `<span class="account-chip" aria-label="Account ${number}">Account ${number}</span>`
+    : "";
+  return `<span class="account-identity">${chip}<span class="account-name">${esc(label)}</span></span>`;
+}
+
+function breakdownTable(
+  rows: SpendBreakdown[],
+  total: number,
+  accountNumbers?: Map<string, number>,
+): string {
   const max = Math.max(1, ...rows.map((row) => row.cost));
   return `<div class="break-list">${rows.map((row, index) => {
     const share = total ? (row.cost / total) * 100 : 0;
     const width = (row.cost / max) * 100;
     return `<div class="break-row" style="--i:${index}">
-      <div class="break-main"><span class="break-name">${esc(row.label)}</span><span class="break-value">${fmtUsd(row.cost)} <em>${share.toFixed(0)}%</em></span></div>
+      <div class="break-main"><span class="break-name">${accountNumbers ? accountIdentity(row.label, accountNumbers.get(row.label)) : esc(row.label)}</span><span class="break-value">${fmtUsd(row.cost)} <em>${share.toFixed(0)}%</em></span></div>
       <div class="break-track"><span style="width:${width.toFixed(1)}%"></span></div>
       <div class="break-meta">${row.calls.toLocaleString()} calls · ${row.sessions.toLocaleString()} sessions</div>
     </div>`;
   }).join("")}</div>`;
 }
 
-function agentPanel(r: Report, idx: number, combinedAccountTitle?: string): string {
+function agentPanel(
+  r: Report,
+  idx: number,
+  accountGrouping: AccountGrouping,
+  accountNumbers: Map<string, number>,
+  combinedAccountTitle?: string,
+): string {
   const stat = (label: string, val: string) => `<div class="stat"><span class="n">${val}</span><span class="l">${esc(label)}</span></div>`;
   const stats = `<div class="stats">${stat("est spend", fmtUsd(r.totalCost))}${stat("API calls", r.apiCalls.toLocaleString())}${stat("sessions", String(r.sessions))}</div>`;
   const parts: string[] = [stats];
@@ -104,8 +149,11 @@ function agentPanel(r: Report, idx: number, combinedAccountTitle?: string): stri
           ? `merged across machines (${fmtUsd(r.totalCost)})`
           : `same service · summed above (${fmtUsd(r.totalCost)})`,
         dataTable(
-          [{ head: "account", bar: true }, { head: "$", num: true }, { head: "calls", num: true }, { head: "sessions", num: true }],
-          r.accounts.map((x) => [x.account, fmtUsd(x.cost), x.calls.toLocaleString(), String(x.sessions)]),
+          [{ head: "account", bar: true, html: true }, { head: "$", num: true }, { head: "calls", num: true }, { head: "sessions", num: true }],
+          r.accounts.map((x) => {
+            const key = combinedAccountTitle ? x.account : accountKey(r.source, x.account, accountGrouping);
+            return [accountIdentity(x.account, accountNumbers.get(key)), fmtUsd(x.cost), x.calls.toLocaleString(), String(x.sessions)];
+          }),
           r.accounts.map((x) => x.cost),
         ),
       ),
@@ -168,6 +216,7 @@ export function renderHtml(
   const sinceStr = since && isFinite(since) ? new Date(since).toISOString().slice(0, 10) : "?";
   const genStr = new Date(opts.generatedAt).toISOString().replace("T", " ").slice(0, 16) + " UTC";
   const dimensions = reportBreakdowns(sources, accountGrouping);
+  const accountNumbers = accountChipNumbers(sources, accountGrouping);
 
   const overview = [
     section("By machine", "where the usage happened", breakdownTable(dimensions.machines, total)),
@@ -176,14 +225,14 @@ export function renderHtml(
       accountGrouping === "service"
         ? "same service and identity merged across machines"
         : "same email merged across machines and services",
-      breakdownTable(dimensions.accounts, total),
+      breakdownTable(dimensions.accounts, total, accountNumbers),
     ),
     section("By agent", "same agent merged across machines", breakdownTable(dimensions.agents, total)),
   ].join("");
 
   const tabs = live.map((r, i) => `<button class="tab${i === 0 ? " active" : ""}" data-tab="${esc(r.source)}">${esc(sourceLabel(r.source))} <em>${fmtUsd(r.totalCost)}</em></button>`).join("");
   const panels = live
-    .map((r, i) => agentPanel(r, i, r.source === "all" ? accountTitle : undefined))
+    .map((r, i) => agentPanel(r, i, accountGrouping, accountNumbers, r.source === "all" ? accountTitle : undefined))
     .join("");
 
   return `<!doctype html>
@@ -218,6 +267,10 @@ header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px 28px;margin-bot
 .break-row:last-child{border-bottom:none}
 .break-main{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
 .break-name{font-weight:500;min-width:0;overflow-wrap:anywhere}
+.account-identity{display:inline-flex;align-items:center;gap:8px;min-width:0;max-width:100%}
+.account-chip{flex:none;padding:2px 7px;border:1px solid rgba(134,224,122,.32);border-radius:999px;background:rgba(134,224,122,.08);
+  color:var(--green);font-size:9px;font-weight:700;line-height:1.5;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+.account-name{min-width:0;overflow-wrap:anywhere}
 .break-value{flex:none;font-variant-numeric:tabular-nums}
 .break-value em{color:var(--dim);font-style:normal}
 .break-track{height:5px;background:#0a0b0e;border-radius:4px;overflow:hidden;margin:8px 0 6px}
