@@ -1,5 +1,6 @@
 // Terminal table rendering for spend reports.
 import type { Report } from "./aggregate";
+import { sourceLabel } from "./reports";
 
 const C = {
   dim: "\x1b[2m",
@@ -46,7 +47,7 @@ export function renderBrief(reports: Report[]): string {
   const out: string[] = [];
   out.push(c(C.bold, "spendwatch") + c(C.dim, `  since ${since && isFinite(since) ? new Date(since).toISOString().slice(0, 10) : "?"}  ·  `) + `${c(C.green, fmtUsd(total))} est` + c(C.dim, "  (brief)"));
   for (const r of live) {
-    const label = SOURCE_LABEL[r.source] ?? r.source;
+    const label = sourceLabel(r.source);
     const hog = r.tools[0];
     out.push("");
     out.push(c(C.bold, `▌ ${label}`) + c(C.dim, "  ") + `${c(C.green, fmtUsd(r.totalCost))}` + (hog ? c(C.dim, `  · biggest context: ${hog.name} (${fmtTok(hog.resultTok)} tok)`) : ""));
@@ -80,26 +81,18 @@ export function renderOverview(reports: Report[]): string {
       ["agent", "$", "share", "API calls", "sessions"],
       live
         .sort((a, b) => b.totalCost - a.totalCost)
-        .map((r) => [SOURCE_LABEL[r.source] ?? r.source, fmtUsd(r.totalCost), total ? `${((r.totalCost / total) * 100).toFixed(0)}%` : "0%", String(r.apiCalls), String(r.sessions)]),
+        .map((r) => [sourceLabel(r.source), fmtUsd(r.totalCost), total ? `${((r.totalCost / total) * 100).toFixed(0)}%` : "0%", String(r.apiCalls), String(r.sessions)]),
       new Set([1, 2, 3, 4]),
     ),
   );
   return out.join("\n") + "\n";
 }
 
-const SOURCE_LABEL: Record<string, string> = {
-  claude: "Claude Code",
-  codex: "Codex",
-  copilot: "Copilot",
-  gemini: "Gemini",
-  all: "all agents",
-};
-
 export function renderReport(r: Report, opts: { width?: number; heading?: boolean } = {}): string {
   const w = opts.width ?? Math.min(process.stdout.columns ?? 120, 140);
   const out: string[] = [];
   const since = r.sinceTs ? new Date(r.sinceTs).toISOString().slice(0, 10) : "?";
-  const label = SOURCE_LABEL[r.source] ?? r.source;
+  const label = sourceLabel(r.source);
   const acctTag = r.accounts.length === 1 && r.accounts[0].account !== "default" ? c(C.dim, `  ⟨${r.accounts[0].account}⟩`) : "";
   out.push(
     c(C.bold, opts.heading === false ? `▌ ${label}` : `spendwatch`) +

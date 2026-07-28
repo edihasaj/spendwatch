@@ -1,7 +1,7 @@
 // Renders a standalone, self-contained HTML report from spendwatch reports.
 import type { Report, ToolRow, PromptRow } from "./aggregate";
 import { fmtTok, fmtUsd } from "./render";
-import { sourceLabel } from "./reports";
+import { mergeReports, reportBreakdowns, sourceLabel, type SpendBreakdown } from "./reports";
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
@@ -73,6 +73,20 @@ function section(title: string, sub: string, body: string): string {
   return `<section class="block"><h3>${esc(title)}<span class="sub">${esc(sub)}</span></h3>${body}</section>`;
 }
 
+function breakdownTable(rows: SpendBreakdown[], total: number): string {
+  return dataTable(
+    [{ head: "name", bar: true }, { head: "$", num: true }, { head: "share", num: true }, { head: "calls", num: true }, { head: "sessions", num: true }],
+    rows.map((row) => [
+      row.label,
+      fmtUsd(row.cost),
+      total ? `${((row.cost / total) * 100).toFixed(0)}%` : "0%",
+      row.calls.toLocaleString(),
+      row.sessions.toLocaleString(),
+    ]),
+    rows.map((row) => row.cost),
+  );
+}
+
 function agentPanel(r: Report, idx: number): string {
   const stat = (label: string, val: string) => `<div class="stat"><span class="n">${val}</span><span class="l">${esc(label)}</span></div>`;
   const stats = `<div class="stats">${stat("est spend", fmtUsd(r.totalCost))}${stat("API calls", r.apiCalls.toLocaleString())}${stat("sessions", String(r.sessions))}</div>`;
@@ -134,18 +148,20 @@ function agentPanel(r: Report, idx: number): string {
 }
 
 export function renderHtml(reports: Report[], opts: { generatedAt: number; days: number }): string {
-  const live = reports.filter((r) => r.apiCalls > 0).sort((a, b) => b.totalCost - a.totalCost);
-  const total = live.reduce((s, r) => s + r.totalCost, 0);
-  const since = Math.min(...live.map((r) => r.sinceTs).filter(Boolean));
+  const sources = reports.filter((r) => r.apiCalls > 0).sort((a, b) => b.totalCost - a.totalCost);
+  const combined = mergeReports(sources);
+  const live = sources.length > 1 ? [combined, ...sources] : sources;
+  const total = combined.totalCost;
+  const since = combined.sinceTs;
   const sinceStr = since && isFinite(since) ? new Date(since).toISOString().slice(0, 10) : "?";
   const genStr = new Date(opts.generatedAt).toISOString().replace("T", " ").slice(0, 16) + " UTC";
+  const dimensions = reportBreakdowns(sources);
 
-  const overviewBars = live
-    .map((r) => {
-      const pct = total ? (r.totalCost / total) * 100 : 0;
-      return `<div class="ov-row"><span class="ov-name">${esc(sourceLabel(r.source))}</span><div class="ov-track"><div class="ov-fill" style="width:${pct.toFixed(1)}%"></div></div><span class="ov-val">${fmtUsd(r.totalCost)} <em>${pct.toFixed(0)}%</em></span></div>`;
-    })
-    .join("");
+  const overview = [
+    section("By machine", "where the usage happened", breakdownTable(dimensions.machines, total)),
+    section("By account", "same identity merged across machines and agents", breakdownTable(dimensions.accounts, total)),
+    section("By agent", "same agent merged across machines", breakdownTable(dimensions.agents, total)),
+  ].join("");
 
   const tabs = live.map((r, i) => `<button class="tab${i === 0 ? " active" : ""}" data-tab="${esc(r.source)}">${esc(sourceLabel(r.source))} <em>${fmtUsd(r.totalCost)}</em></button>`).join("");
   const panels = live.map((r, i) => agentPanel(r, i)).join("");
@@ -175,14 +191,9 @@ header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px 28px;margin-bot
 .head-total{margin-left:auto;text-align:right}
 .head-total .big{font-family:"Space Grotesk";font-size:38px;font-weight:700;color:var(--amber);line-height:1}
 .head-total .meta{color:var(--dim);font-size:12px;margin-top:6px}
-.overview{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:14px;padding:22px 24px;margin-bottom:30px}
-.overview h2{margin:0 0 16px;font-size:14px;color:var(--dim);font-weight:500;text-transform:uppercase;letter-spacing:.14em}
-.ov-row{display:flex;align-items:center;gap:16px;margin:11px 0}
-.ov-name{width:120px;flex:none;font-weight:500}
-.ov-track{flex:1;height:12px;background:#0a0b0e;border-radius:7px;overflow:hidden;border:1px solid var(--line)}
-.ov-fill{height:100%;border-radius:7px;background:linear-gradient(90deg,var(--amber2),var(--amber));box-shadow:0 0 18px rgba(255,180,84,.35);animation:grow 1s cubic-bezier(.2,.8,.2,1) both}
-.ov-val{width:130px;flex:none;text-align:right;color:var(--ink)}
-.ov-val em{color:var(--dim);font-style:normal}
+.overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-bottom:30px}
+.overview .block{margin-top:0;min-width:0}
+.overview table{height:100%}
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:22px}
 .tab{font-family:"JetBrains Mono";font-size:13px;color:var(--dim);background:var(--panel);border:1px solid var(--line);
   padding:9px 15px;border-radius:10px;cursor:pointer;transition:.15s}
@@ -226,15 +237,16 @@ footer{margin-top:48px;color:var(--dim);font-size:11px;border-top:1px solid var(
 footer b{color:var(--amber)}
 @keyframes grow{from{width:0}}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-@media(max-width:640px){.head-total{margin-left:0;text-align:left}.ov-name{width:84px}.ov-val{width:96px}}
+@media(max-width:900px){.overview{grid-template-columns:1fr}}
+@media(max-width:640px){.head-total{margin-left:0;text-align:left}}
 </style></head>
 <body><div class="wrap">
 <header>
   <div><div class="brand"><b>spend</b>watch<span class="tag">coding-agent token &amp; cost report · last ${opts.days}d · since ${sinceStr}</span></div></div>
-  <div class="head-total"><div class="big">${fmtUsd(total)}</div><div class="meta">est across ${live.length} agent${live.length === 1 ? "" : "s"} · generated ${esc(genStr)}</div></div>
+  <div class="head-total"><div class="big">${fmtUsd(total)}</div><div class="meta">est across ${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · generated ${esc(genStr)}</div></div>
 </header>
 
-<div class="overview"><h2>Spend by agent</h2>${overviewBars || '<div class="ov-row">no data</div>'}</div>
+<div class="overview">${overview}</div>
 
 <div class="tabs">${tabs}</div>
 ${panels}
