@@ -74,17 +74,16 @@ function section(title: string, sub: string, body: string): string {
 }
 
 function breakdownTable(rows: SpendBreakdown[], total: number): string {
-  return dataTable(
-    [{ head: "name", bar: true }, { head: "$", num: true }, { head: "share", num: true }, { head: "calls", num: true }, { head: "sessions", num: true }],
-    rows.map((row) => [
-      row.label,
-      fmtUsd(row.cost),
-      total ? `${((row.cost / total) * 100).toFixed(0)}%` : "0%",
-      row.calls.toLocaleString(),
-      row.sessions.toLocaleString(),
-    ]),
-    rows.map((row) => row.cost),
-  );
+  const max = Math.max(1, ...rows.map((row) => row.cost));
+  return `<div class="break-list">${rows.map((row, index) => {
+    const share = total ? (row.cost / total) * 100 : 0;
+    const width = (row.cost / max) * 100;
+    return `<div class="break-row" style="--i:${index}">
+      <div class="break-main"><span class="break-name">${esc(row.label)}</span><span class="break-value">${fmtUsd(row.cost)} <em>${share.toFixed(0)}%</em></span></div>
+      <div class="break-track"><span style="width:${width.toFixed(1)}%"></span></div>
+      <div class="break-meta">${row.calls.toLocaleString()} calls · ${row.sessions.toLocaleString()} sessions</div>
+    </div>`;
+  }).join("")}</div>`;
 }
 
 function agentPanel(r: Report, idx: number): string {
@@ -193,7 +192,16 @@ header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px 28px;margin-bot
 .head-total .meta{color:var(--dim);font-size:12px;margin-top:6px}
 .overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-bottom:30px}
 .overview .block{margin-top:0;min-width:0}
-.overview table{height:100%}
+.break-list{height:calc(100% - 27px);background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.break-row{padding:12px 14px;border-bottom:1px solid var(--line);animation:rise .5s both;animation-delay:calc(var(--i)*35ms)}
+.break-row:last-child{border-bottom:none}
+.break-main{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.break-name{font-weight:500;min-width:0;overflow-wrap:anywhere}
+.break-value{flex:none;font-variant-numeric:tabular-nums}
+.break-value em{color:var(--dim);font-style:normal}
+.break-track{height:5px;background:#0a0b0e;border-radius:4px;overflow:hidden;margin:8px 0 6px}
+.break-track span{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,var(--amber2),var(--amber));animation:grow 1s cubic-bezier(.2,.8,.2,1) both}
+.break-meta{color:var(--dim);font-size:10px}
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:22px}
 .tab{font-family:"JetBrains Mono";font-size:13px;color:var(--dim);background:var(--panel);border:1px solid var(--line);
   padding:9px 15px;border-radius:10px;cursor:pointer;transition:.15s}
