@@ -1,7 +1,13 @@
 // Renders a standalone, self-contained HTML report from spendwatch reports.
 import type { Report, ToolRow, PromptRow } from "./aggregate";
 import { fmtTok, fmtUsd } from "./render";
-import { mergeReports, reportBreakdowns, sourceLabel, type SpendBreakdown } from "./reports";
+import {
+  mergeReports,
+  reportBreakdowns,
+  sourceLabel,
+  type AccountGrouping,
+  type SpendBreakdown,
+} from "./reports";
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
@@ -86,15 +92,17 @@ function breakdownTable(rows: SpendBreakdown[], total: number): string {
   }).join("")}</div>`;
 }
 
-function agentPanel(r: Report, idx: number): string {
+function agentPanel(r: Report, idx: number, combinedAccountTitle?: string): string {
   const stat = (label: string, val: string) => `<div class="stat"><span class="n">${val}</span><span class="l">${esc(label)}</span></div>`;
   const stats = `<div class="stats">${stat("est spend", fmtUsd(r.totalCost))}${stat("API calls", r.apiCalls.toLocaleString())}${stat("sessions", String(r.sessions))}</div>`;
   const parts: string[] = [stats];
   if (r.accounts.length > 1)
     parts.push(
       section(
-        "By account",
-        `same agent — summed above (${fmtUsd(r.totalCost)})`,
+        combinedAccountTitle ?? "By account",
+        combinedAccountTitle
+          ? `merged across machines (${fmtUsd(r.totalCost)})`
+          : `same service · summed above (${fmtUsd(r.totalCost)})`,
         dataTable(
           [{ head: "account", bar: true }, { head: "$", num: true }, { head: "calls", num: true }, { head: "sessions", num: true }],
           r.accounts.map((x) => [x.account, fmtUsd(x.cost), x.calls.toLocaleString(), String(x.sessions)]),
@@ -146,24 +154,37 @@ function agentPanel(r: Report, idx: number): string {
   return `<div class="panel${idx === 0 ? " active" : ""}" data-panel="${esc(r.source)}">${parts.join("")}</div>`;
 }
 
-export function renderHtml(reports: Report[], opts: { generatedAt: number; days: number }): string {
+export function renderHtml(
+  reports: Report[],
+  opts: { generatedAt: number; days: number; accountGrouping?: AccountGrouping },
+): string {
   const sources = reports.filter((r) => r.apiCalls > 0).sort((a, b) => b.totalCost - a.totalCost);
-  const combined = mergeReports(sources);
+  const accountGrouping = opts.accountGrouping ?? "service";
+  const accountTitle = accountGrouping === "service" ? "By service & account" : "By account email";
+  const combined = mergeReports(sources, "all", accountGrouping);
   const live = sources.length > 1 ? [combined, ...sources] : sources;
   const total = combined.totalCost;
   const since = combined.sinceTs;
   const sinceStr = since && isFinite(since) ? new Date(since).toISOString().slice(0, 10) : "?";
   const genStr = new Date(opts.generatedAt).toISOString().replace("T", " ").slice(0, 16) + " UTC";
-  const dimensions = reportBreakdowns(sources);
+  const dimensions = reportBreakdowns(sources, accountGrouping);
 
   const overview = [
     section("By machine", "where the usage happened", breakdownTable(dimensions.machines, total)),
-    section("By account", "same identity merged across machines and agents", breakdownTable(dimensions.accounts, total)),
+    section(
+      accountTitle,
+      accountGrouping === "service"
+        ? "same service and identity merged across machines"
+        : "same email merged across machines and services",
+      breakdownTable(dimensions.accounts, total),
+    ),
     section("By agent", "same agent merged across machines", breakdownTable(dimensions.agents, total)),
   ].join("");
 
   const tabs = live.map((r, i) => `<button class="tab${i === 0 ? " active" : ""}" data-tab="${esc(r.source)}">${esc(sourceLabel(r.source))} <em>${fmtUsd(r.totalCost)}</em></button>`).join("");
-  const panels = live.map((r, i) => agentPanel(r, i)).join("");
+  const panels = live
+    .map((r, i) => agentPanel(r, i, r.source === "all" ? accountTitle : undefined))
+    .join("");
 
   return `<!doctype html>
 <html lang="en"><head>

@@ -58,11 +58,18 @@ export interface SpendBreakdown {
   sessions: number;
 }
 
+export type AccountGrouping = "service" | "email";
+
 function sourceParts(source: string): { machine: string; agent: string } {
   const split = source.lastIndexOf(":");
   return split > 0
     ? { machine: source.slice(0, split), agent: source.slice(split + 1) }
     : { machine: "local", agent: source };
+}
+
+function accountLabel(source: string, account: string, grouping: AccountGrouping): string {
+  if (grouping === "email") return account;
+  return `${sourceLabel(sourceParts(source).agent)} · ${account}`;
 }
 
 function breakdown(
@@ -81,7 +88,7 @@ function breakdown(
   return [...rows.values()].sort((a, b) => b.cost - a.cost);
 }
 
-export function reportBreakdowns(reports: Report[]): {
+export function reportBreakdowns(reports: Report[], accountGrouping: AccountGrouping = "service"): {
   machines: SpendBreakdown[];
   agents: SpendBreakdown[];
   accounts: SpendBreakdown[];
@@ -89,8 +96,9 @@ export function reportBreakdowns(reports: Report[]): {
   const accounts = new Map<string, SpendBreakdown>();
   for (const report of reports) {
     for (const account of report.accounts) {
-      const row = accounts.get(account.account) ?? {
-        label: account.account,
+      const label = accountLabel(report.source, account.account, accountGrouping);
+      const row = accounts.get(label) ?? {
+        label,
         cost: 0,
         calls: 0,
         sessions: 0,
@@ -98,7 +106,7 @@ export function reportBreakdowns(reports: Report[]): {
       row.cost += account.cost;
       row.calls += account.calls;
       row.sessions += account.sessions;
-      accounts.set(account.account, row);
+      accounts.set(label, row);
     }
   }
   return {
@@ -159,7 +167,11 @@ function mergeNamed<T>(
   return [...result.values()].sort((a, b) => value(b) - value(a));
 }
 
-export function mergeReports(reports: Report[], source = "all"): Report {
+export function mergeReports(
+  reports: Report[],
+  source = "all",
+  accountGrouping: AccountGrouping = "service",
+): Report {
   const tools = mergeToolRows(reports, "tools");
   const bash = mergeToolRows(reports, "bash");
   const deep = mergeToolRows(reports, "deep");
@@ -202,7 +214,12 @@ export function mergeReports(reports: Report[], source = "all"): Report {
     (row) => row.cost,
   );
   const accounts = mergeNamed<AccountRow>(
-    reports.flatMap((report) => report.accounts),
+    reports.flatMap((report) =>
+      report.accounts.map((account) => ({
+        ...account,
+        account: accountLabel(report.source, account.account, accountGrouping),
+      })),
+    ),
     (row) => row.account,
     (current, row) => {
       current.cost += row.cost;
