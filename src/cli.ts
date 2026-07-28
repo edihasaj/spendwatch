@@ -135,11 +135,16 @@ function reportsFrom(built: Built, a: Args) {
   return reports;
 }
 
-function report(a: Args) {
+async function report(a: Args) {
   const built = a.inputs.length ? { statuses: [], readers: new Map() } : build(a);
   const reports = a.inputs.length ? loadReports(a.inputs) : labelReports(reportsFrom(built, a), a.label);
   if (a.json) {
-    console.log(JSON.stringify(reports, null, 2));
+    // Wait for slow consumers such as SSH to drain large reports before exit.
+    await new Promise<void>((resolve, reject) => {
+      process.stdout.write(JSON.stringify(reports, null, 2) + "\n", (error) =>
+        error ? reject(error) : resolve(),
+      );
+    });
     return;
   }
   const live = reports.filter((r) => r.apiCalls > 0);
@@ -206,4 +211,4 @@ function watch(a: Args) {
 
 const args = parseArgs(process.argv.slice(2));
 if (args.cmd === "watch") watch(args);
-else report(args);
+else await report(args);
