@@ -99,4 +99,29 @@ describe("portable reports", () => {
     });
     expect(emailHtml).toContain("By account email");
   });
+
+  test("shows stable account number chips per service", () => {
+    const studio = {
+      ...report("studio:codex"),
+      accounts: [
+        { account: "third@example.com", cost: 3, calls: 3, sessions: 1 },
+        { account: "first@example.com", cost: 1, calls: 1, sessions: 1 },
+      ],
+    };
+    const macbook = {
+      ...report("macbook:codex"),
+      accounts: [
+        { account: "second@example.com", cost: 2, calls: 2, sessions: 1 },
+        { account: "first@example.com", cost: 1, calls: 1, sessions: 1 },
+      ],
+    };
+
+    const html = renderHtml([studio, macbook], { generatedAt: 1, days: 30 });
+    expect(html).toContain('<span class="account-chip" aria-label="Account 1">Account 1</span>');
+    expect(html).toContain('<span class="account-chip" aria-label="Account 2">Account 2</span>');
+    expect(html).toContain('<span class="account-chip" aria-label="Account 3">Account 3</span>');
+    expect(html).toContain("Codex · first@example.com");
+    expect(html).toContain("Codex · second@example.com");
+    expect(html).toContain("Codex · third@example.com");
+  });
 });
