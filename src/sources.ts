@@ -6,7 +6,7 @@
 // from an optional config file (~/.config/spendwatch/config.json or
 // $SPENDWATCH_CONFIG); otherwise the default per-agent dir is auto-detected and
 // its account label resolved from local credentials (email).
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Event } from "./parse";
@@ -111,6 +111,28 @@ function safeReaddir(d: string): string[] {
   }
 }
 
+export function defaultCodexRoots(home = homedir()): RootCfg[] {
+  const names = safeReaddir(home)
+    .filter((name) => name === ".codex" || name.startsWith(".codex-"))
+    .sort((a, b) => (a === ".codex" ? -1 : b === ".codex" ? 1 : a.localeCompare(b)));
+  const seen = new Set<string>();
+  const roots: RootCfg[] = [];
+  for (const name of names) {
+    const path = join(home, name, "sessions");
+    if (!existsSync(path)) continue;
+    let canonical: string;
+    try {
+      canonical = realpathSync(path);
+    } catch {
+      continue;
+    }
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    roots.push({ agent: "codex", path });
+  }
+  return roots;
+}
+
 // ---- per-agent collectors ---------------------------------------------------
 function collectClaude(dir: string, account: string, sinceMs: number, project?: string): SourceFile[] {
   const files: SourceFile[] = [];
@@ -146,7 +168,7 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
 
   // Resolve roots per agent: config overrides defaults.
   const claudeRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "claude") : [{ agent: "claude", path: join(homedir(), ".claude", "projects") }];
-  const codexRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "codex") : [{ agent: "codex", path: join(homedir(), ".codex", "sessions") }];
+  const codexRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "codex") : defaultCodexRoots();
 
   if (want("claude")) {
     const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project));
