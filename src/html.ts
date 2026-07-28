@@ -321,7 +321,10 @@ footer b{color:var(--amber)}
 @keyframes grow{from{width:0}}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @media(max-width:900px){.overview{grid-template-columns:1fr}}
-@media(max-width:640px){.head-total{margin-left:0;text-align:left}}
+@media(max-width:640px){
+  .head-total{margin-left:0;text-align:left}
+  td .account-identity{align-items:flex-start;flex-direction:column;gap:4px;min-width:180px}
+}
 </style></head>
 <body><div class="wrap">
 <header>

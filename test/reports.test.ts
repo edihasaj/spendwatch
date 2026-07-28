@@ -123,5 +123,6 @@ describe("portable reports", () => {
     expect(html).toContain("Codex · first@example.com");
     expect(html).toContain("Codex · second@example.com");
     expect(html).toContain("Codex · third@example.com");
+    expect(html).toContain("td .account-identity{align-items:flex-start;flex-direction:column;gap:4px;min-width:180px}");
   });
 });
