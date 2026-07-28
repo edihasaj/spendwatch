@@ -7,7 +7,7 @@ import { Aggregator } from "./aggregate";
 import { writeSnapshot } from "./db";
 import { renderHtml } from "./html";
 import { renderBrief, renderOverview, renderReport } from "./render";
-import { labelReports, loadReports } from "./reports";
+import { labelReports, loadReports, type AccountGrouping } from "./reports";
 import { IncrementalReader } from "./scan";
 import { discover, type SourceStatus } from "./sources";
 
@@ -16,6 +16,7 @@ interface Args {
   days: number;
   project?: string;
   account?: string;
+  accountGrouping: AccountGrouping;
   agents?: Set<string>;
   top: number;
   json: boolean;
@@ -29,7 +30,17 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { cmd: "report", days: 30, top: 12, json: false, brief: false, open: false, inputs: [], interval: 2000 };
+  const a: Args = {
+    cmd: "report",
+    days: 30,
+    accountGrouping: "service",
+    top: 12,
+    json: false,
+    brief: false,
+    open: false,
+    inputs: [],
+    interval: 2000,
+  };
   const rest = [...argv];
   while (rest.length) {
     const x = rest.shift()!;
@@ -38,6 +49,13 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--project") a.project = rest.shift();
     else if (x === "--agent" || x === "--source") a.agents = new Set((rest.shift() ?? "").split(",").map((s) => s.trim()).filter(Boolean));
     else if (x === "--account") a.account = rest.shift();
+    else if (x === "--account-group") {
+      const grouping = rest.shift();
+      if (grouping !== "service" && grouping !== "email") {
+        throw new Error("--account-group must be service or email");
+      }
+      a.accountGrouping = grouping;
+    }
     else if (x === "--top") a.top = Number(rest.shift());
     else if (x === "--json") a.json = true;
     else if (x === "--brief") a.brief = true;
@@ -59,6 +77,7 @@ options:
   --days N          look back N days (default 30; watch default 1)
   --agent LIST      comma list: claude,codex,copilot,gemini (default all)
   --account STR     filter by account substring (email/label)
+  --account-group X group HTML accounts by service (default) or email
   --project STR     filter project by substring
   --top N           prompt rows to show (default 12)
   --brief           TL;DR only: total, biggest hog, top automate targets
@@ -164,7 +183,11 @@ async function report(a: Args) {
 
   if (a.html || a.open) {
     const out = resolve(a.html ?? "spendwatch-report.html");
-    writeFileSync(out, renderHtml(reports, { generatedAt: nowMs(), days: a.days }));
+    writeFileSync(out, renderHtml(reports, {
+      generatedAt: nowMs(),
+      days: a.days,
+      accountGrouping: a.accountGrouping,
+    }));
     process.stdout.write(`\n\x1b[2m→ HTML report written to ${out}\x1b[0m\n`);
     if (a.open) Bun.spawn(["open", out]);
   }
