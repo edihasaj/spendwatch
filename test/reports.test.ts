@@ -125,4 +125,17 @@ describe("portable reports", () => {
     expect(html).toContain("Codex · third@example.com");
     expect(html).toContain("td .account-identity{align-items:flex-start;flex-direction:column;gap:4px;min-width:180px}");
   });
+
+  test("uses the same application shell as the capacity view", () => {
+    const html = renderHtml([report("studio:codex")], {
+      generatedAt: 1,
+      days: 30,
+      limitsHref: "./",
+    });
+    expect(html).toContain('class="topbar"');
+    expect(html).toContain('class="nav"');
+    expect(html).toContain('href="./#setup">Add account</a>');
+    expect(html).toContain("Fragment+Mono");
+    expect(html).not.toContain("Know what you can");
+  });
 });
