@@ -6,13 +6,14 @@ import { resolve } from "node:path";
 import { Aggregator } from "./aggregate";
 import { writeSnapshot } from "./db";
 import { renderHtml } from "./html";
+import { loadCodexLimits, renderLimitsHtml, renderLimitsText } from "./limits";
 import { renderBrief, renderOverview, renderReport } from "./render";
 import { labelReports, loadReports, type AccountGrouping } from "./reports";
 import { IncrementalReader } from "./scan";
 import { discover, type SourceStatus } from "./sources";
 
 interface Args {
-  cmd: "report" | "watch";
+  cmd: "report" | "watch" | "limits";
   days: number;
   project?: string;
   account?: string;
@@ -27,6 +28,8 @@ interface Args {
   inputs: string[];
   label?: string;
   interval: number;
+  limitsHref?: string;
+  spendHref?: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -44,7 +47,7 @@ function parseArgs(argv: string[]): Args {
   const rest = [...argv];
   while (rest.length) {
     const x = rest.shift()!;
-    if (x === "report" || x === "watch") a.cmd = x;
+    if (x === "report" || x === "watch" || x === "limits") a.cmd = x;
     else if (x === "--days") a.days = Number(rest.shift());
     else if (x === "--project") a.project = rest.shift();
     else if (x === "--agent" || x === "--source") a.agents = new Set((rest.shift() ?? "").split(",").map((s) => s.trim()).filter(Boolean));
@@ -65,6 +68,8 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--input") a.inputs.push(...(rest.shift() ?? "").split(",").filter(Boolean));
     else if (x === "--label" || x === "--machine") a.label = rest.shift();
     else if (x === "--interval") a.interval = Number(rest.shift());
+    else if (x === "--limits-href") a.limitsHref = rest.shift();
+    else if (x === "--spend-href") a.spendHref = rest.shift();
     else if (x === "--help" || x === "-h") {
       console.log(`spendwatch — token/$ leaderboards across coding agents
 
@@ -72,6 +77,7 @@ usage: spendwatch [report|watch] [options]
 
   report            aggregate past sessions (default)
   watch             live leaderboard, refreshes as sessions write
+  limits            render Codex account quota input as a planning dashboard
 
 options:
   --days N          look back N days (default 30; watch default 1)
@@ -88,6 +94,8 @@ options:
   --input PATHS     render exported report JSON instead of local logs (repeatable or comma-separated)
   --label STR       prefix local report tabs with a machine/site label
   --interval MS     watch poll interval (default 2000)
+  --limits-href URL add a Capacity link to the spend report
+  --spend-href URL  set the Spend detail link in the limits dashboard
 
 sources:
   claude   ~/.claude/projects/**/*.jsonl        (token usage ✓)
@@ -187,6 +195,7 @@ async function report(a: Args) {
       generatedAt: nowMs(),
       days: a.days,
       accountGrouping: a.accountGrouping,
+      limitsHref: a.limitsHref,
     }));
     process.stdout.write(`\n\x1b[2m→ HTML report written to ${out}\x1b[0m\n`);
     if (a.open) Bun.spawn(["open", out]);
@@ -196,6 +205,21 @@ async function report(a: Args) {
     const out = resolve(a.sqlite);
     const { runId, rows } = writeSnapshot(out, reports, { generatedAt: nowMs(), days: a.days });
     process.stdout.write(`\x1b[2m→ SQLite snapshot run #${runId} (${rows} rows) appended to ${out}\x1b[0m\n`);
+  }
+}
+
+async function limits(a: Args) {
+  if (!a.inputs.length) throw new Error("limits requires at least one --input JSON path");
+  const accounts = loadCodexLimits(a.inputs);
+  if (a.json) {
+    process.stdout.write(JSON.stringify(accounts, null, 2) + "\n");
+  } else {
+    process.stdout.write(renderLimitsText(accounts));
+  }
+  if (a.html) {
+    const out = resolve(a.html);
+    writeFileSync(out, renderLimitsHtml(accounts, { generatedAt: nowMs(), spendHref: a.spendHref }));
+    process.stdout.write(`\x1b[2m→ Limits HTML written to ${out}\x1b[0m\n`);
   }
 }
 
@@ -234,4 +258,5 @@ function watch(a: Args) {
 
 const args = parseArgs(process.argv.slice(2));
 if (args.cmd === "watch") watch(args);
+else if (args.cmd === "limits") await limits(args);
 else await report(args);

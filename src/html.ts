@@ -204,7 +204,7 @@ function agentPanel(
 
 export function renderHtml(
   reports: Report[],
-  opts: { generatedAt: number; days: number; accountGrouping?: AccountGrouping },
+  opts: { generatedAt: number; days: number; accountGrouping?: AccountGrouping; limitsHref?: string },
 ): string {
   const sources = reports.filter((r) => r.apiCalls > 0).sort((a, b) => b.totalCost - a.totalCost);
   const accountGrouping = opts.accountGrouping ?? "service";
@@ -240,36 +240,33 @@ export function renderHtml(
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>spendwatch — agent spend report</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fragment+Mono:ital@0;1&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#0c0d11;--panel:#13151b;--panel2:#171a21;--line:#23262f;--ink:#e9ebf0;--dim:#8b909c;
-  --amber:#ffb454;--amber2:#f0883e;--ember:#e85d4e;--green:#86e07a;--violet:#9a7bff;
+  --bg:#0a0c0f;--panel:#11151a;--panel2:#151a20;--line:#29313a;--ink:#f2f5f7;--dim:#89939d;
+  --amber:#68d5dc;--amber2:#2aa7b3;--ember:#f27b70;--green:#75d598;--violet:#8ea9ff;
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:"JetBrains Mono",ui-monospace,monospace;font-size:13px;line-height:1.5;
-  background-image:radial-gradient(1100px 520px at 12% -8%,rgba(255,180,84,.10),transparent 60%),radial-gradient(900px 480px at 100% 0%,rgba(154,123,255,.08),transparent 55%);}
-.wrap{max-width:1120px;margin:0 auto;padding:40px 24px 80px}
-h1,h2,h3{font-family:"Space Grotesk",sans-serif;letter-spacing:-.02em}
-header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px 28px;margin-bottom:30px;
-  border-bottom:1px solid var(--line);padding-bottom:26px}
-.brand{font-size:30px;font-weight:700;line-height:1}
-.brand b{color:var(--amber)}
-.brand .tag{display:block;font-family:"JetBrains Mono";font-size:12px;color:var(--dim);font-weight:400;margin-top:8px;letter-spacing:0}
-.head-total{margin-left:auto;text-align:right}
-.head-total .big{font-family:"Space Grotesk";font-size:38px;font-weight:700;color:var(--amber);line-height:1}
-.head-total .meta{color:var(--dim);font-size:12px;margin-top:6px}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-family:"Manrope",sans-serif;font-size:13px;line-height:1.5;
+  background-image:linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px),radial-gradient(800px 500px at 50% -180px,rgba(104,213,220,.13),transparent 70%);background-size:38px 38px,38px 38px,auto}
+.wrap{width:min(1120px,calc(100% - 36px));margin:0 auto;padding:30px 0 80px}
+h1,h2,h3{font-family:"Manrope",sans-serif;letter-spacing:-.025em}
+.topbar{display:flex;align-items:center;gap:20px;padding-bottom:26px;border-bottom:1px solid var(--line)}
+.brand{font-family:"Fragment Mono",monospace;font-size:14px;letter-spacing:-.04em}.brand b{color:var(--amber);font-weight:400}
+.nav{display:flex;gap:5px;margin-left:18px;padding:4px;background:#0d1014;border:1px solid #20262d;border-radius:9px}.nav a{padding:7px 11px;border-radius:6px;color:var(--dim);text-decoration:none;font-size:12px;font-weight:600}.nav a.active{color:var(--ink);background:var(--panel2)}
+.top-actions{margin-left:auto;display:flex;gap:8px}.button{appearance:none;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:9px 12px;font:600 12px "Manrope",sans-serif;cursor:pointer;text-decoration:none;transition:border-color .15s,transform .15s}.button:hover{border-color:#52606d;transform:translateY(-1px)}.button.primary{border-color:rgba(104,213,220,.5);background:rgba(104,213,220,.09);color:#bdf5f7}
+.report-hero{display:grid;grid-template-columns:1fr auto;gap:28px;align-items:end;padding:44px 0 30px}.eyebrow{margin:0 0 8px;color:var(--amber);font:12px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.12em}.report-hero h1{font-size:clamp(34px,6vw,58px);line-height:.98;letter-spacing:-.055em;margin:0}.report-hero h1 span{color:#75808a}.hero-copy{margin:16px 0 0;color:var(--dim);font-size:14px;max-width:680px}.head-total{text-align:right;padding-bottom:4px}.head-total .big{font:24px "Fragment Mono",monospace;color:var(--amber)}.head-total .meta{color:var(--dim);font:10px "Fragment Mono",monospace;margin-top:6px;max-width:330px}
 .overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-bottom:30px}
 .overview .block{margin-top:0;min-width:0}
-.break-list{height:calc(100% - 27px);background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.break-list{height:calc(100% - 27px);background:linear-gradient(145deg,rgba(21,26,32,.98),rgba(15,19,24,.98));border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .break-row{padding:12px 14px;border-bottom:1px solid var(--line);animation:rise .5s both;animation-delay:calc(var(--i)*35ms)}
 .break-row:last-child{border-bottom:none}
 .break-main{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
 .break-name{font-weight:500;min-width:0;overflow-wrap:anywhere}
 .account-identity{display:inline-flex;align-items:center;gap:8px;min-width:0;max-width:100%}
-.account-chip{flex:none;padding:2px 7px;border:1px solid rgba(134,224,122,.32);border-radius:999px;background:rgba(134,224,122,.08);
-  color:var(--green);font-size:9px;font-weight:700;line-height:1.5;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+.account-chip{flex:none;padding:2px 7px;border:1px solid rgba(104,213,220,.32);border-radius:6px;background:rgba(104,213,220,.08);
+  color:var(--amber);font:9px "Fragment Mono",monospace;line-height:1.5;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
 .account-name{min-width:0;overflow-wrap:anywhere}
 .break-value{flex:none;font-variant-numeric:tabular-nums}
 .break-value em{color:var(--dim);font-style:normal}
@@ -277,7 +274,7 @@ header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px 28px;margin-bot
 .break-track span{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,var(--amber2),var(--amber));animation:grow 1s cubic-bezier(.2,.8,.2,1) both}
 .break-meta{color:var(--dim);font-size:10px}
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:22px}
-.tab{font-family:"JetBrains Mono";font-size:13px;color:var(--dim);background:var(--panel);border:1px solid var(--line);
+.tab{font-family:"Fragment Mono";font-size:12px;color:var(--dim);background:var(--panel);border:1px solid var(--line);
   padding:9px 15px;border-radius:10px;cursor:pointer;transition:.15s}
 .tab em{font-style:normal;color:var(--amber);margin-left:5px}
 .tab:hover{color:var(--ink);border-color:#33414f}
@@ -285,13 +282,13 @@ header{display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px 28px;margin-bot
 .panel{display:none}.panel.active{display:block}
 .stats{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px}
 .stat{flex:1;min-width:150px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
-.stat .n{display:block;font-family:"Space Grotesk";font-size:26px;font-weight:700}
+.stat .n{display:block;font-family:"Fragment Mono";font-size:24px;font-weight:400}
 .stat .l{display:block;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.12em;margin-top:4px}
 .block{margin-top:26px;min-width:0;max-width:100%}
 .block h3{font-size:15px;margin:0 0 12px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
-.block h3 .sub{font-family:"JetBrains Mono";font-size:11px;color:var(--dim);font-weight:400;letter-spacing:0}
+.block h3 .sub{font-family:"Fragment Mono";font-size:10px;color:var(--dim);font-weight:400;letter-spacing:0}
 .section-body{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
-table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-family:"Fragment Mono",monospace;font-size:11px}
 thead th{text-align:left;font-weight:500;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.08em;
   padding:11px 14px;border-bottom:1px solid var(--line);background:var(--panel2)}
 th.num,td.num{text-align:right;font-variant-numeric:tabular-nums}
@@ -320,17 +317,16 @@ footer{margin-top:48px;color:var(--dim);font-size:11px;border-top:1px solid var(
 footer b{color:var(--amber)}
 @keyframes grow{from{width:0}}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-@media(max-width:900px){.overview{grid-template-columns:1fr}}
+@media(max-width:900px){.overview{grid-template-columns:1fr}.report-hero{grid-template-columns:1fr}.head-total{text-align:left}}
 @media(max-width:640px){
-  .head-total{margin-left:0;text-align:left}
+  .wrap{width:min(100% - 24px,1120px);padding-top:16px}.topbar{flex-wrap:wrap}.nav{order:3;width:100%;margin:0}.nav a{flex:1;text-align:center}.top-actions{margin-left:auto}.report-hero{padding-top:34px}
   td .account-identity{align-items:flex-start;flex-direction:column;gap:4px;min-width:180px}
 }
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 </style></head>
 <body><div class="wrap">
-<header>
-  <div><div class="brand"><b>spend</b>watch<span class="tag">coding-agent token &amp; cost report · last ${opts.days}d · since ${sinceStr}</span></div></div>
-  <div class="head-total"><div class="big">${fmtUsd(total)}</div><div class="meta">est across ${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · generated ${esc(genStr)}</div></div>
-</header>
+<div class="topbar"><div class="brand"><b>spend</b>watch</div>${opts.limitsHref ? `<nav class="nav"><a href="${esc(opts.limitsHref)}">Capacity</a><a class="active" href="./spend.html">Spend detail</a></nav>` : ""}<div class="top-actions"><button class="button" id="refresh">Refresh</button>${opts.limitsHref ? `<a class="button primary" href="${esc(opts.limitsHref)}#setup">Add account</a>` : ""}</div></div>
+<section class="report-hero"><div><p class="eyebrow">Spend detail</p><h1>Understand where <span>usage goes.</span></h1><p class="hero-copy">Token and API-equivalent cost detail across every machine, account, agent, tool, and project for the last ${opts.days} days.</p></div><div class="head-total"><div class="big">${fmtUsd(total)} estimated</div><div class="meta">${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · since ${esc(sinceStr)} · generated ${esc(genStr)}</div></div></section>
 
 <div class="overview">${overview}</div>
 
@@ -344,6 +340,7 @@ ${panels}
 </div>
 <script>
 const tabs=[...document.querySelectorAll('.tab')],panels=[...document.querySelectorAll('.panel')];
+document.querySelector('#refresh').addEventListener('click',()=>location.reload());
 tabs.forEach(t=>t.addEventListener('click',()=>{
   const k=t.dataset.tab;
   tabs.forEach(x=>x.classList.toggle('active',x===t));
