@@ -38,7 +38,9 @@ CREATE TABLE IF NOT EXISTS capacity_account_history (
   copilot_chat_unlimited INTEGER,
   copilot_completions_unlimited INTEGER,
   copilot_premium_unlimited INTEGER,
-  copilot_premium_credits_used REAL
+  copilot_premium_credits_used REAL,
+  api_balance_available INTEGER,
+  api_balances_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_capacity_account_history_time
   ON capacity_account_history(sampled_at_ms);
@@ -117,6 +119,15 @@ function openCapacityDatabase(path: string): Database {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA busy_timeout = 10000;");
   db.exec(CAPACITY_SCHEMA);
+  const accountColumns = new Set(db.query<{ name: string }, []>(
+    "PRAGMA table_info(capacity_account_history)",
+  ).all().map((column) => column.name));
+  if (!accountColumns.has("api_balance_available")) {
+    db.exec("ALTER TABLE capacity_account_history ADD COLUMN api_balance_available INTEGER");
+  }
+  if (!accountColumns.has("api_balances_json")) {
+    db.exec("ALTER TABLE capacity_account_history ADD COLUMN api_balances_json TEXT");
+  }
   return db;
 }
 
@@ -162,8 +173,8 @@ export function writeCapacitySnapshot(
       sample_key, provider, account, sampled_at_ms, observed_at, plan,
       organization, devices, copilot_chat_unlimited,
       copilot_completions_unlimited, copilot_premium_unlimited,
-      copilot_premium_credits_used
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      copilot_premium_credits_used, api_balance_available, api_balances_json
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
   const insertHistory = db.prepare(`
     INSERT OR IGNORE INTO capacity_history(
@@ -192,6 +203,8 @@ export function writeCapacitySnapshot(
         account.copilot ? Number(account.copilot.completionsUnlimited) : null,
         account.copilot ? Number(account.copilot.premiumUnlimited) : null,
         account.copilot?.premiumCreditsUsed ?? null,
+        account.route?.available === undefined ? null : Number(account.route.available),
+        account.route ? JSON.stringify(account.route.balances) : null,
       );
       rows += result.changes;
       if (account.session) rows += Number(insertWindow(insertHistory, { provider: account.provider, account: account.email, devices: account.devices }, "session", account.session, sampledAt, observedAt, "live"));
