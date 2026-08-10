@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS capacity_account_history (
   copilot_completions_unlimited INTEGER,
   copilot_premium_unlimited INTEGER,
   copilot_premium_credits_used REAL,
+  copilot_overage_permitted INTEGER,
+  copilot_token_based_billing INTEGER,
+  copilot_resets_at_ms INTEGER,
+  copilot_seat_assigned_at_ms INTEGER,
   api_balance_available INTEGER,
   api_balances_json TEXT
 );
@@ -128,6 +132,18 @@ function openCapacityDatabase(path: string): Database {
   if (!accountColumns.has("api_balances_json")) {
     db.exec("ALTER TABLE capacity_account_history ADD COLUMN api_balances_json TEXT");
   }
+  if (!accountColumns.has("copilot_overage_permitted")) {
+    db.exec("ALTER TABLE capacity_account_history ADD COLUMN copilot_overage_permitted INTEGER");
+  }
+  if (!accountColumns.has("copilot_token_based_billing")) {
+    db.exec("ALTER TABLE capacity_account_history ADD COLUMN copilot_token_based_billing INTEGER");
+  }
+  if (!accountColumns.has("copilot_resets_at_ms")) {
+    db.exec("ALTER TABLE capacity_account_history ADD COLUMN copilot_resets_at_ms INTEGER");
+  }
+  if (!accountColumns.has("copilot_seat_assigned_at_ms")) {
+    db.exec("ALTER TABLE capacity_account_history ADD COLUMN copilot_seat_assigned_at_ms INTEGER");
+  }
   return db;
 }
 
@@ -173,8 +189,10 @@ export function writeCapacitySnapshot(
       sample_key, provider, account, sampled_at_ms, observed_at, plan,
       organization, devices, copilot_chat_unlimited,
       copilot_completions_unlimited, copilot_premium_unlimited,
-      copilot_premium_credits_used, api_balance_available, api_balances_json
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      copilot_premium_credits_used, copilot_overage_permitted,
+      copilot_token_based_billing, copilot_resets_at_ms,
+      copilot_seat_assigned_at_ms, api_balance_available, api_balances_json
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
   const insertHistory = db.prepare(`
     INSERT OR IGNORE INTO capacity_history(
@@ -203,6 +221,10 @@ export function writeCapacitySnapshot(
         account.copilot ? Number(account.copilot.completionsUnlimited) : null,
         account.copilot ? Number(account.copilot.premiumUnlimited) : null,
         account.copilot?.premiumCreditsUsed ?? null,
+        account.copilot ? Number(account.copilot.overagePermitted) : null,
+        account.copilot ? Number(account.copilot.tokenBasedBilling) : null,
+        account.copilot?.resetsAt ? parsedTime(account.copilot.resetsAt) ?? null : null,
+        account.copilot?.seatAssignedAt ? parsedTime(account.copilot.seatAssignedAt) ?? null : null,
         account.route?.available === undefined ? null : Number(account.route.available),
         account.route ? JSON.stringify(account.route.balances) : null,
       );
