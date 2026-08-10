@@ -137,6 +137,9 @@ describe("portable reports", () => {
     expect(html).toContain("History");
     expect(html).toContain('href="./#setup">Add account</a>');
     expect(html).toContain("Fragment+Mono");
+    expect(html).toContain('class="panels"');
+    expect(html).toContain("refreshValues");
+    expect(html).not.toContain("location.reload()");
     expect(html).not.toContain("Know what you can");
   });
 });

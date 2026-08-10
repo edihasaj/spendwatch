@@ -331,7 +331,7 @@ footer b{color:var(--amber)}
 <div class="overview">${overview}</div>
 
 <div class="tabs">${tabs}</div>
-${panels}
+<div class="panels">${panels}</div>
 
 <footer>
 <b>$</b> from real per-request usage fields. Prices/MTok — Fable $10/$50, Opus $5/$25, Sonnet $3/$15, Haiku $1/$5, gpt-5 tier $1.25/$10 (Codex is largely subscription-billed, so its $ is an estimate). Cache: write 1.25×/2×, read 0.1×.<br>
@@ -339,20 +339,11 @@ ${panels}
 </footer>
 </div>
 <script>
-const tabs=[...document.querySelectorAll('.tab')],panels=[...document.querySelectorAll('.panel')];
-document.querySelector('#refresh').addEventListener('click',()=>location.reload());
-tabs.forEach(t=>t.addEventListener('click',()=>{
-  const k=t.dataset.tab;
-  tabs.forEach(x=>x.classList.toggle('active',x===t));
-  panels.forEach(p=>p.classList.toggle('active',p.dataset.panel===k));
-}));
-// drill-down: click a tool/command row to reveal its actual invocations
-document.querySelectorAll('tr.has-drill').forEach(row=>{
-  row.addEventListener('click',()=>{
-    const drill=row.nextElementSibling;
-    if(drill&&drill.classList.contains('drill')){row.classList.toggle('open');drill.classList.toggle('open');}
-  });
-});
+let tabs=[],panels=[],refreshing=false;
+const bindInteractions=()=>{tabs=[...document.querySelectorAll('.tab')];panels=[...document.querySelectorAll('.panel')];tabs.forEach(t=>t.addEventListener('click',()=>{const k=t.dataset.tab;tabs.forEach(x=>x.classList.toggle('active',x===t));panels.forEach(p=>p.classList.toggle('active',p.dataset.panel===k))}));document.querySelectorAll('tr.has-drill').forEach(row=>row.addEventListener('click',()=>{const drill=row.nextElementSibling;if(drill&&drill.classList.contains('drill')){row.classList.toggle('open');drill.classList.toggle('open')}}))};
+const refreshButton=document.querySelector('#refresh');
+const refreshValues=async()=>{if(refreshing)return;refreshing=true;refreshButton.setAttribute('aria-busy','true');refreshButton.textContent='Syncing';const active=document.querySelector('.tab.active')?.dataset.tab,expanded=new Map([...document.querySelectorAll('.panel')].map(panel=>[panel.dataset.panel,[...panel.querySelectorAll('tr.has-drill')].map((row,index)=>row.classList.contains('open')?index:-1).filter(index=>index>=0)]));try{const url=new URL(location.href);url.hash='';url.searchParams.set('_',Date.now().toString());const response=await fetch(url,{cache:'no-store',headers:{Accept:'text/html'}});if(!response.ok)throw new Error('HTTP '+response.status);const next=new DOMParser().parseFromString(await response.text(),'text/html');for(const selector of ['.report-hero','.overview','.tabs','.panels']){const currentElement=document.querySelector(selector),nextElement=next.querySelector(selector);if(currentElement&&nextElement)currentElement.innerHTML=nextElement.innerHTML}bindInteractions();const selected=tabs.find(tab=>tab.dataset.tab===active)||tabs[0];if(selected)selected.click();for(const panel of panels){for(const index of expanded.get(panel.dataset.panel)||[]){const row=panel.querySelectorAll('tr.has-drill')[index];if(row){row.classList.add('open');const drill=row.nextElementSibling;if(drill&&drill.classList.contains('drill'))drill.classList.add('open')}}}refreshButton.textContent='Updated';refreshButton.title='Values updated without reloading the page'}catch(error){refreshButton.textContent='Retry';refreshButton.title='Value refresh failed: '+String(error)}finally{refreshing=false;refreshButton.removeAttribute('aria-busy')}};
+refreshButton.addEventListener('click',refreshValues);bindInteractions();
 </script>
 </body></html>`;
 }
