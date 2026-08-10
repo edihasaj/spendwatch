@@ -23,6 +23,7 @@ describe("capacity history", () => {
     expect(html).toContain('id="stored-rows"');
     expect(html).toContain("setInterval(refreshValues,60000)");
     expect(html).toContain("values 60s");
+    expect(html.indexOf("Spend detail")).toBeLessThan(html.indexOf(">History</a>"));
     expect(html).not.toContain('http-equiv="refresh"');
     expect(html).not.toContain("location.reload()");
   });

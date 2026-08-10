@@ -135,6 +135,7 @@ describe("portable reports", () => {
     expect(html).toContain('class="topbar"');
     expect(html).toContain('class="nav"');
     expect(html).toContain("History");
+    expect(html.indexOf("Spend detail")).toBeLessThan(html.indexOf(">History</a>"));
     expect(html).toContain('href="./#setup">Add account</a>');
     expect(html).toContain("Fragment+Mono");
     expect(html).toContain('class="panels"');
