@@ -2,7 +2,7 @@
 // spendwatch — across coding agents (Claude Code, Codex, …), find which tool
 // calls and prompts spend the most tokens/$, so you know what to automate/fix.
 import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { Aggregator } from "./aggregate";
 import { importCapacityHistory, loadCapacityHistory, writeCapacitySnapshot } from "./capacity-db";
 import { exportCapacityHistory } from "./capacity-export";
@@ -244,6 +244,7 @@ async function limits(a: Args) {
     if (a.historyHtml) {
       const historyOut = resolve(a.historyHtml);
       writeFileSync(historyOut, renderHistoryHtml(loadCapacityHistory(out), {
+        capacityHref: a.html ? relative(dirname(historyOut), resolve(a.html)) || "./" : "./",
         spendHref: a.spendHref,
       }));
       process.stdout.write(`\x1b[2m→ History HTML written to ${historyOut}\x1b[0m\n`);

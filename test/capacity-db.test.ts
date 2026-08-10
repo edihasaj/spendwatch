@@ -42,10 +42,11 @@ describe("capacity history", () => {
     expect(history.firstSampleAt).toBe(Date.parse("2026-06-12T10:00:00Z"));
     expect(history.series.map((series) => series.kind).sort()).toEqual(["session", "weekly"]);
     expect(history.series.every((series) => series.sampleCount === 2)).toBe(true);
-    const html = renderHistoryHtml(history);
+    const html = renderHistoryHtml(history, { capacityHref: "capacity.html" });
     expect(html).toContain("Past month");
     expect(html).toContain("Raw history remains append-only in SQLite");
     expect(html).toContain("work@example.com");
+    expect(html).toContain('href="capacity.html">Capacity</a>');
   });
 
   test("stores Copilot credit history", () => {
