@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,5 +69,33 @@ describe("capacity history", () => {
     const history = loadCapacityHistory(db, Date.parse("2026-08-10T00:00:00Z"));
     expect(history.series[0]?.kind).toBe("credits");
     expect(history.series[0]?.points[0]?.value).toBe(1234);
+  });
+
+  test("stores API balances in account history", () => {
+    const dir = mkdtempSync(join(tmpdir(), "spendwatch-balance-"));
+    const dbPath = join(dir, "history.db");
+    writeCapacitySnapshot(dbPath, [{
+      provider: "lokai",
+      email: "DeepSeek V4 Flash",
+      plan: "DeepSeek API",
+      devices: ["studio"],
+      updatedAt: "2026-08-09T20:00:00Z",
+      route: {
+        ready: true,
+        detail: "LiteLLM · 1M context",
+        available: true,
+        balances: [{ currency: "USD", total: 4.6, granted: 0, toppedUp: 4.6 }],
+      },
+    }], { collectedAt: Date.parse("2026-08-09T20:00:00Z") });
+    const db = new Database(dbPath, { readonly: true });
+    const row = db.query<{ available: number; balances: string }, []>(`
+      SELECT api_balance_available AS available, api_balances_json AS balances
+      FROM capacity_account_history
+    `).get();
+    db.close();
+    expect(row?.available).toBe(1);
+    expect(JSON.parse(row?.balances ?? "[]")).toEqual([
+      { currency: "USD", total: 4.6, granted: 0, toppedUp: 4.6 },
+    ]);
   });
 });
