@@ -3,6 +3,7 @@
 // calls and prompts spend the most tokens/$, so you know what to automate/fix.
 import { writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
+import { addAccount, type AccountAddOptions, type AccountProvider } from "./accounts";
 import { Aggregator } from "./aggregate";
 import { importCapacityHistory, loadCapacityHistory, writeCapacitySnapshot } from "./capacity-db";
 import { exportCapacityHistory } from "./capacity-export";
@@ -36,6 +37,54 @@ interface Args {
   historyHref?: string;
   historyHtml?: string;
   historyInputs: string[];
+}
+
+function accountHelp(): string {
+  return `spendwatch account add PROVIDER [options]
+
+Connect an account on this trusted Mac using the provider's official login.
+
+  spendwatch account add codex --name work
+  spendwatch account add codex --name work --device-auth
+  spendwatch account add codex --name api --api-key-env OPENAI_API_KEY
+  spendwatch account add claude --name work
+  spendwatch account add copilot
+
+providers:
+  codex      ChatGPT browser OAuth (default), device OAuth, or metered API key
+  claude     Claude browser OAuth in an isolated config directory
+  copilot    GitHub browser OAuth; GitHub CLI manages the account list
+
+options:
+  --name NAME       isolated profile name (required for Codex and Claude)
+  --device-auth     use Codex device OAuth instead of local browser callback
+  --api-key-env VAR read a Codex API key from VAR and pass it over stdin
+
+Credentials remain in the provider's local credential files. Spendwatch never
+copies OAuth tokens into its dashboard or database.`;
+}
+
+function parseAccountArgs(argv: string[]): AccountAddOptions | undefined {
+  if (argv[0] !== "account") return undefined;
+  if (argv.includes("--help") || argv.includes("-h")) {
+    console.log(accountHelp());
+    process.exit(0);
+  }
+  if (argv[1] !== "add") throw new Error("usage: spendwatch account add PROVIDER [options]");
+  const provider = argv[2] as AccountProvider | undefined;
+  if (provider !== "codex" && provider !== "claude" && provider !== "copilot") {
+    throw new Error("provider must be codex, claude, or copilot");
+  }
+  const options: AccountAddOptions = { provider };
+  const rest = argv.slice(3);
+  while (rest.length) {
+    const arg = rest.shift()!;
+    if (arg === "--name") options.name = rest.shift();
+    else if (arg === "--device-auth") options.deviceAuth = true;
+    else if (arg === "--api-key-env") options.apiKeyEnv = rest.shift();
+    else throw new Error(`unknown account option: ${arg}`);
+  }
+  return options;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -84,12 +133,14 @@ function parseArgs(argv: string[]): Args {
       console.log(`spendwatch — token/$ leaderboards across coding agents
 
 usage: spendwatch [report|watch|limits|capacity-history-export] [options]
+       spendwatch account add PROVIDER [options]
 
   report            aggregate past sessions (default)
   watch             live leaderboard, refreshes as sessions write
   limits            render Codex account quota input as a planning dashboard
   capacity-history-export
                     export recoverable Codex quota history as sanitized JSONL
+  account add       connect Codex, Claude, or Copilot using official auth
 
 options:
   --days N          look back N days (default 30; watch default 1)
@@ -297,7 +348,13 @@ function watch(a: Args) {
   }, a.interval);
 }
 
-const args = parseArgs(process.argv.slice(2));
+const argv = process.argv.slice(2);
+const accountArgs = parseAccountArgs(argv);
+if (accountArgs) {
+  console.log(await addAccount(accountArgs));
+  process.exit(0);
+}
+const args = parseArgs(argv);
 if (args.cmd === "watch") watch(args);
 else if (args.cmd === "limits") await limits(args);
 else if (args.cmd === "capacity-history-export") await capacityHistoryExport(args);
