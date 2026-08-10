@@ -204,7 +204,7 @@ function agentPanel(
 
 export function renderHtml(
   reports: Report[],
-  opts: { generatedAt: number; days: number; accountGrouping?: AccountGrouping; limitsHref?: string },
+  opts: { generatedAt: number; days: number; accountGrouping?: AccountGrouping; limitsHref?: string; historyHref?: string },
 ): string {
   const sources = reports.filter((r) => r.apiCalls > 0).sort((a, b) => b.totalCost - a.totalCost);
   const accountGrouping = opts.accountGrouping ?? "service";
@@ -325,7 +325,7 @@ footer b{color:var(--amber)}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 </style></head>
 <body><div class="wrap">
-<div class="topbar"><div class="brand"><b>spend</b>watch</div>${opts.limitsHref ? `<nav class="nav"><a href="${esc(opts.limitsHref)}">Capacity</a><a class="active" href="./spend.html">Spend detail</a></nav>` : ""}<div class="top-actions"><button class="button" id="refresh">Refresh</button>${opts.limitsHref ? `<a class="button primary" href="${esc(opts.limitsHref)}#setup">Add account</a>` : ""}</div></div>
+<div class="topbar"><div class="brand"><b>spend</b>watch</div>${opts.limitsHref ? `<nav class="nav"><a href="${esc(opts.limitsHref)}">Capacity</a><a href="${esc(opts.historyHref ?? "history.html")}">History</a><a class="active" href="./spend.html">Spend detail</a></nav>` : ""}<div class="top-actions"><button class="button" id="refresh">Refresh</button>${opts.limitsHref ? `<a class="button primary" href="${esc(opts.limitsHref)}#setup">Add account</a>` : ""}</div></div>
 <section class="report-hero"><div><p class="eyebrow">Spend detail</p><h1>Understand where <span>usage goes.</span></h1><p class="hero-copy">Token and API-equivalent cost detail across every machine, account, agent, tool, and project for the last ${opts.days} days.</p></div><div class="head-total"><div class="big">${fmtUsd(total)} estimated</div><div class="meta">${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · since ${esc(sinceStr)} · generated ${esc(genStr)}</div></div></section>
 
 <div class="overview">${overview}</div>

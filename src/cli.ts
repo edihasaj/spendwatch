@@ -4,7 +4,10 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Aggregator } from "./aggregate";
+import { importCapacityHistory, loadCapacityHistory, writeCapacitySnapshot } from "./capacity-db";
+import { exportCapacityHistory } from "./capacity-export";
 import { writeSnapshot } from "./db";
+import { renderHistoryHtml } from "./history";
 import { renderHtml } from "./html";
 import { loadCodexLimits, renderLimitsHtml, renderLimitsText } from "./limits";
 import { renderBrief, renderOverview, renderReport } from "./render";
@@ -13,7 +16,7 @@ import { IncrementalReader } from "./scan";
 import { discover, type SourceStatus } from "./sources";
 
 interface Args {
-  cmd: "report" | "watch" | "limits";
+  cmd: "report" | "watch" | "limits" | "capacity-history-export";
   days: number;
   project?: string;
   account?: string;
@@ -30,6 +33,9 @@ interface Args {
   interval: number;
   limitsHref?: string;
   spendHref?: string;
+  historyHref?: string;
+  historyHtml?: string;
+  historyInputs: string[];
 }
 
 function parseArgs(argv: string[]): Args {
@@ -42,12 +48,13 @@ function parseArgs(argv: string[]): Args {
     brief: false,
     open: false,
     inputs: [],
+    historyInputs: [],
     interval: 2000,
   };
   const rest = [...argv];
   while (rest.length) {
     const x = rest.shift()!;
-    if (x === "report" || x === "watch" || x === "limits") a.cmd = x;
+    if (x === "report" || x === "watch" || x === "limits" || x === "capacity-history-export") a.cmd = x;
     else if (x === "--days") a.days = Number(rest.shift());
     else if (x === "--project") a.project = rest.shift();
     else if (x === "--agent" || x === "--source") a.agents = new Set((rest.shift() ?? "").split(",").map((s) => s.trim()).filter(Boolean));
@@ -70,14 +77,19 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--interval") a.interval = Number(rest.shift());
     else if (x === "--limits-href") a.limitsHref = rest.shift();
     else if (x === "--spend-href") a.spendHref = rest.shift();
+    else if (x === "--history-href") a.historyHref = rest.shift();
+    else if (x === "--history-html") a.historyHtml = rest.shift();
+    else if (x === "--history-input") a.historyInputs.push(...(rest.shift() ?? "").split(",").filter(Boolean));
     else if (x === "--help" || x === "-h") {
       console.log(`spendwatch — token/$ leaderboards across coding agents
 
-usage: spendwatch [report|watch] [options]
+usage: spendwatch [report|watch|limits|capacity-history-export] [options]
 
   report            aggregate past sessions (default)
   watch             live leaderboard, refreshes as sessions write
   limits            render Codex account quota input as a planning dashboard
+  capacity-history-export
+                    export recoverable Codex quota history as sanitized JSONL
 
 options:
   --days N          look back N days (default 30; watch default 1)
@@ -96,6 +108,10 @@ options:
   --interval MS     watch poll interval (default 2000)
   --limits-href URL add a Capacity link to the spend report
   --spend-href URL  set the Spend detail link in the limits dashboard
+  --history-href URL
+                    set the History link in Capacity and Spend pages
+  --history-input P import sanitized capacity history JSONL (repeatable)
+  --history-html P  render the SQLite capacity archive to this HTML path
 
 sources:
   claude   ~/.claude/projects/**/*.jsonl        (token usage ✓)
@@ -196,6 +212,7 @@ async function report(a: Args) {
       days: a.days,
       accountGrouping: a.accountGrouping,
       limitsHref: a.limitsHref,
+      historyHref: a.historyHref,
     }));
     process.stdout.write(`\n\x1b[2m→ HTML report written to ${out}\x1b[0m\n`);
     if (a.open) Bun.spawn(["open", out]);
@@ -216,11 +233,34 @@ async function limits(a: Args) {
   } else {
     process.stdout.write(renderLimitsText(accounts));
   }
+  if (a.sqlite) {
+    const out = resolve(a.sqlite);
+    const live = writeCapacitySnapshot(out, accounts, { collectedAt: nowMs() });
+    process.stdout.write(`\x1b[2m→ Capacity snapshot (${live.rows} new rows) appended to ${out}\x1b[0m\n`);
+    if (a.historyInputs.length) {
+      const imported = importCapacityHistory(out, a.historyInputs);
+      process.stdout.write(`\x1b[2m→ Capacity history (${imported.inserted} new rows from ${imported.accepted} records) imported\x1b[0m\n`);
+    }
+    if (a.historyHtml) {
+      const historyOut = resolve(a.historyHtml);
+      writeFileSync(historyOut, renderHistoryHtml(loadCapacityHistory(out), {
+        spendHref: a.spendHref,
+      }));
+      process.stdout.write(`\x1b[2m→ History HTML written to ${historyOut}\x1b[0m\n`);
+    }
+  } else if (a.historyInputs.length || a.historyHtml) {
+    throw new Error("--history-input and --history-html require --sqlite");
+  }
   if (a.html) {
     const out = resolve(a.html);
-    writeFileSync(out, renderLimitsHtml(accounts, { generatedAt: nowMs(), spendHref: a.spendHref }));
+    writeFileSync(out, renderLimitsHtml(accounts, { generatedAt: nowMs(), spendHref: a.spendHref, historyHref: a.historyHref }));
     process.stdout.write(`\x1b[2m→ Limits HTML written to ${out}\x1b[0m\n`);
   }
+}
+
+async function capacityHistoryExport(a: Args) {
+  const stats = await exportCapacityHistory(a.label ?? "local");
+  process.stderr.write(`exported ${stats.records.toLocaleString()} records${stats.firstAt ? ` from ${stats.firstAt} to ${stats.lastAt}` : ""}\n`);
 }
 
 // Date.now is unavailable in some sandboxed contexts; tolerate it.
@@ -259,4 +299,5 @@ function watch(a: Args) {
 const args = parseArgs(process.argv.slice(2));
 if (args.cmd === "watch") watch(args);
 else if (args.cmd === "limits") await limits(args);
+else if (args.cmd === "capacity-history-export") await capacityHistoryExport(args);
 else await report(args);
