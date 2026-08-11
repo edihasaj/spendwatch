@@ -11,7 +11,8 @@ import { exportCapacityHistory } from "./capacity-export";
 import { writeSnapshot } from "./db";
 import { renderHistoryHtml } from "./history";
 import { renderHtml } from "./html";
-import { renderLimitsHtml, renderLimitsText } from "./limits";
+import { evaluateGuard, renderGuardResult, type GuardWindow } from "./guard";
+import { renderLimitsHtml, renderLimitsText, type CapacityProvider } from "./limits";
 import { attachSessionEquivalentForecasts } from "./session-equivalents";
 import { renderBrief, renderOverview, renderReport } from "./render";
 import { labelReports, loadReports, type AccountGrouping } from "./reports";
@@ -19,7 +20,7 @@ import { IncrementalReader } from "./scan";
 import { discover, type SourceStatus } from "./sources";
 
 interface Args {
-  cmd: "report" | "watch" | "limits" | "capacity-history-export";
+  cmd: "report" | "watch" | "limits" | "guard" | "capacity-history-export";
   days: number;
   project?: string;
   account?: string;
@@ -39,6 +40,10 @@ interface Args {
   historyHref?: string;
   historyHtml?: string;
   historyInputs: string[];
+  guardWindow: GuardWindow;
+  minimumRemaining: number;
+  provider?: CapacityProvider;
+  failOpen: boolean;
 }
 
 function accountHelp(): string {
@@ -101,11 +106,14 @@ function parseArgs(argv: string[]): Args {
     inputs: [],
     historyInputs: [],
     interval: 2000,
+    guardWindow: "weekly",
+    minimumRemaining: 10,
+    failOpen: false,
   };
   const rest = [...argv];
   while (rest.length) {
     const x = rest.shift()!;
-    if (x === "report" || x === "watch" || x === "limits" || x === "capacity-history-export") a.cmd = x;
+    if (x === "report" || x === "watch" || x === "limits" || x === "guard" || x === "capacity-history-export") a.cmd = x;
     else if (x === "--days") a.days = Number(rest.shift());
     else if (x === "--project") a.project = rest.shift();
     else if (x === "--agent" || x === "--source") a.agents = new Set((rest.shift() ?? "").split(",").map((s) => s.trim()).filter(Boolean));
@@ -131,15 +139,28 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--history-href") a.historyHref = rest.shift();
     else if (x === "--history-html") a.historyHtml = rest.shift();
     else if (x === "--history-input") a.historyInputs.push(...(rest.shift() ?? "").split(",").filter(Boolean));
+    else if (x === "--window") {
+      const window = rest.shift();
+      if (window !== "session" && window !== "weekly") throw new Error("--window must be session or weekly");
+      a.guardWindow = window;
+    }
+    else if (x === "--min-remaining") a.minimumRemaining = Number(rest.shift());
+    else if (x === "--provider") {
+      const provider = rest.shift();
+      if (provider !== "codex" && provider !== "claude" && provider !== "copilot" && provider !== "lokai") throw new Error("--provider must be codex, claude, copilot, or lokai");
+      a.provider = provider;
+    }
+    else if (x === "--fail-open") a.failOpen = true;
     else if (x === "--help" || x === "-h") {
       console.log(`spendwatch — token/$ leaderboards across coding agents
 
-usage: spendwatch [report|watch|limits|capacity-history-export] [options]
+usage: spendwatch [report|watch|limits|guard|capacity-history-export] [options]
        spendwatch account add PROVIDER [options]
 
   report            aggregate past sessions (default)
   watch             live leaderboard, refreshes as sessions write
   limits            render Codex account quota input as a planning dashboard
+  guard             exit nonzero when an account is below minimum capacity
   capacity-history-export
                     export recoverable Codex quota history as sanitized JSONL
   account add       connect Codex, Claude, or Copilot using official auth
@@ -165,6 +186,10 @@ options:
                     set the History link in Capacity and Spend pages
   --history-input P import sanitized capacity history JSONL (repeatable)
   --history-html P  render the SQLite capacity archive to this HTML path
+  --window W        guard session or weekly capacity (default weekly)
+  --min-remaining N guard minimum remaining percentage (default 10)
+  --provider P      guard a specific provider
+  --fail-open       guard exits 0 when capacity is unavailable
 
 sources:
   claude   ~/.claude/projects/**/*.jsonl        (token usage ✓)
@@ -314,6 +339,22 @@ async function limits(a: Args) {
   }
 }
 
+function guard(a: Args): number {
+  if (!a.inputs.length) throw new Error("guard requires at least one --input JSON path");
+  if (!Number.isFinite(a.minimumRemaining) || a.minimumRemaining < 0 || a.minimumRemaining > 100) {
+    throw new Error("--min-remaining must be between 0 and 100");
+  }
+  const result = evaluateGuard(loadCapacityDashboard(a.inputs).accounts, {
+    account: a.account,
+    provider: a.provider,
+    window: a.guardWindow,
+    minimumPercent: a.minimumRemaining,
+    failOpen: a.failOpen,
+  });
+  process.stdout.write(a.json ? JSON.stringify(result) + "\n" : renderGuardResult(result));
+  return result.exitCode;
+}
+
 async function capacityHistoryExport(a: Args) {
   const stats = await exportCapacityHistory(a.label ?? "local");
   process.stderr.write(`exported ${stats.records.toLocaleString()} records${stats.firstAt ? ` from ${stats.firstAt} to ${stats.lastAt}` : ""}\n`);
@@ -361,5 +402,6 @@ if (accountArgs) {
 const args = parseArgs(argv);
 if (args.cmd === "watch") watch(args);
 else if (args.cmd === "limits") await limits(args);
+else if (args.cmd === "guard") process.exitCode = guard(args);
 else if (args.cmd === "capacity-history-export") await capacityHistoryExport(args);
 else await report(args);
