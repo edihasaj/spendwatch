@@ -29,7 +29,7 @@
   "bin": {
     "spendwatch": "src/cli.ts"
   },
-  "files": ["src", "README.md", "LICENSE"],
+  "files": ["src", "assets/icons", "README.md", "LICENSE"],
   "engines": {
     "bun": ">=1.0.0"
   },

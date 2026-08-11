@@ -1,5 +1,6 @@
 import { resolve, sep } from "node:path";
 import webpush from "web-push";
+import { NOTIFICATION_BADGE, NOTIFICATION_ICON } from "./branding";
 import { loadCapacityDashboard } from "./capacity-dashboard";
 import { PushStore, type PendingPushDelivery, type StoredPushSubscription } from "./push-store";
 import { SERVICE_WORKER_SOURCE } from "./service-worker";
@@ -44,6 +45,8 @@ function notificationPayload(delivery: PendingPushDelivery): string {
     body: `${provider} · ${delivery.account}`,
     tag: `spendwatch:${delivery.provider}:${delivery.account.toLowerCase()}:${delivery.resetKey}:${delivery.threshold}`,
     url: "/",
+    icon: NOTIFICATION_ICON,
+    badge: NOTIFICATION_BADGE,
     requireInteraction: delivery.threshold <= 5,
   });
 }
@@ -80,6 +83,8 @@ export async function testBackgroundPush(databasePath: string, vapidSubject: str
           body: "This arrived without the dashboard being open.",
           tag: "spendwatch:background-test",
           url: "/",
+          icon: NOTIFICATION_ICON,
+          badge: NOTIFICATION_BADGE,
         }), { TTL: 60, urgency: "normal" });
         result.sent++;
       } catch (error) {
@@ -154,6 +159,8 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
             body: "Background alerts work even while the dashboard is closed.",
             tag: "spendwatch:ready",
             url: "/",
+            icon: NOTIFICATION_ICON,
+            badge: NOTIFICATION_BADGE,
           }), { TTL: 60, urgency: "normal" });
           return json({ ok: true, testSent: true });
         } catch (error) {

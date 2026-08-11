@@ -6,6 +6,7 @@ self.addEventListener('push',event=>{
   try{if(event.data)data={...data,...event.data.json()}}catch{}
   event.waitUntil(self.registration.showNotification(data.title,{
     body:data.body,tag:data.tag,data:{url:data.url||'/'},renotify:false,
+    icon:data.icon||'/android-icon-192x192.png',badge:data.badge||'/favicon-96x96.png',
     requireInteraction:Boolean(data.requireInteraction)
   }));
 });
