@@ -6,8 +6,13 @@
   "license": "MIT",
   "author": "Edi Hasaj",
   "homepage": "https://github.com/edihasaj/spendwatch",
-  "repository": { "type": "git", "url": "git+https://github.com/edihasaj/spendwatch.git" },
-  "bugs": { "url": "https://github.com/edihasaj/spendwatch/issues" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/edihasaj/spendwatch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/edihasaj/spendwatch/issues"
+  },
   "keywords": [
     "claude-code",
     "codex",
@@ -21,13 +26,20 @@
     "anthropic",
     "openai"
   ],
-  "bin": { "spendwatch": "src/cli.ts" },
+  "bin": {
+    "spendwatch": "src/cli.ts"
+  },
   "files": ["src", "README.md", "LICENSE"],
-  "engines": { "bun": ">=1.0.0" },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "scripts": {
     "report": "bun src/cli.ts report",
     "watch": "bun src/cli.ts watch",
     "test": "bun test",
     "build": "bun build src/cli.ts --compile --outfile bin/spendwatch"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7"
   }
 }
