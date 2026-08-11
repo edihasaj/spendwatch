@@ -83,14 +83,37 @@ export function evaluateCases(cases: EvalCase[], defaultRepo: string) {
   return { policyVersion: cases.length ? buildRoutePlan({ task: cases[0]!.task, repo: cases[0]!.repo ?? defaultRepo }).policyVersion : undefined, cases: cases.length, assertions, passed, failed: assertions - passed, accuracy: assertions ? passed / assertions : null, results };
 }
 
+function historicalMetrics(path: string) {
+  const db = new Database(path, { readonly: true });
+  try {
+    const rows = db.query("SELECT status, attempts, duration_ms, estimated_cost FROM routing_runs WHERE status != 'running'").all() as Array<{ status: string; attempts: number; duration_ms: number; estimated_cost: number | null }>;
+    const durations = rows.map((row) => row.duration_ms).sort((a, b) => a - b);
+    const percentile = (p: number) => durations.length ? durations[Math.max(0, Math.ceil(durations.length * p) - 1)] : null;
+    const succeeded = rows.filter((row) => row.status === "succeeded");
+    const cost = succeeded.reduce((sum, row) => sum + (row.estimated_cost ?? 0), 0);
+    return {
+      runs: rows.length,
+      successRate: rows.length ? succeeded.length / rows.length : null,
+      firstPassSuccessRate: rows.length ? rows.filter((row) => row.status === "succeeded" && row.attempts === 1).length / rows.length : null,
+      escalationRate: rows.length ? rows.filter((row) => row.attempts > 1).length / rows.length : null,
+      latencyMs: { p50: percentile(0.5), p95: percentile(0.95) },
+      successfulCost: cost,
+      costPerSuccessfulTask: succeeded.length ? cost / succeeded.length : null,
+    };
+  } finally { db.close(); }
+}
+
 export function runEvalCommand(argv: string[]): number | undefined {
   try {
     const args = parseEvalArgs(argv);
     if (!args) return undefined;
     if (args.help) { process.stdout.write(evalHelp() + "\n"); return 0; }
-    const report = evaluateCases(loadCases(args), args.repo);
+    const report = { ...evaluateCases(loadCases(args), args.repo), historical: args.sqlite ? historicalMetrics(args.sqlite) : undefined };
     if (args.json) process.stdout.write(JSON.stringify(report, null, 2) + "\n");
-    else process.stdout.write(`SpendWatch routing eval: ${report.passed}/${report.assertions} assertions passed across ${report.cases} tasks${report.accuracy === null ? "" : ` (${(report.accuracy * 100).toFixed(1)}%)`}\n`);
+    else {
+      process.stdout.write(`SpendWatch routing eval: ${report.passed}/${report.assertions} assertions passed across ${report.cases} tasks${report.accuracy === null ? "" : ` (${(report.accuracy * 100).toFixed(1)}%)`}\n`);
+      if (report.historical) process.stdout.write(`Historical outcomes: ${(100 * (report.historical.successRate ?? 0)).toFixed(1)}% success · ${(100 * (report.historical.escalationRate ?? 0)).toFixed(1)}% escalated · $${(report.historical.costPerSuccessfulTask ?? 0).toFixed(4)}/success\n`);
+    }
     return report.failed ? 1 : 0;
   } catch (error) {
     process.stderr.write(`spendwatch eval: ${error instanceof Error ? error.message : String(error)}\nTry 'spendwatch eval --help'.\n`);

@@ -23,6 +23,7 @@ export interface RunSummary {
   output: string;
   error?: string;
   database?: string;
+  estimatedCost: number;
 }
 
 function inferredVerification(plan: RoutePlan): string[] {
@@ -98,12 +99,12 @@ export async function executeRoute(options: RunOptions): Promise<RunSummary> {
       if (runId) store?.attempt(runId, record);
       if (passed) {
         store?.finish(runId!, "succeeded", attempts, finalOutput);
-        return { taskId: plan.taskId, planned: plan.decision, shadow: options.shadow, status: "succeeded", attempts, output: finalOutput, database: options.database };
+        return { taskId: plan.taskId, planned: plan.decision, shadow: options.shadow, status: "succeeded", attempts, output: finalOutput, database: options.database, estimatedCost: attempts.reduce((sum, item) => sum + (item.result.estimatedCost ?? 0), 0) };
       }
       priorFailure = result.error || verification.find((item) => !item.ok)?.output || "objective verification failed";
     }
     const error = priorFailure || "no execution tier was available";
     store?.finish(runId!, "failed", attempts, finalOutput, error);
-    return { taskId: plan.taskId, planned: plan.decision, shadow: options.shadow, status: "failed", attempts, output: finalOutput, error, database: options.database };
+    return { taskId: plan.taskId, planned: plan.decision, shadow: options.shadow, status: "failed", attempts, output: finalOutput, error, database: options.database, estimatedCost: attempts.reduce((sum, item) => sum + (item.result.estimatedCost ?? 0), 0) };
   } finally { store?.close(); }
 }

@@ -29,7 +29,7 @@ const PRICES: Array<[RegExp, ModelPrice]> = [
   [/gpt-5\.1/, { input: 1.25, output: 10, cachedInput: 0.125 }],
   [/gpt-5|gpt5|o[34]|codex/, { input: 1.25, output: 10, cachedInput: 0.125 }],
   [/gpt-4|gpt4/, { input: 2.5, output: 10 }],
-  // DeepSeek direct API pricing. No model calls are made by SpendWatch.
+  // DeepSeek direct API pricing. Routing execution is explicit and opt-in.
   [/deepseek-v4-flash/, { input: 0.14, output: 0.28, cachedInput: 0.0028 }],
   [/deepseek-v4-pro/, { input: 0.435, output: 0.87, cachedInput: 0.003625 }],
   // Google (Gemini), best-effort 2.5-pro tier.

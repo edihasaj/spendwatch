@@ -108,6 +108,7 @@ export async function runRunCommand(argv: string[]): Promise<number | undefined>
       for (const attempt of result.attempts) process.stdout.write(`  ${attempt.attempt}. ${attempt.result.provider}/${attempt.model}: ${attempt.result.ok ? "passed" : "failed"} (${attempt.durationMs}ms)\n`);
       if (result.output) process.stdout.write(`\n${result.output.trim()}\n`);
       if (result.error) process.stderr.write(`\n${result.error}\n`);
+      process.stdout.write(`\nEstimated model cost: $${result.estimatedCost.toFixed(4)}\n`);
       if (result.database) process.stdout.write(`\nOutcome: ${result.database}\n`);
     }
     return result.status === "succeeded" ? 0 : 1;
