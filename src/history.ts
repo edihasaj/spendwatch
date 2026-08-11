@@ -41,7 +41,7 @@ ${BRAND_HEAD_HTML}
 <section class="controls"><div class="ranges" id="ranges"><button data-range="1">24h</button><button data-range="7" class="active">7d</button><button data-range="30">30d</button><button data-range="90">90d</button><button data-range="all">All</button></div><label class="month-label" for="month">Past month</label><input id="month" type="month"><button class="clear-month" id="clear-month">Return to recent</button></section>
 <section class="summary"><div class="metric"><b id="visible-samples">0</b><span>visible samples</span></div><div class="metric"><b id="stored-rows">${dataset.sampleCount.toLocaleString()}</b><span>stored rows</span></div><div class="metric"><b id="account-count">0</b><span>tracked accounts</span></div></section>
 <section class="charts" id="charts"></section>
-<div class="page-meta"><span>Raw history remains append-only in SQLite. Charts use adaptive time buckets.</span><span id="generated" data-generated="${esc(generated)}">Generated ${esc(generated)}</span></div>
+<div class="page-meta"><span>Recent history stays live in SQLite. Older verified archives remain restorable.</span><span id="generated" data-generated="${esc(generated)}">Generated ${esc(generated)}</span></div>
 </main><script id="history-data" type="application/json">${safeJson(dataset)}</script><script>
 const compactDuration=${compactDuration.toString()};
 let data=JSON.parse(document.querySelector('#history-data').textContent);const tones={codex:'#68d5dc',claude:'#e69a73',copilot:'#8ea9ff',lokai:'#b8d96b'};let range='7',month='',refreshing=false;

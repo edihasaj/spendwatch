@@ -1,6 +1,6 @@
 {
   "name": "spendwatch",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Token/$ leaderboards across coding agents (Claude Code, Codex). See which tool calls, shell commands, and prompts spend the most — so you know what to automate or fix.",
   "type": "module",
   "license": "MIT",

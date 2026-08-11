@@ -52,6 +52,12 @@ CREATE INDEX IF NOT EXISTS idx_capacity_account_history_time
   ON capacity_account_history(sampled_at_ms);
 CREATE INDEX IF NOT EXISTS idx_capacity_account_history_account
   ON capacity_account_history(provider, account, sampled_at_ms);
+
+CREATE TABLE IF NOT EXISTS capacity_retention (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  history_floor_ms INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 interface HistoricalWindowInput {
@@ -120,7 +126,7 @@ function windowSampleKey(
   return [provider, cleanPart(account.toLowerCase()), kind, Math.round(sampledAt), usedPercent, resetsAt ?? ""].join("|");
 }
 
-function openCapacityDatabase(path: string): Database {
+export function openCapacityDatabase(path: string): Database {
   const db = new Database(path);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA busy_timeout = 10000;");
@@ -284,6 +290,8 @@ function normalizeHistoricalRecord(value: unknown): {
 
 export function importCapacityHistory(path: string, inputs: string[]): { inserted: number; accepted: number } {
   const db = openCapacityDatabase(path);
+  const retention = db.query("SELECT history_floor_ms FROM capacity_retention WHERE id = 1").get() as { history_floor_ms: number } | null;
+  const historyFloor = retention?.history_floor_ms ?? Number.NEGATIVE_INFINITY;
   const insertHistory = db.prepare(`
     INSERT OR IGNORE INTO capacity_history(
       sample_key, provider, account, window_kind, sampled_at_ms, observed_at,
@@ -296,7 +304,7 @@ export function importCapacityHistory(path: string, inputs: string[]): { inserte
   let accepted = 0;
   const tx = db.transaction((records: ReturnType<typeof normalizeHistoricalRecord>[]) => {
     for (const record of records) {
-      if (!record) continue;
+      if (!record || record.sampledAt < historyFloor) continue;
       accepted++;
       const observedAt = new Date(record.sampledAt).toISOString();
       for (const item of record.windows) {
