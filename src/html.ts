@@ -1,5 +1,6 @@
 // Renders a standalone, self-contained HTML report from spendwatch reports.
 import type { Report, ToolRow, PromptRow } from "./aggregate";
+import { BRAND_HEAD_HTML } from "./branding";
 import { fmtTok, fmtUsd } from "./render";
 import {
   mergeReports,
@@ -238,6 +239,7 @@ export function renderHtml(
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+${BRAND_HEAD_HTML}
 <title>spendwatch — agent spend report</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fragment+Mono:ital@0;1&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
