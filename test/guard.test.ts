@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { capacityAlertTransitions, type CapacityAlertState } from "../src/capacity-alerts";
+import { crossedWeeklyThreshold } from "../src/capacity-alerts";
 import { evaluateGuard } from "../src/guard";
 import type { CodexLimitAccount } from "../src/limits";
 
@@ -27,19 +27,13 @@ describe("capacity guard", () => {
 });
 
 describe("capacity alerts", () => {
-  test("detects exhaustion, recovery, forecast flips, and weekly thresholds", () => {
-    const state = (key: string, window: "session" | "weekly", left: number, willLastToReset?: boolean): CapacityAlertState => ({
-      key, window, left, willLastToReset, account: "work@example.com", provider: "codex",
-    });
-    const alerts = capacityAlertTransitions([
-      state("session", "session", 10, true),
-      state("weekly", "weekly", 20, true),
-      state("recovered", "session", 0, false),
-    ], [
-      state("session", "session", 0, false),
-      state("weekly", "weekly", 14, false),
-      state("recovered", "session", 100, true),
-    ], 15);
-    expect(alerts.map((alert) => alert.kind)).toEqual(["ran-out", "run-out-risk", "low-weekly", "available"]);
+  test("uses sparse thresholds and collapses large jumps", () => {
+    expect(crossedWeeklyThreshold(31, 29)).toBe(30);
+    expect(crossedWeeklyThreshold(29, 14)).toBe(15);
+    expect(crossedWeeklyThreshold(16, 9)).toBe(10);
+    expect(crossedWeeklyThreshold(11, 4)).toBe(5);
+    expect(crossedWeeklyThreshold(4, 0)).toBe(0);
+    expect(crossedWeeklyThreshold(31, 4)).toBe(5);
+    expect(crossedWeeklyThreshold(14, 14)).toBeUndefined();
   });
 });

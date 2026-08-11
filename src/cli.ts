@@ -14,13 +14,14 @@ import { renderHtml } from "./html";
 import { evaluateGuard, renderGuardResult, type GuardWindow } from "./guard";
 import { renderLimitsHtml, renderLimitsText, type CapacityProvider } from "./limits";
 import { attachSessionEquivalentForecasts } from "./session-equivalents";
+import { serveDashboard } from "./push-server";
 import { renderBrief, renderOverview, renderReport } from "./render";
 import { labelReports, loadReports, type AccountGrouping } from "./reports";
 import { IncrementalReader } from "./scan";
 import { discover, type SourceStatus } from "./sources";
 
 interface Args {
-  cmd: "report" | "watch" | "limits" | "guard" | "capacity-history-export";
+  cmd: "report" | "watch" | "limits" | "guard" | "server" | "capacity-history-export";
   days: number;
   project?: string;
   account?: string;
@@ -44,6 +45,10 @@ interface Args {
   minimumRemaining: number;
   provider?: CapacityProvider;
   failOpen: boolean;
+  host: string;
+  port: number;
+  publicDir: string;
+  vapidSubject: string;
 }
 
 function accountHelp(): string {
@@ -109,11 +114,15 @@ function parseArgs(argv: string[]): Args {
     guardWindow: "weekly",
     minimumRemaining: 10,
     failOpen: false,
+    host: "127.0.0.1",
+    port: 8899,
+    publicDir: ".",
+    vapidSubject: "mailto:admin@localhost",
   };
   const rest = [...argv];
   while (rest.length) {
     const x = rest.shift()!;
-    if (x === "report" || x === "watch" || x === "limits" || x === "guard" || x === "capacity-history-export") a.cmd = x;
+    if (x === "report" || x === "watch" || x === "limits" || x === "guard" || x === "server" || x === "capacity-history-export") a.cmd = x;
     else if (x === "--days") a.days = Number(rest.shift());
     else if (x === "--project") a.project = rest.shift();
     else if (x === "--agent" || x === "--source") a.agents = new Set((rest.shift() ?? "").split(",").map((s) => s.trim()).filter(Boolean));
@@ -151,16 +160,21 @@ function parseArgs(argv: string[]): Args {
       a.provider = provider;
     }
     else if (x === "--fail-open") a.failOpen = true;
+    else if (x === "--host") a.host = rest.shift() ?? "";
+    else if (x === "--port") a.port = Number(rest.shift());
+    else if (x === "--public-dir") a.publicDir = rest.shift() ?? "";
+    else if (x === "--vapid-subject") a.vapidSubject = rest.shift() ?? "";
     else if (x === "--help" || x === "-h") {
       console.log(`spendwatch — token/$ leaderboards across coding agents
 
-usage: spendwatch [report|watch|limits|guard|capacity-history-export] [options]
+usage: spendwatch [report|watch|limits|guard|server|capacity-history-export] [options]
        spendwatch account add PROVIDER [options]
 
   report            aggregate past sessions (default)
   watch             live leaderboard, refreshes as sessions write
   limits            render Codex account quota input as a planning dashboard
   guard             exit nonzero when an account is below minimum capacity
+  server            serve the dashboard and deliver background Web Push alerts
   capacity-history-export
                     export recoverable Codex quota history as sanitized JSONL
   account add       connect Codex, Claude, or Copilot using official auth
@@ -190,6 +204,10 @@ options:
   --min-remaining N guard minimum remaining percentage (default 10)
   --provider P      guard a specific provider
   --fail-open       guard exits 0 when capacity is unavailable
+  --host HOST       server bind address (default 127.0.0.1)
+  --port N          server port (default 8899)
+  --public-dir PATH server dashboard directory
+  --vapid-subject S Web Push contact URI, usually mailto:address
 
 sources:
   claude   ~/.claude/projects/**/*.jsonl        (token usage ✓)
@@ -355,6 +373,22 @@ function guard(a: Args): number {
   return result.exitCode;
 }
 
+async function server(a: Args): Promise<never> {
+  if (a.inputs.length !== 1) throw new Error("server requires exactly one --input capacity JSON path");
+  if (!a.sqlite) throw new Error("server requires --sqlite for push subscriptions and threshold state");
+  if (!Number.isInteger(a.port) || a.port < 1 || a.port > 65535) throw new Error("--port must be between 1 and 65535");
+  if (!a.host || !a.publicDir) throw new Error("--host and --public-dir cannot be empty");
+  if (!/^(mailto:|https:\/\/)/.test(a.vapidSubject)) throw new Error("--vapid-subject must be a mailto: or https: URI");
+  return serveDashboard({
+    host: a.host,
+    port: a.port,
+    publicDir: resolve(a.publicDir),
+    capacityPath: resolve(a.inputs[0]!),
+    databasePath: resolve(a.sqlite),
+    vapidSubject: a.vapidSubject,
+  });
+}
+
 async function capacityHistoryExport(a: Args) {
   const stats = await exportCapacityHistory(a.label ?? "local");
   process.stderr.write(`exported ${stats.records.toLocaleString()} records${stats.firstAt ? ` from ${stats.firstAt} to ${stats.lastAt}` : ""}\n`);
@@ -403,5 +437,6 @@ const args = parseArgs(argv);
 if (args.cmd === "watch") watch(args);
 else if (args.cmd === "limits") await limits(args);
 else if (args.cmd === "guard") process.exitCode = guard(args);
+else if (args.cmd === "server") await server(args);
 else if (args.cmd === "capacity-history-export") await capacityHistoryExport(args);
 else await report(args);

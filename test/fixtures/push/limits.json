@@ -1,0 +1,17 @@
+[
+  {
+    "provider": "codex",
+    "account": "push@example.com",
+    "usage": {
+      "accountEmail": "push@example.com",
+      "loginMethod": "pro",
+      "secondary": {
+        "usedPercent": 20,
+        "resetsAt": "2026-08-17T00:00:00Z",
+        "windowMinutes": 10080
+      },
+      "updatedAt": "2026-08-11T12:00:00Z"
+    },
+    "devices": ["test"]
+  }
+]

@@ -1,0 +1,145 @@
+import { resolve, sep } from "node:path";
+import webpush from "web-push";
+import { loadCapacityDashboard } from "./capacity-dashboard";
+import { PushStore, type PendingPushDelivery, type StoredPushSubscription } from "./push-store";
+import { SERVICE_WORKER_SOURCE } from "./service-worker";
+
+export interface DashboardServerOptions {
+  host: string;
+  port: number;
+  publicDir: string;
+  capacityPath: string;
+  databasePath: string;
+  vapidSubject: string;
+  pollMs?: number;
+}
+
+function validSubscription(value: unknown): value is StoredPushSubscription {
+  if (!value || typeof value !== "object") return false;
+  const subscription = value as Record<string, unknown>;
+  const keys = subscription.keys as Record<string, unknown> | undefined;
+  return typeof subscription.endpoint === "string" && subscription.endpoint.startsWith("https://") && subscription.endpoint.length < 4096 &&
+    Boolean(keys) && typeof keys!.p256dh === "string" && keys!.p256dh.length < 1024 &&
+    typeof keys!.auth === "string" && keys!.auth.length < 1024;
+}
+
+function json(value: unknown, status = 200): Response {
+  return Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
+}
+
+function postAllowed(request: Request): boolean {
+  if (request.method !== "POST") return true;
+  if (request.headers.get("content-type")?.split(";", 1)[0] !== "application/json") return false;
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite && fetchSite !== "same-origin") return false;
+  const origin = request.headers.get("origin");
+  return !origin || new URL(origin).host === new URL(request.url).host;
+}
+
+function notificationPayload(delivery: PendingPushDelivery): string {
+  const provider = delivery.provider.charAt(0).toUpperCase() + delivery.provider.slice(1);
+  const title = delivery.threshold === 0 ? "Weekly capacity gone" : `${delivery.threshold}% weekly capacity left`;
+  return JSON.stringify({
+    title,
+    body: `${provider} · ${delivery.account}`,
+    tag: `spendwatch:${delivery.provider}:${delivery.account.toLowerCase()}:${delivery.resetKey}:${delivery.threshold}`,
+    url: "/",
+    requireInteraction: delivery.threshold <= 5,
+  });
+}
+
+export async function serveDashboard(options: DashboardServerOptions): Promise<never> {
+  const store = new PushStore(options.databasePath);
+  let publicKey = store.config("vapid_public_key");
+  let privateKey = store.config("vapid_private_key");
+  if (!publicKey || !privateKey) {
+    const generated = webpush.generateVAPIDKeys();
+    publicKey = generated.publicKey;
+    privateKey = generated.privateKey;
+    store.setConfig("vapid_public_key", publicKey);
+    store.setConfig("vapid_private_key", privateKey);
+  }
+  webpush.setVapidDetails(options.vapidSubject, publicKey, privateKey);
+  let monitoring = false;
+
+  const send = async (delivery: PendingPushDelivery): Promise<void> => {
+    try {
+      await webpush.sendNotification(
+        { endpoint: delivery.endpoint, keys: delivery.keys },
+        notificationPayload(delivery),
+        { TTL: 3600, urgency: delivery.threshold <= 5 ? "high" : "normal" },
+      );
+      store.markSent(delivery.eventId, delivery.endpoint, Date.now());
+    } catch (error) {
+      const statusCode = Number((error as { statusCode?: unknown }).statusCode);
+      store.markFailed(delivery.eventId, delivery.endpoint, String(error), statusCode === 404 || statusCode === 410, Date.now());
+    }
+  };
+
+  const monitor = async (): Promise<void> => {
+    if (monitoring) return;
+    monitoring = true;
+    try {
+      store.observe(loadCapacityDashboard([options.capacityPath]).accounts, Date.now());
+      await Promise.allSettled(store.pendingDeliveries().map(send));
+    } catch (error) {
+      process.stderr.write(`push monitor: ${String(error)}\n`);
+    } finally {
+      monitoring = false;
+    }
+  };
+
+  const publicRoot = resolve(options.publicDir);
+  Bun.serve({
+    hostname: options.host,
+    port: options.port,
+    async fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/push/config" && request.method === "GET") {
+        return json({ publicKey, thresholds: [30, 15, 10, 5, 0] });
+      }
+      if ((url.pathname === "/api/push/subscribe" || url.pathname === "/api/push/unsubscribe") && request.method === "POST") {
+        if (!postAllowed(request)) return json({ error: "same-origin JSON required" }, 403);
+        if (Number(request.headers.get("content-length") ?? 0) > 8192) return json({ error: "request too large" }, 413);
+        const body = await request.json().catch(() => undefined) as { subscription?: unknown } | undefined;
+        if (!validSubscription(body?.subscription)) return json({ error: "invalid push subscription" }, 400);
+        if (url.pathname.endsWith("unsubscribe")) {
+          store.disableSubscription(body.subscription.endpoint, Date.now());
+          return json({ ok: true });
+        }
+        store.upsertSubscription(body.subscription, request.headers.get("user-agent") ?? undefined, Date.now());
+        try {
+          await webpush.sendNotification(body.subscription, JSON.stringify({
+            title: "Spendwatch alerts ready",
+            body: "Background alerts work even while the dashboard is closed.",
+            tag: "spendwatch:ready",
+            url: "/",
+          }), { TTL: 60, urgency: "normal" });
+          return json({ ok: true, testSent: true });
+        } catch (error) {
+          return json({ error: `subscription saved, test failed: ${String(error)}` }, 502);
+        }
+      }
+      if (url.pathname === "/sw.js") {
+        return new Response(SERVICE_WORKER_SOURCE, {
+          headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache, no-store" },
+        });
+      }
+      if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
+      let pathname: string;
+      try { pathname = decodeURIComponent(url.pathname); } catch { return new Response("Bad path", { status: 400 }); }
+      const relativePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+      const filePath = resolve(publicRoot, relativePath);
+      if (filePath !== publicRoot && !filePath.startsWith(publicRoot + sep)) return new Response("Forbidden", { status: 403 });
+      const file = Bun.file(filePath);
+      if (!await file.exists()) return new Response("Not found", { status: 404 });
+      return new Response(request.method === "HEAD" ? null : file, {
+        headers: { "Cache-Control": relativePath.endsWith(".html") ? "no-cache" : "public, max-age=300" },
+      });
+    },
+  });
+  process.stdout.write(`Spendwatch server listening on http://${options.host}:${options.port}\n`);
+  await monitor();
+  setInterval(() => void monitor(), options.pollMs ?? 15_000);
+  return await new Promise<never>(() => {});
+}
