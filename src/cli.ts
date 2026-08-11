@@ -3,6 +3,7 @@
 // calls and prompts spend the most tokens/$, so you know what to automate/fix.
 import { writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
+import packageMetadata from "../package.json";
 import { addAccount, type AccountAddOptions, type AccountProvider } from "./accounts";
 import { Aggregator } from "./aggregate";
 import { importCapacityHistory, loadCapacityHistory, writeCapacitySnapshot } from "./capacity-db";
@@ -443,6 +444,10 @@ function watch(a: Args) {
 }
 
 const argv = process.argv.slice(2);
+if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-V")) {
+  process.stdout.write(`${packageMetadata.version}\n`);
+  process.exit(0);
+}
 const routeExit = runRouteCommand(argv);
 if (routeExit !== undefined) {
   process.exitCode = routeExit;

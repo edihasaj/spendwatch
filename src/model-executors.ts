@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
+import { usageCost } from "./pricing";
 import type { RoutingEffort, RoutingModel } from "./routing";
 
 export type ExecutionProvider = "codex" | "deepseek";
@@ -23,6 +24,7 @@ export interface ExecutionResult {
   output: string;
   error?: string;
   usage?: Record<string, number>;
+  estimatedCost?: number;
 }
 
 export interface ModelExecutor {
@@ -52,10 +54,18 @@ export class CodexExecutor implements ModelExecutor {
         new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
       ]);
       const parsed = parseCodexJsonl(stdout);
+      const cached = parsed.usage?.cached_input_tokens ?? 0;
+      const estimatedCost = parsed.usage ? usageCost(request.model, {
+        input: Math.max(0, (parsed.usage.input_tokens ?? 0) - cached),
+        output: parsed.usage.output_tokens ?? 0,
+        cacheRead: cached,
+        cache5m: parsed.usage.cache_write_input_tokens ?? 0,
+        cache1h: 0,
+      }) : undefined;
       return {
         provider: "codex", model: request.model, ok: exitCode === 0, exitCode,
         output: parsed.output || stdout.trim(), error: exitCode === 0 ? undefined : stderr.trim() || "codex exec failed",
-        usage: parsed.usage,
+        usage: parsed.usage, estimatedCost,
       };
     } catch (error) {
       return {
@@ -144,7 +154,14 @@ export class DeepSeekExecutor implements ModelExecutor {
         const message = body.choices?.[0]?.message;
         if (!message) throw new Error("DeepSeek response did not contain a message");
         const calls = message.tool_calls as ToolCall[] | undefined;
-        if (!calls?.length) return { provider: "deepseek", model: "deepseek-v4-flash", ok: true, exitCode: 0, output: String(message.content ?? ""), usage };
+        if (!calls?.length) {
+          const cached = usage?.prompt_cache_hit_tokens ?? 0;
+          const estimatedCost = usage ? usageCost("deepseek-v4-flash", {
+            input: usage.prompt_cache_miss_tokens ?? Math.max(0, (usage.prompt_tokens ?? 0) - cached),
+            output: usage.completion_tokens ?? 0, cacheRead: cached, cache5m: 0, cache1h: 0,
+          }) : undefined;
+          return { provider: "deepseek", model: "deepseek-v4-flash", ok: true, exitCode: 0, output: String(message.content ?? ""), usage, estimatedCost };
+        }
         messages.push({ ...message, content: message.content ?? "" });
         for (const call of calls) messages.push({ role: "tool", tool_call_id: call.id, content: deepSeekTool(request.repo, call) });
       }

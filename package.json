@@ -1,6 +1,6 @@
 {
   "name": "spendwatch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Token/$ leaderboards across coding agents (Claude Code, Codex). See which tool calls, shell commands, and prompts spend the most — so you know what to automate or fix.",
   "type": "module",
   "license": "MIT",
@@ -29,7 +29,7 @@
   "bin": {
     "spendwatch": "src/cli.ts"
   },
-  "files": ["src", "assets/icons", "README.md", "LICENSE"],
+  "files": ["src", "assets/icons", "README.md", "CHANGELOG.md", "LICENSE"],
   "engines": {
     "bun": ">=1.0.0"
   },

@@ -26,16 +26,19 @@ describe("routed execution", () => {
   test("escalates only after observable failure and persists attempts", async () => {
     const path = repo();
     const database = join(path, "routing.db");
-    const executor = new FakeExecutor((request) => request.attempt === 1 ? { ok: false, exitCode: 1, error: "tool failed" } : {});
+    const executor = new FakeExecutor((request) => request.attempt === 1
+      ? { ok: false, exitCode: 1, error: "tool failed", estimatedCost: 0.01 }
+      : { estimatedCost: 0.02 });
     const plan = buildRoutePlan({ task: "inspect the parser and explain the failure", repo: path }, 0);
     const result = await executeRoute({ plan, provider: "codex", shadow: false, maxAttempts: 3, database, executors: { codex: executor } });
 
     expect(result.status).toBe("succeeded");
+    expect(result.estimatedCost).toBe(0.03);
     expect(executor.requests.map((request) => request.model)).toEqual(["gpt-5.6-luna", "gpt-5.6-terra"]);
     expect(executor.requests[1]?.priorFailure).toContain("tool failed");
     const db = new Database(database, { readonly: true });
-    expect(db.query("SELECT status, attempts, planned_model, actual_model FROM routing_runs").get()).toEqual({
-      status: "succeeded", attempts: 2, planned_model: "gpt-5.6-luna", actual_model: "gpt-5.6-terra",
+    expect(db.query("SELECT status, attempts, planned_model, actual_model, estimated_cost FROM routing_runs").get()).toEqual({
+      status: "succeeded", attempts: 2, planned_model: "gpt-5.6-luna", actual_model: "gpt-5.6-terra", estimated_cost: 0.03,
     });
     expect(db.query("SELECT COUNT(*) AS count FROM routing_attempts").get()).toEqual({ count: 2 });
     db.close();
