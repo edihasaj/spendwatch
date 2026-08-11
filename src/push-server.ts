@@ -48,8 +48,13 @@ function notificationPayload(delivery: PendingPushDelivery): string {
   });
 }
 
-export async function serveDashboard(options: DashboardServerOptions): Promise<never> {
-  const store = new PushStore(options.databasePath);
+export interface PushTestResult {
+  sent: number;
+  failed: number;
+  disabled: number;
+}
+
+function configureVapid(store: PushStore, subject: string): { publicKey: string; privateKey: string } {
   let publicKey = store.config("vapid_public_key");
   let privateKey = store.config("vapid_private_key");
   if (!publicKey || !privateKey) {
@@ -59,7 +64,42 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
     store.setConfig("vapid_public_key", publicKey);
     store.setConfig("vapid_private_key", privateKey);
   }
-  webpush.setVapidDetails(options.vapidSubject, publicKey, privateKey);
+  webpush.setVapidDetails(subject, publicKey, privateKey);
+  return { publicKey, privateKey };
+}
+
+export async function testBackgroundPush(databasePath: string, vapidSubject: string): Promise<PushTestResult> {
+  const store = new PushStore(databasePath);
+  const result: PushTestResult = { sent: 0, failed: 0, disabled: 0 };
+  try {
+    configureVapid(store, vapidSubject);
+    await Promise.all(store.enabledSubscriptions().map(async (subscription) => {
+      try {
+        await webpush.sendNotification(subscription, JSON.stringify({
+          title: "Spendwatch background test",
+          body: "This arrived without the dashboard being open.",
+          tag: "spendwatch:background-test",
+          url: "/",
+        }), { TTL: 60, urgency: "normal" });
+        result.sent++;
+      } catch (error) {
+        result.failed++;
+        const statusCode = Number((error as { statusCode?: unknown }).statusCode);
+        if (statusCode === 404 || statusCode === 410) {
+          store.disableSubscription(subscription.endpoint, Date.now());
+          result.disabled++;
+        }
+      }
+    }));
+    return result;
+  } finally {
+    store.close();
+  }
+}
+
+export async function serveDashboard(options: DashboardServerOptions): Promise<never> {
+  const store = new PushStore(options.databasePath);
+  const { publicKey } = configureVapid(store, options.vapidSubject);
   let monitoring = false;
 
   const send = async (delivery: PendingPushDelivery): Promise<void> => {
