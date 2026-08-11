@@ -23,23 +23,35 @@ export function loadSessionEquivalentForecasts(
   nowMs: number,
 ): Map<string, SessionEquivalentForecast> {
   const db = new Database(path, { readonly: true });
-  const rows = db.query<PairedRow, []>(`
+  const grouped = new Map<string, PairedRow[]>();
+  const pairedSamples = db.query<PairedRow, [string, string]>(`
+    WITH session_samples AS (
+      SELECT provider, account, sampled_at_ms,
+        MAX(used_percent) AS used_percent, MAX(resets_at_ms) AS resets_at_ms
+      FROM capacity_history
+      WHERE provider = ?1 AND account = ?2 AND window_kind = 'session'
+      GROUP BY provider, account, sampled_at_ms
+    ), weekly_samples AS (
+      SELECT provider, account, sampled_at_ms,
+        MAX(used_percent) AS used_percent, MAX(resets_at_ms) AS resets_at_ms
+      FROM capacity_history
+      WHERE provider = ?1 AND account = ?2 AND window_kind = 'weekly'
+      GROUP BY provider, account, sampled_at_ms
+    )
     SELECT s.provider, s.account, s.sampled_at_ms AS sampledAt,
       s.used_percent AS sessionUsed, s.resets_at_ms AS sessionReset,
       w.used_percent AS weeklyUsed, w.resets_at_ms AS weeklyReset
-    FROM capacity_history s
-    JOIN capacity_history w ON w.provider = s.provider AND w.account = s.account
-      AND w.sampled_at_ms = s.sampled_at_ms AND w.window_kind = 'weekly'
-    WHERE s.window_kind = 'session'
-    ORDER BY s.provider, s.account, s.sampled_at_ms
-  `).all();
-  db.close();
-
-  const grouped = new Map<string, PairedRow[]>();
-  for (const row of rows) {
-    const key = `${row.provider}:${row.account.toLowerCase()}`;
-    grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    FROM session_samples s
+    JOIN weekly_samples w ON w.sampled_at_ms = s.sampled_at_ms
+    ORDER BY s.sampled_at_ms DESC
+    LIMIT 5000
+  `);
+  for (const account of accounts) {
+    if (!account.weekly) continue;
+    const key = `${account.provider}:${account.email.toLowerCase()}`;
+    grouped.set(key, pairedSamples.all(account.provider, account.email).reverse());
   }
+  db.close();
   const forecasts = new Map<string, SessionEquivalentForecast>();
   for (const account of accounts) {
     if (!account.weekly) continue;

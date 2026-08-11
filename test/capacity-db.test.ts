@@ -137,6 +137,17 @@ describe("capacity history", () => {
         session: { usedPercent: 0, windowMinutes: 300, resetsAt: new Date(Date.parse(sampledAt) + 5 * 60 * 60_000).toISOString() },
         weekly: { usedPercent: 10 + index * 10, windowMinutes: 10080, resetsAt: weeklyReset },
       }], { collectedAt: Date.parse(sampledAt) });
+      // Multiple sources can report different values at the same timestamp.
+      // Forecast loading must aggregate them before pairing the two windows.
+      writeCapacitySnapshot(db, [{
+        provider: "codex",
+        email: "learned@example.com",
+        plan: "Pro",
+        devices: ["macbook"],
+        updatedAt: sampledAt,
+        session: { usedPercent: 1, windowMinutes: 300, resetsAt: new Date(Date.parse(sampledAt) + 5 * 60 * 60_000).toISOString() },
+        weekly: { usedPercent: 11 + index * 10, windowMinutes: 10080, resetsAt: weeklyReset },
+      }], { collectedAt: Date.parse(sampledAt) });
     }
     const current: CodexLimitAccount = {
       provider: "codex",
