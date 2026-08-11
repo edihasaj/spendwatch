@@ -46,7 +46,7 @@ describe("capacity history", () => {
     expect(history.series.every((series) => series.sampleCount === 2)).toBe(true);
     const html = renderHistoryHtml(history, { capacityHref: "capacity.html" });
     expect(html).toContain("Past month");
-    expect(html).toContain("Raw history remains append-only in SQLite");
+    expect(html).toContain("Older verified archives remain restorable");
     expect(html).toContain("work@example.com");
     expect(html).toContain('href="capacity.html">Capacity</a>');
   });

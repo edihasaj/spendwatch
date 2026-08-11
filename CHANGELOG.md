@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 — 2026-08-12
+
+- Add preview-first, verified archives for capacity history older than 365 days.
+- Add additive, idempotent restoration from compressed SQLite archives.
+- Keep archives mode 0600 and preserve them independently from the compact live database.
+
 ## 0.2.0 — 2026-08-12
 
 - Add evidence-driven Luna, Terra, and Sol routing previews.

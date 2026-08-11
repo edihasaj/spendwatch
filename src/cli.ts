@@ -7,6 +7,7 @@ import packageMetadata from "../package.json";
 import { addAccount, type AccountAddOptions, type AccountProvider } from "./accounts";
 import { Aggregator } from "./aggregate";
 import { importCapacityHistory, loadCapacityHistory, writeCapacitySnapshot } from "./capacity-db";
+import { runCapacityCommand } from "./capacity-cli";
 import { loadCapacityDashboard } from "./capacity-dashboard";
 import { exportCapacityHistory } from "./capacity-export";
 import { writeSnapshot } from "./db";
@@ -171,7 +172,7 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--help" || x === "-h") {
       console.log(`spendwatch — token/$ leaderboards across coding agents
 
-usage: spendwatch [report|watch|limits|guard|route|run|eval|server|push-test|capacity-history-export] [options]
+usage: spendwatch [report|watch|limits|guard|route|run|eval|capacity|server|push-test|capacity-history-export] [options]
        spendwatch account add PROVIDER [options]
 
   report            aggregate past sessions (default)
@@ -181,6 +182,7 @@ usage: spendwatch [report|watch|limits|guard|route|run|eval|server|push-test|cap
   route TASK        preview an evidence-driven model plan; never executes it
   run TASK          execute, verify, record, and escalate a routed task
   eval [JSONL]      replay tasks through the routing policy without model calls
+  capacity          archive or restore old capacity history safely
   server            serve the dashboard and deliver background Web Push alerts
   push-test         send a background test to every enrolled browser
   capacity-history-export
@@ -456,23 +458,28 @@ if (routeExit !== undefined) {
   if (runExit !== undefined) {
     process.exitCode = runExit;
   } else {
-    const evalExit = runEvalCommand(argv);
-    if (evalExit !== undefined) {
-      process.exitCode = evalExit;
+    const capacityExit = await runCapacityCommand(argv);
+    if (capacityExit !== undefined) {
+      process.exitCode = capacityExit;
     } else {
-      const accountArgs = parseAccountArgs(argv);
-      if (accountArgs) {
-        console.log(await addAccount(accountArgs));
-        process.exit(0);
+      const evalExit = runEvalCommand(argv);
+      if (evalExit !== undefined) {
+        process.exitCode = evalExit;
+      } else {
+        const accountArgs = parseAccountArgs(argv);
+        if (accountArgs) {
+          console.log(await addAccount(accountArgs));
+          process.exit(0);
+        }
+        const args = parseArgs(argv);
+        if (args.cmd === "watch") watch(args);
+        else if (args.cmd === "limits") await limits(args);
+        else if (args.cmd === "guard") process.exitCode = guard(args);
+        else if (args.cmd === "server") await server(args);
+        else if (args.cmd === "push-test") await pushTest(args);
+        else if (args.cmd === "capacity-history-export") await capacityHistoryExport(args);
+        else await report(args);
       }
-      const args = parseArgs(argv);
-      if (args.cmd === "watch") watch(args);
-      else if (args.cmd === "limits") await limits(args);
-      else if (args.cmd === "guard") process.exitCode = guard(args);
-      else if (args.cmd === "server") await server(args);
-      else if (args.cmd === "push-test") await pushTest(args);
-      else if (args.cmd === "capacity-history-export") await capacityHistoryExport(args);
-      else await report(args);
     }
   }
 }
