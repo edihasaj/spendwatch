@@ -6,11 +6,13 @@ import { dirname, relative, resolve } from "node:path";
 import { addAccount, type AccountAddOptions, type AccountProvider } from "./accounts";
 import { Aggregator } from "./aggregate";
 import { importCapacityHistory, loadCapacityHistory, writeCapacitySnapshot } from "./capacity-db";
+import { loadCapacityDashboard } from "./capacity-dashboard";
 import { exportCapacityHistory } from "./capacity-export";
 import { writeSnapshot } from "./db";
 import { renderHistoryHtml } from "./history";
 import { renderHtml } from "./html";
-import { loadCodexLimits, renderLimitsHtml, renderLimitsText } from "./limits";
+import { renderLimitsHtml, renderLimitsText } from "./limits";
+import { attachSessionEquivalentForecasts } from "./session-equivalents";
 import { renderBrief, renderOverview, renderReport } from "./render";
 import { labelReports, loadReports, type AccountGrouping } from "./reports";
 import { IncrementalReader } from "./scan";
@@ -278,7 +280,8 @@ async function report(a: Args) {
 
 async function limits(a: Args) {
   if (!a.inputs.length) throw new Error("limits requires at least one --input JSON path");
-  const accounts = loadCodexLimits(a.inputs);
+  const dashboard = loadCapacityDashboard(a.inputs);
+  const accounts = dashboard.accounts;
   if (a.json) {
     process.stdout.write(JSON.stringify(accounts, null, 2) + "\n");
   } else {
@@ -292,6 +295,7 @@ async function limits(a: Args) {
       const imported = importCapacityHistory(out, a.historyInputs);
       process.stdout.write(`\x1b[2m→ Capacity history (${imported.inserted} new rows from ${imported.accepted} records) imported\x1b[0m\n`);
     }
+    attachSessionEquivalentForecasts(out, accounts, nowMs());
     if (a.historyHtml) {
       const historyOut = resolve(a.historyHtml);
       writeFileSync(historyOut, renderHistoryHtml(loadCapacityHistory(out), {
@@ -305,7 +309,7 @@ async function limits(a: Args) {
   }
   if (a.html) {
     const out = resolve(a.html);
-    writeFileSync(out, renderLimitsHtml(accounts, { generatedAt: nowMs(), spendHref: a.spendHref, historyHref: a.historyHref }));
+    writeFileSync(out, renderLimitsHtml(accounts, { generatedAt: nowMs(), spendHref: a.spendHref, historyHref: a.historyHref, sources: dashboard.sources }));
     process.stdout.write(`\x1b[2m→ Limits HTML written to ${out}\x1b[0m\n`);
   }
 }

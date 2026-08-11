@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { importCapacityHistory, loadCapacityHistory, writeCapacitySnapshot } from "../src/capacity-db";
 import { renderHistoryHtml } from "../src/history";
-import type { CodexLimitAccount } from "../src/limits";
+import { renderLimitsHtml, type CodexLimitAccount } from "../src/limits";
+import { attachSessionEquivalentForecasts } from "../src/session-equivalents";
 
 describe("capacity history", () => {
   test("stores live and imported samples idempotently", () => {
@@ -119,5 +120,35 @@ describe("capacity history", () => {
     expect(JSON.parse(row?.balances ?? "[]")).toEqual([
       { currency: "USD", total: 4.6, granted: 0, toppedUp: 4.6 },
     ]);
+  });
+
+  test("learns weekly burn per completed five-hour session", () => {
+    const dir = mkdtempSync(join(tmpdir(), "spendwatch-equivalent-"));
+    const db = join(dir, "history.db");
+    const weeklyReset = "2026-08-16T00:00:00Z";
+    for (let index = 0; index < 4; index++) {
+      const sampledAt = new Date(Date.parse("2026-08-10T00:00:00Z") + index * 5 * 60 * 60_000).toISOString();
+      writeCapacitySnapshot(db, [{
+        provider: "codex",
+        email: "learned@example.com",
+        plan: "Pro",
+        devices: ["studio"],
+        updatedAt: sampledAt,
+        session: { usedPercent: 0, windowMinutes: 300, resetsAt: new Date(Date.parse(sampledAt) + 5 * 60 * 60_000).toISOString() },
+        weekly: { usedPercent: 10 + index * 10, windowMinutes: 10080, resetsAt: weeklyReset },
+      }], { collectedAt: Date.parse(sampledAt) });
+    }
+    const current: CodexLimitAccount = {
+      provider: "codex",
+      email: "learned@example.com",
+      plan: "Pro",
+      devices: ["studio"],
+      weekly: { usedPercent: 40, windowMinutes: 10080, resetsAt: weeklyReset },
+    };
+    attachSessionEquivalentForecasts(db, [current], Date.parse("2026-08-10T15:00:00Z"));
+    expect(current.sessionEquivalent?.sampleCount).toBe(3);
+    expect(current.sessionEquivalent?.medianWeeklyBurn).toBe(10);
+    expect(current.sessionEquivalent?.estimatedQuotasLeft).toBe(6);
+    expect(renderLimitsHtml([current], { generatedAt: Date.parse("2026-08-10T15:00:00Z") })).toContain("Est. 6 session quotas left");
   });
 });
