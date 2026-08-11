@@ -134,10 +134,10 @@ describe("codex aggregate from fixture", () => {
 
     expect(r.source).toBe("codex");
     expect(r.apiCalls).toBe(2);
-    // gpt-5 tier $1.25/$10, cached read 0.1x:
-    // call1: (10000-4000)*1.25 + 800*10 + 4000*0.125 = 7500+8000+500 = 16000 µ$
-    // call2: (5000-1000)*1.25 + 300*10 + 1000*0.125 = 5000+3000+125 = 8125 µ$
-    expect(r.totalCost).toBeCloseTo((16000 + 8125) / 1e6, 6);
+    // gpt-5.5 $5/$30, cached input $0.50:
+    // call1: (10000-4000)*5 + 800*30 + 4000*0.5 = 30000+24000+2000 = 56000 µ$
+    // call2: (5000-1000)*5 + 300*30 + 1000*0.5 = 20000+9000+500 = 29500 µ$
+    expect(r.totalCost).toBeCloseTo((56000 + 29500) / 1e6, 6);
     expect(r.projects[0].project).toBe("klyp");
     expect(r.models[0].model).toBe("gpt-5.5");
 
