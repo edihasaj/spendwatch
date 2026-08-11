@@ -130,7 +130,7 @@ describe("capacity history", () => {
       const sampledAt = new Date(Date.parse("2026-08-10T00:00:00Z") + index * 5 * 60 * 60_000).toISOString();
       writeCapacitySnapshot(db, [{
         provider: "codex",
-        email: "learned@example.com",
+        email: "LEARNED@EXAMPLE.COM",
         plan: "Pro",
         devices: ["studio"],
         updatedAt: sampledAt,
@@ -141,7 +141,7 @@ describe("capacity history", () => {
       // Forecast loading must aggregate them before pairing the two windows.
       writeCapacitySnapshot(db, [{
         provider: "codex",
-        email: "learned@example.com",
+        email: "LEARNED@EXAMPLE.COM",
         plan: "Pro",
         devices: ["macbook"],
         updatedAt: sampledAt,

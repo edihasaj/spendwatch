@@ -29,13 +29,13 @@ export function loadSessionEquivalentForecasts(
       SELECT provider, account, sampled_at_ms,
         MAX(used_percent) AS used_percent, MAX(resets_at_ms) AS resets_at_ms
       FROM capacity_history
-      WHERE provider = ?1 AND account = ?2 AND window_kind = 'session'
+      WHERE provider = ?1 AND account = ?2 COLLATE NOCASE AND window_kind = 'session'
       GROUP BY provider, account, sampled_at_ms
     ), weekly_samples AS (
       SELECT provider, account, sampled_at_ms,
         MAX(used_percent) AS used_percent, MAX(resets_at_ms) AS resets_at_ms
       FROM capacity_history
-      WHERE provider = ?1 AND account = ?2 AND window_kind = 'weekly'
+      WHERE provider = ?1 AND account = ?2 COLLATE NOCASE AND window_kind = 'weekly'
       GROUP BY provider, account, sampled_at_ms
     )
     SELECT s.provider, s.account, s.sampled_at_ms AS sampledAt,
