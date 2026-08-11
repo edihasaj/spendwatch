@@ -14,14 +14,14 @@ import { renderHtml } from "./html";
 import { evaluateGuard, renderGuardResult, type GuardWindow } from "./guard";
 import { renderLimitsHtml, renderLimitsText, type CapacityProvider } from "./limits";
 import { attachSessionEquivalentForecasts } from "./session-equivalents";
-import { serveDashboard } from "./push-server";
+import { serveDashboard, testBackgroundPush } from "./push-server";
 import { renderBrief, renderOverview, renderReport } from "./render";
 import { labelReports, loadReports, type AccountGrouping } from "./reports";
 import { IncrementalReader } from "./scan";
 import { discover, type SourceStatus } from "./sources";
 
 interface Args {
-  cmd: "report" | "watch" | "limits" | "guard" | "server" | "capacity-history-export";
+  cmd: "report" | "watch" | "limits" | "guard" | "server" | "push-test" | "capacity-history-export";
   days: number;
   project?: string;
   account?: string;
@@ -122,7 +122,7 @@ function parseArgs(argv: string[]): Args {
   const rest = [...argv];
   while (rest.length) {
     const x = rest.shift()!;
-    if (x === "report" || x === "watch" || x === "limits" || x === "guard" || x === "server" || x === "capacity-history-export") a.cmd = x;
+    if (x === "report" || x === "watch" || x === "limits" || x === "guard" || x === "server" || x === "push-test" || x === "capacity-history-export") a.cmd = x;
     else if (x === "--days") a.days = Number(rest.shift());
     else if (x === "--project") a.project = rest.shift();
     else if (x === "--agent" || x === "--source") a.agents = new Set((rest.shift() ?? "").split(",").map((s) => s.trim()).filter(Boolean));
@@ -167,7 +167,7 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--help" || x === "-h") {
       console.log(`spendwatch — token/$ leaderboards across coding agents
 
-usage: spendwatch [report|watch|limits|guard|server|capacity-history-export] [options]
+usage: spendwatch [report|watch|limits|guard|server|push-test|capacity-history-export] [options]
        spendwatch account add PROVIDER [options]
 
   report            aggregate past sessions (default)
@@ -175,6 +175,7 @@ usage: spendwatch [report|watch|limits|guard|server|capacity-history-export] [op
   limits            render Codex account quota input as a planning dashboard
   guard             exit nonzero when an account is below minimum capacity
   server            serve the dashboard and deliver background Web Push alerts
+  push-test         send a background test to every enrolled browser
   capacity-history-export
                     export recoverable Codex quota history as sanitized JSONL
   account add       connect Codex, Claude, or Copilot using official auth
@@ -389,6 +390,14 @@ async function server(a: Args): Promise<never> {
   });
 }
 
+async function pushTest(a: Args): Promise<void> {
+  if (!a.sqlite) throw new Error("push-test requires --sqlite");
+  if (!/^(mailto:|https:\/\/)/.test(a.vapidSubject)) throw new Error("--vapid-subject must be a mailto: or https: URI");
+  const result = await testBackgroundPush(resolve(a.sqlite), a.vapidSubject);
+  process.stdout.write(`Background push test: ${result.sent} sent, ${result.failed} failed${result.disabled ? `, ${result.disabled} stale disabled` : ""}\n`);
+  if (result.sent === 0) process.exitCode = 69;
+}
+
 async function capacityHistoryExport(a: Args) {
   const stats = await exportCapacityHistory(a.label ?? "local");
   process.stderr.write(`exported ${stats.records.toLocaleString()} records${stats.firstAt ? ` from ${stats.firstAt} to ${stats.lastAt}` : ""}\n`);
@@ -438,5 +447,6 @@ if (args.cmd === "watch") watch(args);
 else if (args.cmd === "limits") await limits(args);
 else if (args.cmd === "guard") process.exitCode = guard(args);
 else if (args.cmd === "server") await server(args);
+else if (args.cmd === "push-test") await pushTest(args);
 else if (args.cmd === "capacity-history-export") await capacityHistoryExport(args);
 else await report(args);
