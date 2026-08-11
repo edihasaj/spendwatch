@@ -1,6 +1,17 @@
 bin/
 node_modules/
 
+# local credentials
+.env
+.env.*
+!.env.example
+auth.json
+credentials.json
+*.pem
+*.key
+*.p12
+*.pfx
+
 spendwatch-report.html
 index.html
 
@@ -11,3 +22,10 @@ spendwatch.db
 *.sqlite3
 *.db-wal
 *.db-shm
+.*.bun-build
+pnpm-lock.yaml
+--help-*.png
+e2e-*.png
+*-e2e.png
+.probeport-*.png
+.pace-live.png
