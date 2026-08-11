@@ -25,6 +25,8 @@ CREATE INDEX IF NOT EXISTS idx_capacity_history_time
   ON capacity_history(sampled_at_ms);
 CREATE INDEX IF NOT EXISTS idx_capacity_history_account
   ON capacity_history(provider, account, window_kind, sampled_at_ms);
+CREATE INDEX IF NOT EXISTS idx_capacity_history_account_nocase
+  ON capacity_history(provider, account COLLATE NOCASE, window_kind, sampled_at_ms);
 
 CREATE TABLE IF NOT EXISTS capacity_account_history (
   sample_key TEXT PRIMARY KEY,
