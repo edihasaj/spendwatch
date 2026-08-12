@@ -81,8 +81,7 @@ main {
 }
 
 .bookmark-link:hover,
-.bookmark-folder summary:hover,
-.bookmark-folder[open] summary {
+.bookmark-menu .bookmark-link:hover {
   background: rgba(255, 255, 255, 0.1);
 }
 
@@ -103,7 +102,14 @@ main {
 }
 
 .bookmark-folder summary {
+  border-radius: 0;
+  background: transparent;
   list-style: none;
+}
+
+.bookmark-folder summary:hover,
+.bookmark-folder[open] > summary {
+  background: transparent;
 }
 
 .bookmark-folder summary::-webkit-details-marker {
@@ -120,9 +126,10 @@ main {
 }
 
 .bookmark-menu {
-  position: absolute;
-  top: 31px;
-  left: 0;
+  position: fixed;
+  top: var(--menu-y, 0);
+  left: var(--menu-x, 0);
+  z-index: 3;
   display: grid;
   width: max-content;
   min-width: 220px;
@@ -154,9 +161,6 @@ main {
 }
 
 .bookmark-folder.nested > .bookmark-menu {
-  position: fixed;
-  top: var(--menu-y, 0);
-  left: var(--menu-x, 0);
   z-index: 4;
 }
 
