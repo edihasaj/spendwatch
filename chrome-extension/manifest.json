@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Spendwatch New Tab",
+  "description": "Shows the private Spendwatch capacity dashboard on every new tab.",
+  "version": "1.0.0",
+  "chrome_url_overrides": {
+    "newtab": "newtab.html"
+  },
+  "host_permissions": [
+    "https://basevm-clean-20260724.tail5ea051.ts.net:8899/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; frame-src https://basevm-clean-20260724.tail5ea051.ts.net:8899"
+  }
+}

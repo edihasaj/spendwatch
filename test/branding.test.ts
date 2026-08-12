@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { BRAND_HEAD_HTML, NOTIFICATION_BADGE, NOTIFICATION_ICON } from "../src/branding";
 import { SERVICE_WORKER_SOURCE } from "../src/service-worker";
 
@@ -16,5 +16,22 @@ describe("Spendwatch identity", () => {
       "assets/icons/apple-icon-180x180.png",
       "assets/icons/manifest.json",
     ]) expect(existsSync(path)).toBe(true);
+  });
+
+  test("ships a private dashboard new-tab extension", () => {
+    const manifest = JSON.parse(readFileSync("chrome-extension/manifest.json", "utf8"));
+    const page = readFileSync("chrome-extension/newtab.html", "utf8");
+    const script = readFileSync("chrome-extension/newtab.js", "utf8");
+
+    expect(manifest.manifest_version).toBe(3);
+    expect(manifest.chrome_url_overrides.newtab).toBe("newtab.html");
+    expect(manifest.host_permissions).toContain(
+      "https://basevm-clean-20260724.tail5ea051.ts.net:8899/*",
+    );
+    expect(page).not.toContain("<a ");
+    expect(script).toContain("RETRY_INTERVAL_MS");
+    expect(script).toContain("CONNECT_TIMEOUT_MS");
+    expect(script).toContain("AbortController");
+    expect(script).toContain("method: \"HEAD\"");
   });
 });

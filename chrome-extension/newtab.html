@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Spendwatch</title>
+    <link rel="stylesheet" href="newtab.css">
+  </head>
+  <body data-state="loading">
+    <main>
+      <iframe
+        id="dashboard"
+        title="Spendwatch capacity dashboard"
+        referrerpolicy="no-referrer"
+        allow="clipboard-write"
+      ></iframe>
+
+      <section class="status" aria-live="polite">
+        <div class="mark" aria-hidden="true"><span></span></div>
+        <p class="eyebrow">Private capacity monitor</p>
+        <h1>Spendwatch</h1>
+        <p id="message" class="message">Connecting to your metrics</p>
+        <div class="pulse" aria-hidden="true"><span></span></div>
+        <p class="host">basevm-clean-20260724.tail5ea051.ts.net:8899</p>
+        <button id="retry" type="button">Try again</button>
+      </section>
+    </main>
+
+    <script src="newtab.js"></script>
+  </body>
+</html>
