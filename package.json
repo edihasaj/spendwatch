@@ -29,7 +29,7 @@
   "bin": {
     "spendwatch": "src/cli.ts"
   },
-  "files": ["src", "assets/icons", "README.md", "CHANGELOG.md", "LICENSE"],
+  "files": ["src", "assets/icons", "chrome-extension", "README.md", "CHANGELOG.md", "LICENSE"],
   "engines": {
     "bun": ">=1.0.0"
   },
