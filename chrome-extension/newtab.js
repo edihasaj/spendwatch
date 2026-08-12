@@ -35,6 +35,21 @@ function bookmarkLink(bookmark) {
   return link;
 }
 
+function folderIcon() {
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.classList.add("folder-icon");
+  icon.setAttribute("viewBox", "0 0 16 16");
+  icon.setAttribute("aria-hidden", "true");
+  const outline = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  outline.setAttribute("d", "M1.75 3.5h4.5l1.5 1.75h6.5v7.25H1.75z");
+  outline.setAttribute("fill", "none");
+  outline.setAttribute("stroke", "currentColor");
+  outline.setAttribute("stroke-width", "1.25");
+  outline.setAttribute("stroke-linejoin", "round");
+  icon.append(outline);
+  return icon;
+}
+
 function positionMenu(summary, menu, nested) {
   const anchor = summary.getBoundingClientRect();
   const bounds = menu.getBoundingClientRect();
@@ -55,9 +70,7 @@ function bookmarkFolder(folder, nested = false) {
   details.className = `bookmark-folder${nested ? " nested" : ""}`;
   const summary = document.createElement("summary");
   summary.title = folder.title;
-  const icon = document.createElement("i");
-  icon.className = "folder-icon";
-  icon.setAttribute("aria-hidden", "true");
+  const icon = folderIcon();
   const label = document.createElement("span");
   label.textContent = folder.title;
   summary.append(icon, label);
