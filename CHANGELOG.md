@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a 90% utilization planner for subscription-backed capacity, excluding PAYG API balances from subscription sizing.
 - Match Chrome's native dark bookmark bar and menu typography, sizing, colors, and surfaces.
 - Show the Chrome profile's Bookmark Bar on the extension New Tab page.
 - Add a self-recovering Chrome New Tab extension for the private capacity dashboard.
