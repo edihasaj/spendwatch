@@ -35,9 +35,20 @@ function bookmarkLink(bookmark) {
   return link;
 }
 
-function bookmarkFolder(folder) {
+function positionSubmenu(summary, menu) {
+  const anchor = summary.getBoundingClientRect();
+  const bounds = menu.getBoundingClientRect();
+  const margin = 8;
+  const opensLeft = anchor.right + bounds.width > window.innerWidth - margin;
+  const x = opensLeft ? anchor.left - bounds.width + 2 : anchor.right - 2;
+  const y = Math.min(anchor.top - 5, window.innerHeight - bounds.height - margin);
+  menu.style.setProperty("--menu-x", `${Math.max(margin, x)}px`);
+  menu.style.setProperty("--menu-y", `${Math.max(margin, y)}px`);
+}
+
+function bookmarkFolder(folder, nested = false) {
   const details = document.createElement("details");
-  details.className = "bookmark-folder";
+  details.className = `bookmark-folder${nested ? " nested" : ""}`;
   const summary = document.createElement("summary");
   summary.title = folder.title;
   const icon = document.createElement("i");
@@ -52,7 +63,7 @@ function bookmarkFolder(folder) {
   const children = folder.children || [];
   for (const child of children) {
     if (child.url) menu.append(bookmarkLink(child));
-    else menu.append(bookmarkFolder(child));
+    else menu.append(bookmarkFolder(child, true));
   }
   if (!children.length) {
     const empty = document.createElement("div");
@@ -61,6 +72,14 @@ function bookmarkFolder(folder) {
     menu.append(empty);
   }
   details.append(summary, menu);
+  details.addEventListener("toggle", () => {
+    if (!details.open) return;
+    const siblings = details.parentElement?.querySelectorAll(":scope > details[open]") || [];
+    for (const sibling of siblings) {
+      if (sibling !== details) sibling.removeAttribute("open");
+    }
+    if (nested) requestAnimationFrame(() => positionSubmenu(summary, menu));
+  });
   return details;
 }
 
