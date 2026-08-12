@@ -72,7 +72,7 @@ function bookmarkFolder(folder, nested = false) {
   if (!children.length) {
     const empty = document.createElement("div");
     empty.className = "bookmark-empty";
-    empty.textContent = "Empty folder";
+    empty.textContent = "(empty)";
     menu.append(empty);
   }
   details.append(summary, menu);
