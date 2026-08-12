@@ -362,7 +362,7 @@ async function limits(a: Args) {
   }
   if (a.html) {
     const out = resolve(a.html);
-    writeFileSync(out, renderLimitsHtml(accounts, { generatedAt: nowMs(), spendHref: a.spendHref, historyHref: a.historyHref, sources: dashboard.sources }));
+    writeFileSync(out, renderLimitsHtml(accounts, { generatedAt: nowMs(), spendHref: a.spendHref, historyHref: a.historyHref, sources: dashboard.sources, authentication: dashboard.authentication }));
     process.stdout.write(`\x1b[2m→ Limits HTML written to ${out}\x1b[0m\n`);
   }
 }
