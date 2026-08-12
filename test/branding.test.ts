@@ -44,8 +44,9 @@ describe("Spendwatch identity", () => {
     expect(script).toContain("AbortController");
     expect(script).toContain("method: \"HEAD\"");
     expect(stylesheet).toContain("background: #35363a");
-    expect(stylesheet).toContain("border-radius: 15px");
-    expect(stylesheet).toContain("border: 1.5px solid #bdc1c6");
+    expect(stylesheet).toContain("flex: 0 0 34px");
+    expect(stylesheet).toContain('font: 400 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif');
+    expect(script).toContain('outline.setAttribute("stroke-width", "1.25")');
     expect(stylesheet).toContain("min-width: 112px");
   });
 });
