@@ -4,6 +4,7 @@ import { NOTIFICATION_BADGE, NOTIFICATION_ICON } from "./branding";
 import { loadCapacityDashboard } from "./capacity-dashboard";
 import { PushStore, type PendingPushDelivery, type StoredPushSubscription } from "./push-store";
 import { SERVICE_WORKER_SOURCE } from "./service-worker";
+import { reportOperationalError } from "./telemetry";
 
 export interface DashboardServerOptions {
   host: string;
@@ -117,6 +118,12 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
       store.markSent(delivery.eventId, delivery.endpoint, Date.now());
     } catch (error) {
       const statusCode = Number((error as { statusCode?: unknown }).statusCode);
+      if (statusCode !== 404 && statusCode !== 410) {
+        void reportOperationalError("spendwatch.push.delivery-failure", error, {
+          component: "push",
+          status: Number.isFinite(statusCode) ? String(statusCode) : "unknown",
+        });
+      }
       store.markFailed(delivery.eventId, delivery.endpoint, String(error), statusCode === 404 || statusCode === 410, Date.now());
     }
   };
@@ -128,6 +135,9 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
       store.observe(loadCapacityDashboard([options.capacityPath]).accounts, Date.now());
       await Promise.allSettled(store.pendingDeliveries().map(send));
     } catch (error) {
+      void reportOperationalError("spendwatch.monitor.failure", error, {
+        component: "capacity",
+      });
       process.stderr.write(`push monitor: ${String(error)}\n`);
     } finally {
       monitoring = false;
@@ -139,6 +149,7 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
     hostname: options.host,
     port: options.port,
     async fetch(request) {
+      try {
       const url = new URL(request.url);
       if (url.pathname === "/api/push/config" && request.method === "GET") {
         return json({ publicKey, thresholds: [30, 15, 10, 5, 0] });
@@ -169,6 +180,9 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
           store.markSubscriptionVerified(body.subscription.endpoint, Date.now());
           return json({ ok: true, testSent: true });
         } catch (error) {
+          void reportOperationalError("spendwatch.push.test-failure", error, {
+            component: "push",
+          });
           return json({ error: `subscription saved, test failed: ${String(error)}` }, 502);
         }
       }
@@ -188,6 +202,12 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
       return new Response(request.method === "HEAD" ? null : file, {
         headers: { "Cache-Control": relativePath.endsWith(".html") ? "no-cache" : "public, max-age=300" },
       });
+      } catch (error) {
+        void reportOperationalError("spendwatch.http.failure", error, {
+          method: request.method.toLowerCase(),
+        });
+        return json({ error: "internal error" }, 500);
+      }
     },
   });
   process.stdout.write(`Spendwatch server listening on http://${options.host}:${options.port}\n`);

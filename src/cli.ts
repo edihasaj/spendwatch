@@ -24,6 +24,7 @@ import { runRunCommand } from "./run-cli";
 import { runEvalCommand } from "./eval-cli";
 import { IncrementalReader } from "./scan";
 import { discover, type SourceStatus } from "./sources";
+import { reportOperationalError } from "./telemetry";
 
 interface Args {
   cmd: "report" | "watch" | "limits" | "guard" | "server" | "push-test" | "capacity-history-export";
@@ -445,7 +446,7 @@ function watch(a: Args) {
   }, a.interval);
 }
 
-const argv = process.argv.slice(2);
+async function runCli(argv: string[]): Promise<void> {
 if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-V")) {
   process.stdout.write(`${packageMetadata.version}\n`);
   process.exit(0);
@@ -482,4 +483,15 @@ if (routeExit !== undefined) {
       }
     }
   }
+}
+}
+
+const argv = process.argv.slice(2);
+try {
+  await runCli(argv);
+} catch (error) {
+  await reportOperationalError("spendwatch.cli.failure", error, {
+    command: argv[0] ?? "report",
+  });
+  throw error;
 }
