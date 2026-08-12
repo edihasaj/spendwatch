@@ -5,7 +5,7 @@ import { Aggregator } from "./aggregate";
 import type { SourceFile } from "./sources";
 
 export function humanProject(dirName: string): string {
-  // "-Users-edihasaj-Projects-foo-bar" -> "foo-bar"; bare workspace -> "~/Projects"
+  // "-Users-developer-Projects-foo-bar" -> "foo-bar"; bare workspace -> "~/Projects"
   const m = dirName.match(/-Users-[^-]+-(.+)/);
   if (!m) return dirName;
   const rest = m[1];
@@ -14,7 +14,7 @@ export function humanProject(dirName: string): string {
 }
 
 export function humanCodexProject(cwd: string): string {
-  // "/Users/edihasaj/Projects/foo" -> "foo"; home -> "~"
+  // "/Users/developer/Projects/foo" -> "foo"; home -> "~"
   const m = cwd.match(/\/(?:Projects|Documents)\/(.+)$/);
   if (m) return m[1];
   const parts = cwd.split("/").filter(Boolean);
