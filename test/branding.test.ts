@@ -18,23 +18,26 @@ describe("Spendwatch identity", () => {
     ]) expect(existsSync(path)).toBe(true);
   });
 
-  test("ships a private dashboard new-tab extension", () => {
+  test("ships a configurable private-dashboard new-tab extension", () => {
     const manifest = JSON.parse(readFileSync("chrome-extension/manifest.json", "utf8"));
     const page = readFileSync("chrome-extension/newtab.html", "utf8");
     const script = readFileSync("chrome-extension/newtab.js", "utf8");
     const stylesheet = readFileSync("chrome-extension/newtab.css", "utf8");
 
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.version).toBe("1.3.0");
+    expect(manifest.version).toBe("1.4.0");
     expect(manifest.chrome_url_overrides.newtab).toBe("newtab.html");
-    expect(manifest.permissions).toEqual(["bookmarks", "favicon"]);
-    expect(manifest.host_permissions).toContain(
-      "https://basevm-clean-20260724.tail5ea051.ts.net:8899/*",
-    );
+    expect(manifest.permissions).toEqual(["bookmarks", "favicon", "storage"]);
+    expect(manifest.host_permissions).toBeUndefined();
+    expect(manifest.optional_host_permissions).toEqual(["http://*/*", "https://*/*"]);
+    expect(manifest.options_ui.page).toBe("options.html");
     expect(page).toContain("<title>New Tab</title>");
     expect(page).toContain('<link rel="icon" href="chrome-new-tab.svg">');
     expect(readFileSync("chrome-extension/chrome-new-tab.svg", "utf8")).toContain("#bdc1c6");
     expect(page).not.toContain("<a ");
+    expect(page).toContain('id="configure"');
+    expect(script).toContain("loadDashboardUrl");
+    expect(script).toContain("saveDashboardUrl");
     expect(script).toContain("RETRY_INTERVAL_MS");
     expect(script).toContain("CONNECT_TIMEOUT_MS");
     expect(script).toContain("chrome.bookmarks.getTree");
@@ -56,5 +59,9 @@ describe("Spendwatch identity", () => {
     expect(stylesheet).toContain("height: 28px");
     expect(stylesheet).toContain("height: 32px");
     expect(stylesheet).toContain(".bookmark-folder[open] > .bookmark-menu:not([data-positioned])");
+    for (const content of [JSON.stringify(manifest), page, script, stylesheet]) {
+      expect(content).not.toMatch(/\.ts\.net/);
+      expect(content).not.toContain("/Users/");
+    }
   });
 });

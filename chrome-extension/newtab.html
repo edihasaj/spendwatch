@@ -24,11 +24,21 @@
         <h1>Spendwatch</h1>
         <p id="message" class="message">Connecting to your metrics</p>
         <div class="pulse" aria-hidden="true"><span></span></div>
-        <p class="host">basevm-clean-20260724.tail5ea051.ts.net:8899</p>
-        <button id="retry" type="button">Try again</button>
+        <p id="host" class="host">Dashboard URL not configured</p>
+        <form id="configure" hidden>
+          <label for="dashboard-url">Dashboard URL</label>
+          <div class="url-field">
+            <input id="dashboard-url" type="url" inputmode="url" placeholder="https://spendwatch.example.com/" autocomplete="url" required>
+            <button type="submit">Connect</button>
+          </div>
+        </form>
+        <div class="status-actions">
+          <button id="retry" type="button">Try again</button>
+          <button id="settings" type="button">Settings</button>
+        </div>
       </section>
     </main>
 
-    <script src="newtab.js"></script>
+    <script type="module" src="newtab.js"></script>
   </body>
 </html>

@@ -1,4 +1,9 @@
-const DASHBOARD_URL = "https://basevm-clean-20260724.tail5ea051.ts.net:8899/";
+import {
+  hasDashboardAccess,
+  loadDashboardUrl,
+  saveDashboardUrl,
+} from "./dashboard-config.js";
+
 const RETRY_INTERVAL_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 8_000;
 const FRAME_TIMEOUT_MS = 12_000;
@@ -6,14 +11,27 @@ const FRAME_TIMEOUT_MS = 12_000;
 const dashboard = document.querySelector("#dashboard");
 const message = document.querySelector("#message");
 const retry = document.querySelector("#retry");
+const settings = document.querySelector("#settings");
 const bookmarkBar = document.querySelector("#bookmark-bar");
+const configure = document.querySelector("#configure");
+const dashboardUrlInput = document.querySelector("#dashboard-url");
+const host = document.querySelector("#host");
 let retryTimer;
 let frameTimer;
 let attempt = 0;
+let dashboardUrl;
 
 function setState(state, text) {
   document.body.dataset.state = state;
   message.textContent = text;
+  configure.hidden = state !== "setup";
+}
+
+function showSetup(text = "Enter the URL of your Spendwatch dashboard") {
+  setState("setup", text);
+  dashboardUrlInput.value = dashboardUrl ?? "";
+  host.textContent = "Stored only in Chrome sync";
+  dashboardUrlInput.focus();
 }
 
 function faviconUrl(url) {
@@ -136,6 +154,14 @@ async function loadBookmarks() {
 }
 
 async function connect() {
+  if (!dashboardUrl) {
+    showSetup();
+    return;
+  }
+  if (!await hasDashboardAccess(dashboardUrl)) {
+    showSetup("Allow access to this dashboard to connect");
+    return;
+  }
   const currentAttempt = ++attempt;
   clearTimeout(retryTimer);
   clearTimeout(frameTimer);
@@ -144,7 +170,7 @@ async function connect() {
   const connectTimer = setTimeout(() => controller.abort(), CONNECT_TIMEOUT_MS);
 
   try {
-    const response = await fetch(DASHBOARD_URL, {
+    const response = await fetch(dashboardUrl, {
       method: "HEAD",
       cache: "no-store",
       signal: controller.signal,
@@ -157,7 +183,7 @@ async function connect() {
       clearTimeout(frameTimer);
       setState("ready", "Metrics ready");
     };
-    dashboard.src = DASHBOARD_URL;
+    dashboard.src = dashboardUrl;
     frameTimer = setTimeout(() => {
       if (currentAttempt !== attempt) return;
       dashboard.onload = null;
@@ -173,7 +199,23 @@ async function connect() {
   }
 }
 
+configure.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const submit = configure.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  setState("setup", "Requesting access to your dashboard");
+  try {
+    dashboardUrl = await saveDashboardUrl(dashboardUrlInput.value);
+    host.textContent = new URL(dashboardUrl).host;
+    await connect();
+  } catch (error) {
+    showSetup(error instanceof Error ? error.message : "Dashboard access was not granted");
+  } finally {
+    submit.disabled = false;
+  }
+});
 retry.addEventListener("click", connect);
+settings.addEventListener("click", () => chrome.runtime.openOptionsPage());
 window.addEventListener("online", connect);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && document.body.dataset.state === "offline") connect();
@@ -197,4 +239,7 @@ for (const event of [
   chrome.bookmarks.onMoved,
   chrome.bookmarks.onChildrenReordered,
 ]) event.addListener(loadBookmarks);
-connect();
+
+dashboardUrl = await loadDashboardUrl();
+if (dashboardUrl) host.textContent = new URL(dashboardUrl).host;
+await connect();
