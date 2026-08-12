@@ -25,7 +25,7 @@ describe("Spendwatch identity", () => {
     const stylesheet = readFileSync("chrome-extension/newtab.css", "utf8");
 
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.version).toBe("1.2.0");
+    expect(manifest.version).toBe("1.3.0");
     expect(manifest.chrome_url_overrides.newtab).toBe("newtab.html");
     expect(manifest.permissions).toEqual(["bookmarks", "favicon"]);
     expect(manifest.host_permissions).toContain(
@@ -44,11 +44,17 @@ describe("Spendwatch identity", () => {
     expect(script).toContain('empty.textContent = "(empty)"');
     expect(script).toContain("AbortController");
     expect(script).toContain("method: \"HEAD\"");
-    expect(stylesheet).toContain("background: #35363a");
+    expect(stylesheet).toContain("--chrome-toolbar: #3c3c3c");
+    expect(stylesheet).toContain("--chrome-menu: #1f1f1f");
+    expect(stylesheet).toContain("--chrome-menu-edge: #4c4c4c");
+    expect(stylesheet).toContain("--chrome-toolbar-hover: #6c6b6b");
     expect(stylesheet).toContain("flex: 0 0 34px");
-    expect(stylesheet).toContain('font: 400 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif');
+    expect(stylesheet).toContain('font: 400 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif');
     expect(script).toContain('outline.setAttribute("stroke-width", "1.25")');
-    expect(stylesheet).toContain("min-width: 112px");
+    expect(stylesheet).toContain("min-width: 220px");
+    expect(stylesheet).toContain("max-width: 400px");
+    expect(stylesheet).toContain("height: 28px");
+    expect(stylesheet).toContain("height: 32px");
     expect(stylesheet).toContain(".bookmark-folder[open] > .bookmark-menu:not([data-positioned])");
   });
 });
