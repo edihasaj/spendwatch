@@ -22,8 +22,10 @@ describe("Spendwatch identity", () => {
     const manifest = JSON.parse(readFileSync("chrome-extension/manifest.json", "utf8"));
     const page = readFileSync("chrome-extension/newtab.html", "utf8");
     const script = readFileSync("chrome-extension/newtab.js", "utf8");
+    const stylesheet = readFileSync("chrome-extension/newtab.css", "utf8");
 
     expect(manifest.manifest_version).toBe(3);
+    expect(manifest.version).toBe("1.2.0");
     expect(manifest.chrome_url_overrides.newtab).toBe("newtab.html");
     expect(manifest.permissions).toEqual(["bookmarks", "favicon"]);
     expect(manifest.host_permissions).toContain(
@@ -38,7 +40,12 @@ describe("Spendwatch identity", () => {
     expect(script).toContain("chrome.bookmarks.getTree");
     expect(script).toContain("positionMenu");
     expect(script).toContain('addEventListener("pointerenter"');
+    expect(script).toContain('empty.textContent = "(empty)"');
     expect(script).toContain("AbortController");
     expect(script).toContain("method: \"HEAD\"");
+    expect(stylesheet).toContain("background: #35363a");
+    expect(stylesheet).toContain("border-radius: 15px");
+    expect(stylesheet).toContain("border: 1.5px solid #bdc1c6");
+    expect(stylesheet).toContain("min-width: 112px");
   });
 });
