@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { normalizeCodexLimits, type CodexLimitAccount } from "./limits";
+import { normalizeCodexLimits, type CapacityProvider, type CodexLimitAccount } from "./limits";
 
 export type SourceHealthStatus = "live" | "stale" | "offline" | "error";
 
@@ -14,6 +14,34 @@ export interface CapacitySourceHealth {
 export interface CapacityDashboard {
   accounts: CodexLimitAccount[];
   sources: CapacitySourceHealth[];
+  authentication: CapacityAuthenticationRequirement[];
+}
+
+export interface CapacityAuthenticationRequirement {
+  provider: Exclude<CapacityProvider, "lokai">;
+  device: string;
+  account?: string;
+  profile?: string;
+}
+
+export function normalizeAuthenticationRequirements(input: unknown): CapacityAuthenticationRequirement[] {
+  const latest = new Map<string, CapacityAuthenticationRequirement>();
+  const items = Array.isArray(input) ? input : [input];
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const value = item as Record<string, unknown>;
+    if (value.kind !== "authentication-required") continue;
+    if (value.provider !== "codex" && value.provider !== "claude" && value.provider !== "copilot") continue;
+    if (typeof value.device !== "string" || !value.device.trim()) continue;
+    const requirement: CapacityAuthenticationRequirement = {
+      provider: value.provider,
+      device: value.device.trim().toLowerCase(),
+      account: typeof value.account === "string" && value.account.trim() ? value.account.trim() : undefined,
+      profile: typeof value.profile === "string" && value.profile.trim() ? value.profile.trim() : undefined,
+    };
+    latest.set(`${requirement.provider}:${requirement.device}:${requirement.profile ?? "default"}`, requirement);
+  }
+  return [...latest.values()].sort((a, b) => a.provider.localeCompare(b.provider) || a.device.localeCompare(b.device));
 }
 
 function normalizeSource(value: unknown): CapacitySourceHealth | undefined {
@@ -54,5 +82,5 @@ export function loadCapacityDashboard(paths: string[]): CapacityDashboard {
   }
   const accounts = normalizeCodexLimits(combined);
   if (!accounts.length) throw new Error("no valid capacity accounts in input");
-  return { accounts, sources: normalizeSourceHealth(combined) };
+  return { accounts, sources: normalizeSourceHealth(combined), authentication: normalizeAuthenticationRequirements(combined) };
 }

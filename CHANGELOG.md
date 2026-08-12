@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Hide the alert test control after the first verified push delivery.
+- Show provider-aware sign-in links when a collector reports expired authentication.
 
 ## 0.3.0 — 2026-08-12
 
