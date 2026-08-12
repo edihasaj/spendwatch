@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Spendwatch settings</title>
+    <link rel="icon" href="chrome-new-tab.svg">
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">New Tab connection</p>
+      <h1>Spendwatch</h1>
+      <p class="intro">Choose the self-hosted dashboard shown on every new tab. The URL stays in Chrome sync.</p>
+      <form id="options-form">
+        <label for="dashboard-url">Dashboard URL</label>
+        <input id="dashboard-url" type="url" inputmode="url" placeholder="https://spendwatch.example.com/" autocomplete="url" required>
+        <div class="actions"><button type="submit">Save dashboard</button><span id="status" role="status"></span></div>
+      </form>
+      <p class="privacy">Spendwatch requests access only to the origin you save. Bookmark data remains local to this extension.</p>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

@@ -111,8 +111,8 @@ describe("claude aggregate from fixture", () => {
 describe("codex aggregate from fixture", () => {
   function codexEntries(): string[] {
     return [
-      JSON.stringify({ type: "session_meta", timestamp: TS, payload: { id: "cx1", cwd: "/Users/edihasaj/Projects/klyp", model: "gpt-5.5", model_provider: "openai" } }),
-      JSON.stringify({ type: "turn_context", timestamp: TS, payload: { model: "gpt-5.5", cwd: "/Users/edihasaj/Projects/klyp" } }),
+      JSON.stringify({ type: "session_meta", timestamp: TS, payload: { id: "cx1", cwd: "/Users/developer/Projects/sample-app", model: "gpt-5.5", model_provider: "openai" } }),
+      JSON.stringify({ type: "turn_context", timestamp: TS, payload: { model: "gpt-5.5", cwd: "/Users/developer/Projects/sample-app" } }),
       JSON.stringify({ type: "event_msg", timestamp: TS, payload: { type: "user_message", message: "deploy the worker" } }),
       JSON.stringify({ type: "response_item", timestamp: TS, payload: { type: "function_call", name: "exec_command", call_id: "call_a", arguments: JSON.stringify({ cmd: "git push origin main" }) } }),
       JSON.stringify({ type: "response_item", timestamp: TS, payload: { type: "function_call_output", call_id: "call_a", output: "y".repeat(2000) } }),
@@ -138,7 +138,7 @@ describe("codex aggregate from fixture", () => {
     // call1: (10000-4000)*5 + 800*30 + 4000*0.5 = 30000+24000+2000 = 56000 µ$
     // call2: (5000-1000)*5 + 300*30 + 1000*0.5 = 20000+9000+500 = 29500 µ$
     expect(r.totalCost).toBeCloseTo((56000 + 29500) / 1e6, 6);
-    expect(r.projects[0].project).toBe("klyp");
+    expect(r.projects[0].project).toBe("sample-app");
     expect(r.models[0].model).toBe("gpt-5.5");
 
     const deepNames = r.deep.map((d) => d.name);
@@ -195,9 +195,9 @@ describe("command path", () => {
 
 describe("project naming", () => {
   test("claude + codex", () => {
-    expect(humanProject("-Users-edihasaj-Projects-paper-deck")).toBe("paper-deck");
-    expect(humanProject("-Users-edihasaj-Projects")).toBe("~/Projects");
-    expect(humanCodexProject("/Users/edihasaj/Projects/foretype")).toBe("foretype");
+    expect(humanProject("-Users-developer-Projects-sample-app")).toBe("sample-app");
+    expect(humanProject("-Users-developer-Projects")).toBe("~/Projects");
+    expect(humanCodexProject("/Users/developer/Projects/sample-app")).toBe("sample-app");
   });
 });
 

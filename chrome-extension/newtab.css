@@ -241,7 +241,9 @@ main {
 
 .eyebrow,
 .host,
-#retry {
+#configure label,
+.status-actions button,
+.url-field button {
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -294,9 +296,49 @@ h1 {
   text-transform: none;
 }
 
-#retry {
+#configure {
+  width: min(520px, 80vw);
+  margin-top: 22px;
+  text-align: left;
+}
+
+#configure label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--signal);
+  font-size: 9px;
+}
+
+.url-field {
+  display: flex;
+  gap: 8px;
+}
+
+.url-field input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid #34514b;
+  border-radius: 3px;
+  padding: 10px 12px;
+  outline: none;
+  background: #050b0a;
+  color: var(--ink);
+  font: 12px "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.url-field input:focus {
+  border-color: var(--signal);
+  box-shadow: 0 0 0 2px rgba(54, 231, 189, 0.1);
+}
+
+.status-actions {
   display: none;
+  gap: 8px;
   margin-top: 24px;
+}
+
+.status-actions button,
+.url-field button {
   border: 1px solid var(--signal);
   border-radius: 2px;
   padding: 10px 16px;
@@ -306,8 +348,15 @@ h1 {
   font-size: 10px;
 }
 
-#retry:hover {
+.status-actions button:hover,
+.url-field button:hover {
   background: rgba(54, 231, 189, 0.1);
+}
+
+.status-actions button:disabled,
+.url-field button:disabled {
+  cursor: wait;
+  opacity: 0.5;
 }
 
 body[data-state="ready"] iframe {
@@ -326,6 +375,14 @@ body[data-state="offline"] .pulse {
 
 body[data-state="offline"] #retry {
   display: block;
+}
+
+body[data-state="offline"] .status-actions {
+  display: flex;
+}
+
+body[data-state="setup"] .pulse {
+  display: none;
 }
 
 @keyframes scan {
