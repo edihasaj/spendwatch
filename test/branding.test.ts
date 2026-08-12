@@ -28,6 +28,7 @@ describe("Spendwatch identity", () => {
     expect(manifest.host_permissions).toContain(
       "https://basevm-clean-20260724.tail5ea051.ts.net:8899/*",
     );
+    expect(page).toContain("<title>New Tab</title>");
     expect(page).not.toContain("<a ");
     expect(script).toContain("RETRY_INTERVAL_MS");
     expect(script).toContain("CONNECT_TIMEOUT_MS");
