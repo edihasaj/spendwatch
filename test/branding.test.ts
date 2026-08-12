@@ -29,6 +29,8 @@ describe("Spendwatch identity", () => {
       "https://basevm-clean-20260724.tail5ea051.ts.net:8899/*",
     );
     expect(page).toContain("<title>New Tab</title>");
+    expect(page).toContain('<link rel="icon" href="chrome-new-tab.svg">');
+    expect(readFileSync("chrome-extension/chrome-new-tab.svg", "utf8")).toContain("#bdc1c6");
     expect(page).not.toContain("<a ");
     expect(script).toContain("RETRY_INTERVAL_MS");
     expect(script).toContain("CONNECT_TIMEOUT_MS");
