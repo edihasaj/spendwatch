@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Show the Chrome profile's Bookmark Bar on the extension New Tab page.
 - Add a self-recovering Chrome New Tab extension for the private capacity dashboard.
 - Hide the alert test control after the first verified push delivery.
 - Show provider-aware sign-in links when a collector reports expired authentication.

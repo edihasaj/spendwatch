@@ -6,6 +6,7 @@ const FRAME_TIMEOUT_MS = 12_000;
 const dashboard = document.querySelector("#dashboard");
 const message = document.querySelector("#message");
 const retry = document.querySelector("#retry");
+const bookmarkBar = document.querySelector("#bookmark-bar");
 let retryTimer;
 let frameTimer;
 let attempt = 0;
@@ -13,6 +14,70 @@ let attempt = 0;
 function setState(state, text) {
   document.body.dataset.state = state;
   message.textContent = text;
+}
+
+function faviconUrl(url) {
+  return chrome.runtime.getURL(`/_favicon/?pageUrl=${encodeURIComponent(url)}&size=16`);
+}
+
+function bookmarkLink(bookmark) {
+  const link = document.createElement("a");
+  link.className = "bookmark-link";
+  link.href = bookmark.url;
+  link.title = bookmark.title || bookmark.url;
+
+  const icon = document.createElement("img");
+  icon.src = faviconUrl(bookmark.url);
+  icon.alt = "";
+  const label = document.createElement("span");
+  label.textContent = bookmark.title || new URL(bookmark.url).hostname;
+  link.append(icon, label);
+  return link;
+}
+
+function bookmarkFolder(folder) {
+  const details = document.createElement("details");
+  details.className = "bookmark-folder";
+  const summary = document.createElement("summary");
+  summary.title = folder.title;
+  const icon = document.createElement("i");
+  icon.className = "folder-icon";
+  icon.setAttribute("aria-hidden", "true");
+  const label = document.createElement("span");
+  label.textContent = folder.title;
+  summary.append(icon, label);
+
+  const menu = document.createElement("div");
+  menu.className = "bookmark-menu";
+  const children = folder.children || [];
+  for (const child of children) {
+    if (child.url) menu.append(bookmarkLink(child));
+    else menu.append(bookmarkFolder(child));
+  }
+  if (!children.length) {
+    const empty = document.createElement("div");
+    empty.className = "bookmark-empty";
+    empty.textContent = "Empty folder";
+    menu.append(empty);
+  }
+  details.append(summary, menu);
+  return details;
+}
+
+async function loadBookmarks() {
+  try {
+    const [tree] = await chrome.bookmarks.getTree();
+    const roots = tree?.children || [];
+    const bar = roots.find((node) => node.id === "1") || roots[0];
+    const bookmarks = bar?.children || [];
+    bookmarkBar.replaceChildren();
+    for (const bookmark of bookmarks) {
+      bookmarkBar.append(bookmark.url ? bookmarkLink(bookmark) : bookmarkFolder(bookmark));
+    }
+    bookmarkBar.hidden = bookmarks.length === 0;
+  } catch {
+    bookmarkBar.hidden = true;
+  }
 }
 
 async function connect() {
@@ -58,5 +123,18 @@ window.addEventListener("online", connect);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && document.body.dataset.state === "offline") connect();
 });
+document.addEventListener("click", (event) => {
+  for (const folder of bookmarkBar.querySelectorAll("details[open]")) {
+    if (!folder.contains(event.target)) folder.removeAttribute("open");
+  }
+});
 
+loadBookmarks();
+for (const event of [
+  chrome.bookmarks.onCreated,
+  chrome.bookmarks.onRemoved,
+  chrome.bookmarks.onChanged,
+  chrome.bookmarks.onMoved,
+  chrome.bookmarks.onChildrenReordered,
+]) event.addListener(loadBookmarks);
 connect();

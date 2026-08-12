@@ -13,8 +13,7 @@
 
 html,
 body,
-main,
-iframe {
+main {
   width: 100%;
   height: 100%;
   margin: 0;
@@ -31,10 +30,135 @@ body {
 }
 
 iframe {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  flex: 1;
   display: block;
   border: 0;
   opacity: 0;
   transition: opacity 180ms ease-out;
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+}
+
+#bookmark-bar {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 34px;
+  align-items: center;
+  gap: 2px;
+  overflow: visible;
+  padding: 0 10px;
+  border-bottom: 1px solid #3c4043;
+  background: #292a2d;
+  color: #e8eaed;
+  font: 12px/1 "Helvetica Neue", sans-serif;
+  white-space: nowrap;
+}
+
+#bookmark-bar:not([hidden]) {
+  display: flex;
+}
+
+.bookmark-link,
+.bookmark-folder summary {
+  display: inline-flex;
+  max-width: 180px;
+  height: 28px;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  border-radius: 4px;
+  padding: 0 8px;
+  color: inherit;
+  cursor: default;
+  text-decoration: none;
+  text-overflow: ellipsis;
+}
+
+.bookmark-link:hover,
+.bookmark-folder summary:hover,
+.bookmark-folder[open] summary {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.bookmark-link img {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.bookmark-link span,
+.bookmark-folder summary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bookmark-folder {
+  position: relative;
+}
+
+.bookmark-folder summary {
+  list-style: none;
+}
+
+.bookmark-folder summary::-webkit-details-marker {
+  display: none;
+}
+
+.folder-icon {
+  width: 15px;
+  height: 12px;
+  flex: 0 0 15px;
+  border-radius: 2px;
+  background: #9aa0a6;
+  clip-path: polygon(0 14%, 35% 14%, 44% 0, 100% 0, 100% 100%, 0 100%);
+}
+
+.bookmark-menu {
+  position: absolute;
+  top: 31px;
+  left: 0;
+  display: grid;
+  width: max-content;
+  min-width: 220px;
+  max-width: 340px;
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
+  border: 1px solid #5f6368;
+  border-radius: 7px;
+  padding: 5px;
+  background: #292a2d;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42);
+}
+
+.bookmark-menu .bookmark-link {
+  max-width: 328px;
+  cursor: default;
+}
+
+.bookmark-menu .bookmark-folder summary {
+  width: 100%;
+  max-width: 328px;
+}
+
+.bookmark-menu .bookmark-folder .bookmark-menu {
+  position: static;
+  width: 100%;
+  min-width: 0;
+  max-height: none;
+  border: 0;
+  padding: 0 0 0 18px;
+  box-shadow: none;
+}
+
+.bookmark-empty {
+  padding: 9px 10px;
+  color: #9aa0a6;
 }
 
 .status {
@@ -87,7 +211,7 @@ iframe {
 
 .eyebrow,
 .host,
-button {
+#retry {
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -140,7 +264,7 @@ h1 {
   text-transform: none;
 }
 
-button {
+#retry {
   display: none;
   margin-top: 24px;
   border: 1px solid var(--signal);
@@ -152,7 +276,7 @@ button {
   font-size: 10px;
 }
 
-button:hover {
+#retry:hover {
   background: rgba(54, 231, 189, 0.1);
 }
 
@@ -170,7 +294,7 @@ body[data-state="offline"] .pulse {
   display: none;
 }
 
-body[data-state="offline"] button {
+body[data-state="offline"] #retry {
   display: block;
 }
 
