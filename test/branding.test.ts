@@ -36,7 +36,8 @@ describe("Spendwatch identity", () => {
     expect(script).toContain("RETRY_INTERVAL_MS");
     expect(script).toContain("CONNECT_TIMEOUT_MS");
     expect(script).toContain("chrome.bookmarks.getTree");
-    expect(script).toContain("positionSubmenu");
+    expect(script).toContain("positionMenu");
+    expect(script).toContain('addEventListener("pointerenter"');
     expect(script).toContain("AbortController");
     expect(script).toContain("method: \"HEAD\"");
   });
