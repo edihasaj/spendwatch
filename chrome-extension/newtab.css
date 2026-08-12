@@ -146,14 +146,18 @@ main {
   max-width: 328px;
 }
 
-.bookmark-menu .bookmark-folder .bookmark-menu {
-  position: static;
-  width: 100%;
-  min-width: 0;
-  max-height: none;
-  border: 0;
-  padding: 0 0 0 18px;
-  box-shadow: none;
+.bookmark-folder.nested > summary::after {
+  margin-left: auto;
+  color: #9aa0a6;
+  content: "›";
+  font-size: 18px;
+}
+
+.bookmark-folder.nested > .bookmark-menu {
+  position: fixed;
+  top: var(--menu-y, 0);
+  left: var(--menu-x, 0);
+  z-index: 4;
 }
 
 .bookmark-empty {
