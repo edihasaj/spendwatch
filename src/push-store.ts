@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   auth TEXT NOT NULL,
   user_agent TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
+  verified_at_ms INTEGER,
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
@@ -65,6 +66,7 @@ export interface PendingPushDelivery extends StoredPushSubscription {
 
 interface AccountStateRow { lastLeft: number }
 interface EventRow { id: number }
+export interface PushSubscriptionStatus { enabled: boolean; verified: boolean }
 
 export class PushStore {
   readonly db: Database;
@@ -74,6 +76,10 @@ export class PushStore {
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA busy_timeout = 10000;");
     this.db.exec(PUSH_SCHEMA);
+    const subscriptionColumns = this.db.query<{ name: string }, []>("PRAGMA table_info(push_subscriptions)").all();
+    if (!subscriptionColumns.some((column) => column.name === "verified_at_ms")) {
+      this.db.exec("ALTER TABLE push_subscriptions ADD COLUMN verified_at_ms INTEGER;");
+    }
   }
 
   close(): void {
@@ -99,6 +105,20 @@ export class PushStore {
 
   disableSubscription(endpoint: string, nowMs: number): void {
     this.db.query("UPDATE push_subscriptions SET enabled=0, updated_at_ms=? WHERE endpoint=?").run(nowMs, endpoint);
+  }
+
+  subscriptionStatus(endpoint: string): PushSubscriptionStatus | undefined {
+    const row = this.db.query<{ enabled: number; verifiedAtMs: number | null }, [string]>(`
+      SELECT enabled, verified_at_ms AS verifiedAtMs FROM push_subscriptions WHERE endpoint=?
+    `).get(endpoint);
+    return row ? { enabled: Boolean(row.enabled), verified: row.verifiedAtMs !== null } : undefined;
+  }
+
+  markSubscriptionVerified(endpoint: string, nowMs: number): void {
+    this.db.query(`
+      UPDATE push_subscriptions SET verified_at_ms=COALESCE(verified_at_ms, ?), updated_at_ms=?
+      WHERE endpoint=? AND enabled=1
+    `).run(nowMs, nowMs, endpoint);
   }
 
   enabledSubscriptions(): StoredPushSubscription[] {
@@ -179,6 +199,7 @@ export class PushStore {
       UPDATE push_deliveries SET status='sent', attempts=attempts+1,
         last_attempt_at_ms=?, last_error=NULL, sent_at_ms=? WHERE event_id=? AND endpoint=?
     `).run(nowMs, nowMs, eventId, endpoint);
+    this.markSubscriptionVerified(endpoint, nowMs);
   }
 
   markFailed(eventId: number, endpoint: string, error: string, gone: boolean, nowMs: number): void {
