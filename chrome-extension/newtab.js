@@ -35,13 +35,17 @@ function bookmarkLink(bookmark) {
   return link;
 }
 
-function positionSubmenu(summary, menu) {
+function positionMenu(summary, menu, nested) {
   const anchor = summary.getBoundingClientRect();
   const bounds = menu.getBoundingClientRect();
   const margin = 8;
-  const opensLeft = anchor.right + bounds.width > window.innerWidth - margin;
-  const x = opensLeft ? anchor.left - bounds.width + 2 : anchor.right - 2;
-  const y = Math.min(anchor.top - 5, window.innerHeight - bounds.height - margin);
+  const opensLeft = nested && anchor.right + bounds.width > window.innerWidth - margin;
+  const preferredX = nested
+    ? (opensLeft ? anchor.left - bounds.width + 2 : anchor.right - 2)
+    : anchor.left;
+  const preferredY = nested ? anchor.top - 5 : anchor.bottom + 3;
+  const x = Math.min(preferredX, window.innerWidth - bounds.width - margin);
+  const y = Math.min(preferredY, window.innerHeight - bounds.height - margin);
   menu.style.setProperty("--menu-x", `${Math.max(margin, x)}px`);
   menu.style.setProperty("--menu-y", `${Math.max(margin, y)}px`);
 }
@@ -72,13 +76,26 @@ function bookmarkFolder(folder, nested = false) {
     menu.append(empty);
   }
   details.append(summary, menu);
+  let closeTimer;
+  const openFolder = () => {
+    clearTimeout(closeTimer);
+    details.open = true;
+  };
+  details.addEventListener("pointerenter", openFolder);
+  details.addEventListener("pointerleave", () => {
+    closeTimer = setTimeout(() => details.removeAttribute("open"), 140);
+  });
+  summary.addEventListener("click", (event) => {
+    event.preventDefault();
+    openFolder();
+  });
   details.addEventListener("toggle", () => {
     if (!details.open) return;
     const siblings = details.parentElement?.querySelectorAll(":scope > details[open]") || [];
     for (const sibling of siblings) {
       if (sibling !== details) sibling.removeAttribute("open");
     }
-    if (nested) requestAnimationFrame(() => positionSubmenu(summary, menu));
+    requestAnimationFrame(() => positionMenu(summary, menu, nested));
   });
   return details;
 }
@@ -145,6 +162,11 @@ document.addEventListener("visibilitychange", () => {
 document.addEventListener("click", (event) => {
   for (const folder of bookmarkBar.querySelectorAll("details[open]")) {
     if (!folder.contains(event.target)) folder.removeAttribute("open");
+  }
+});
+window.addEventListener("resize", () => {
+  for (const folder of bookmarkBar.querySelectorAll("details[open]")) {
+    folder.removeAttribute("open");
   }
 });
 
