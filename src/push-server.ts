@@ -143,11 +143,15 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
       if (url.pathname === "/api/push/config" && request.method === "GET") {
         return json({ publicKey, thresholds: [30, 15, 10, 5, 0] });
       }
-      if ((url.pathname === "/api/push/subscribe" || url.pathname === "/api/push/unsubscribe") && request.method === "POST") {
+      if (["/api/push/status", "/api/push/subscribe", "/api/push/unsubscribe"].includes(url.pathname) && request.method === "POST") {
         if (!postAllowed(request)) return json({ error: "same-origin JSON required" }, 403);
         if (Number(request.headers.get("content-length") ?? 0) > 8192) return json({ error: "request too large" }, 413);
         const body = await request.json().catch(() => undefined) as { subscription?: unknown } | undefined;
         if (!validSubscription(body?.subscription)) return json({ error: "invalid push subscription" }, 400);
+        if (url.pathname.endsWith("status")) {
+          const status = store.subscriptionStatus(body.subscription.endpoint);
+          return json({ subscribed: Boolean(status?.enabled), verified: Boolean(status?.enabled && status.verified) });
+        }
         if (url.pathname.endsWith("unsubscribe")) {
           store.disableSubscription(body.subscription.endpoint, Date.now());
           return json({ ok: true });
@@ -162,6 +166,7 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
             icon: NOTIFICATION_ICON,
             badge: NOTIFICATION_BADGE,
           }), { TTL: 60, urgency: "normal" });
+          store.markSubscriptionVerified(body.subscription.endpoint, Date.now());
           return json({ ok: true, testSent: true });
         } catch (error) {
           return json({ error: `subscription saved, test failed: ${String(error)}` }, 502);

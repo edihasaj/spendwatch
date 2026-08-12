@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Hide the alert test control after the first verified push delivery.
+
 ## 0.3.0 — 2026-08-12
 
 - Add preview-first, verified archives for capacity history older than 365 days.
