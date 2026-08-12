@@ -137,6 +137,10 @@ main {
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.7);
 }
 
+.bookmark-folder[open] > .bookmark-menu:not([data-positioned]) {
+  visibility: hidden;
+}
+
 .bookmark-menu .bookmark-link {
   height: 34px;
   max-width: 328px;

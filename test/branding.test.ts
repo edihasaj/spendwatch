@@ -39,6 +39,7 @@ describe("Spendwatch identity", () => {
     expect(script).toContain("CONNECT_TIMEOUT_MS");
     expect(script).toContain("chrome.bookmarks.getTree");
     expect(script).toContain("positionMenu");
+    expect(script).toContain('menu.dataset.positioned = "true"');
     expect(script).toContain('addEventListener("pointerenter"');
     expect(script).toContain('empty.textContent = "(empty)"');
     expect(script).toContain("AbortController");
@@ -48,5 +49,6 @@ describe("Spendwatch identity", () => {
     expect(stylesheet).toContain('font: 400 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif');
     expect(script).toContain('outline.setAttribute("stroke-width", "1.25")');
     expect(stylesheet).toContain("min-width: 112px");
+    expect(stylesheet).toContain(".bookmark-folder[open] > .bookmark-menu:not([data-positioned])");
   });
 });
