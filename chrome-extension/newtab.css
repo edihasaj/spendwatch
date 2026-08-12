@@ -48,7 +48,7 @@ main {
 #bookmark-bar {
   position: relative;
   z-index: 2;
-  flex: 0 0 40px;
+  flex: 0 0 34px;
   align-items: center;
   gap: 1px;
   overflow: visible;
@@ -56,7 +56,7 @@ main {
   border-bottom: 1px solid #4a4b4e;
   background: #35363a;
   color: #e8eaed;
-  font: 13px/1 "Helvetica Neue", sans-serif;
+  font: 400 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   white-space: nowrap;
 }
 
@@ -68,12 +68,12 @@ main {
 .bookmark-folder summary {
   display: inline-flex;
   max-width: 180px;
-  height: 30px;
+  height: 28px;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   overflow: hidden;
-  border-radius: 15px;
-  padding: 0 9px;
+  border-radius: 14px;
+  padding: 0 8px;
   color: inherit;
   cursor: default;
   text-decoration: none;
@@ -113,24 +113,10 @@ main {
 }
 
 .folder-icon {
-  position: relative;
   width: 16px;
-  height: 11px;
+  height: 16px;
   flex: 0 0 16px;
-  border: 1.5px solid #bdc1c6;
-  border-radius: 1px;
-}
-
-.folder-icon::before {
-  position: absolute;
-  top: -4px;
-  left: 1px;
-  width: 7px;
-  height: 3px;
-  border: 1.5px solid #bdc1c6;
-  border-bottom: 0;
-  border-radius: 1px 1px 0 0;
-  content: "";
+  color: #bdc1c6;
 }
 
 .bookmark-menu {
