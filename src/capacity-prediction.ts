@@ -7,7 +7,7 @@ export function predictWindow(window: LimitWindow, nowMs: number): CapacityPredi
   if (!Number.isFinite(resetsAt) || resetsAt <= nowMs || window.windowMinutes <= 0) return undefined;
   const durationMs = window.windowMinutes * 60_000;
   const elapsedMs = durationMs - (resetsAt - nowMs);
-  if (elapsedMs <= 0 || elapsedMs / durationMs < 0.03) return undefined;
+  if (elapsedMs <= 0) return undefined;
   const actual = Math.min(100, Math.max(0, window.usedPercent));
   const expected = Math.min(100, Math.max(0, elapsedMs / durationMs * 100));
   const deltaPercent = actual - expected;
