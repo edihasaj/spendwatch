@@ -63,6 +63,7 @@ function positionMenu(summary, menu, nested) {
   const y = Math.min(preferredY, window.innerHeight - bounds.height - margin);
   menu.style.setProperty("--menu-x", `${Math.max(margin, x)}px`);
   menu.style.setProperty("--menu-y", `${Math.max(margin, y)}px`);
+  menu.dataset.positioned = "true";
 }
 
 function bookmarkFolder(folder, nested = false) {
@@ -92,7 +93,9 @@ function bookmarkFolder(folder, nested = false) {
   let closeTimer;
   const openFolder = () => {
     clearTimeout(closeTimer);
+    menu.removeAttribute("data-positioned");
     details.open = true;
+    positionMenu(summary, menu, nested);
   };
   details.addEventListener("pointerenter", openFolder);
   details.addEventListener("pointerleave", () => {
@@ -103,12 +106,15 @@ function bookmarkFolder(folder, nested = false) {
     openFolder();
   });
   details.addEventListener("toggle", () => {
-    if (!details.open) return;
+    if (!details.open) {
+      menu.removeAttribute("data-positioned");
+      return;
+    }
     const siblings = details.parentElement?.querySelectorAll(":scope > details[open]") || [];
     for (const sibling of siblings) {
       if (sibling !== details) sibling.removeAttribute("open");
     }
-    requestAnimationFrame(() => positionMenu(summary, menu, nested));
+    if (!menu.hasAttribute("data-positioned")) positionMenu(summary, menu, nested);
   });
   return details;
 }
