@@ -29,7 +29,7 @@ describe("Spendwatch identity", () => {
     const stylesheet = readFileSync("chrome-extension/newtab.css", "utf8");
 
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.version).toBe("1.5.0");
+    expect(manifest.version).toBe("1.5.1");
     expect(manifest.chrome_url_overrides.newtab).toBe("newtab.html");
     expect(manifest.permissions).toEqual(["bookmarks", "favicon", "storage", "tabGroups"]);
     expect(manifest.host_permissions).toBeUndefined();
@@ -45,11 +45,13 @@ describe("Spendwatch identity", () => {
     expect(script).toContain("RETRY_INTERVAL_MS");
     expect(script).toContain("CONNECT_TIMEOUT_MS");
     expect(script).toContain("chrome.bookmarks.getTree");
-    expect(script).toContain("chrome.tabGroups.query");
+    expect(script).toContain("chrome.tabGroups.query({})");
+    expect(script).toContain("chrome.windows.update(group.windowId, { focused: true })");
     expect(script).toContain("chrome.tabs.query({ groupId: group.id })");
     expect(script).toContain("chrome.tabs.update(first.id, { active: true })");
     expect(script).toContain("chrome.tabGroups.update(group.id, { collapsed: false })");
     expect(script).toContain("chrome.tabGroups.onUpdated");
+    expect(script).toContain("chrome.windows.onFocusChanged");
     expect(script).toContain("positionMenu");
     expect(script).toContain('menu.dataset.positioned = "true"');
     expect(script).toContain('addEventListener("pointerenter"');
