@@ -323,7 +323,7 @@ footer b{color:var(--amber)}
 @media(max-width:900px){.overview{grid-template-columns:1fr}.report-hero{grid-template-columns:1fr}.head-total{text-align:left}}
 @media(max-width:640px){
   .wrap{width:min(100% - 24px,1120px);padding-top:max(16px,env(safe-area-inset-top));padding-bottom:max(64px,env(safe-area-inset-bottom))}
-  .topbar{display:grid;grid-template-columns:1fr auto;gap:12px 8px}.nav{grid-column:1/-1;grid-row:2;width:100%;margin:0;display:grid;grid-template-columns:repeat(3,1fr)}.nav a{display:grid;place-items:center;min-height:44px;padding:7px 5px;text-align:center}.top-actions{margin:0}.button{min-height:44px}.report-hero{padding-top:30px}.report-hero h1{font-size:clamp(34px,11vw,46px)}
+  .topbar{display:grid;grid-template-columns:1fr auto;gap:12px 8px}.nav{grid-column:1/-1;grid-row:2;width:100%;margin:0;display:grid;grid-template-columns:repeat(3,1fr)}.nav a{display:grid;place-items:center;min-height:44px;padding:7px 5px;text-align:center}.top-actions{margin:0}.button,.tab{min-height:44px}.report-hero{padding-top:30px}.report-hero h1{font-size:clamp(34px,11vw,46px)}
   .section-body{margin-right:-12px;padding-right:12px;border-radius:12px 0 0 12px}.section-body table{width:max-content;min-width:100%}thead th,tbody td{padding-left:10px;padding-right:10px}
   td .account-identity{align-items:flex-start;flex-direction:column;gap:4px;min-width:140px}
   .drow{align-items:flex-start;flex-wrap:wrap;gap:4px 10px}.dcmd{flex-basis:100%}.dn,.dt{width:auto;text-align:left}
