@@ -86,6 +86,7 @@ function tabGroupChip(group, tabs) {
     try {
       if (group.collapsed) await chrome.tabGroups.update(group.id, { collapsed: false });
       await chrome.tabs.update(first.id, { active: true });
+      await chrome.windows.update(group.windowId, { focused: true });
     } catch {
       await loadTabGroups();
     }
@@ -95,12 +96,15 @@ function tabGroupChip(group, tabs) {
 
 async function loadTabGroups() {
   try {
-    const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+    const groups = await chrome.tabGroups.query({});
     const populated = await Promise.all(groups.map(async (group) => ({
       group,
       tabs: (await chrome.tabs.query({ groupId: group.id })).sort((a, b) => a.index - b.index),
     })));
-    populated.sort((a, b) => (a.tabs[0]?.index ?? Infinity) - (b.tabs[0]?.index ?? Infinity));
+    populated.sort((a, b) => (
+      a.group.windowId - b.group.windowId
+      || (a.tabs[0]?.index ?? Infinity) - (b.tabs[0]?.index ?? Infinity)
+    ));
     tabGroups.replaceChildren(...populated.filter(({ tabs }) => tabs.length).map(({ group, tabs }) => tabGroupChip(group, tabs)));
   } catch {
     tabGroups.replaceChildren();
@@ -304,6 +308,11 @@ for (const event of [
   chrome.tabs.onUpdated,
   chrome.tabs.onMoved,
   chrome.tabs.onRemoved,
+]) event.addListener(loadTabGroups);
+for (const event of [
+  chrome.windows.onCreated,
+  chrome.windows.onRemoved,
+  chrome.windows.onFocusChanged,
 ]) event.addListener(loadTabGroups);
 
 dashboardUrl = await loadDashboardUrl();
