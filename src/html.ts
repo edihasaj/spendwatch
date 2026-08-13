@@ -78,7 +78,7 @@ function promptTable(rows: PromptRow[]): string {
 }
 
 function section(title: string, sub: string, body: string): string {
-  return `<section class="block"><h3>${esc(title)}<span class="sub">${esc(sub)}</span></h3><div class="section-body">${body}</div></section>`;
+  return `<section class="block"><h3>${esc(title)}<span class="sub">${esc(sub)}</span></h3><div class="section-body" tabindex="0" role="region" aria-label="${esc(title)}">${body}</div></section>`;
 }
 
 function serviceName(source: string): string {
@@ -238,7 +238,7 @@ export function renderHtml(
 
   return `<!doctype html>
 <html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 ${BRAND_HEAD_HTML}
 <title>spendwatch — agent spend report</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -289,7 +289,8 @@ h1,h2,h3{font-family:"Manrope",sans-serif;letter-spacing:-.025em}
 .block{margin-top:26px;min-width:0;max-width:100%}
 .block h3{font-size:15px;margin:0 0 12px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
 .block h3 .sub{font-family:"Fragment Mono";font-size:10px;color:var(--dim);font-weight:400;letter-spacing:0}
-.section-body{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.section-body{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:var(--amber2) #0a0b0e;border-radius:12px;outline:none}
+.section-body:focus-visible{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--amber2)}
 table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-family:"Fragment Mono",monospace;font-size:11px}
 thead th{text-align:left;font-weight:500;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.08em;
   padding:11px 14px;border-bottom:1px solid var(--line);background:var(--panel2)}
@@ -321,8 +322,11 @@ footer b{color:var(--amber)}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @media(max-width:900px){.overview{grid-template-columns:1fr}.report-hero{grid-template-columns:1fr}.head-total{text-align:left}}
 @media(max-width:640px){
-  .wrap{width:min(100% - 24px,1120px);padding-top:16px}.topbar{flex-wrap:wrap}.nav{order:3;width:100%;margin:0}.nav a{flex:1;text-align:center}.top-actions{margin-left:auto}.report-hero{padding-top:34px}
-  td .account-identity{align-items:flex-start;flex-direction:column;gap:4px;min-width:180px}
+  .wrap{width:min(100% - 24px,1120px);padding-top:max(16px,env(safe-area-inset-top));padding-bottom:max(64px,env(safe-area-inset-bottom))}
+  .topbar{display:grid;grid-template-columns:1fr auto;gap:12px 8px}.nav{grid-column:1/-1;grid-row:2;width:100%;margin:0;display:grid;grid-template-columns:repeat(3,1fr)}.nav a{display:grid;place-items:center;min-height:44px;padding:7px 5px;text-align:center}.top-actions{margin:0}.button{min-height:44px}.report-hero{padding-top:30px}.report-hero h1{font-size:clamp(34px,11vw,46px)}
+  .section-body{margin-right:-12px;padding-right:12px;border-radius:12px 0 0 12px}.section-body table{width:max-content;min-width:100%}thead th,tbody td{padding-left:10px;padding-right:10px}
+  td .account-identity{align-items:flex-start;flex-direction:column;gap:4px;min-width:140px}
+  .drow{align-items:flex-start;flex-wrap:wrap;gap:4px 10px}.dcmd{flex-basis:100%}.dn,.dt{width:auto;text-align:left}
 }
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 </style></head>
