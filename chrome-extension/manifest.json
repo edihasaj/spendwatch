@@ -2,14 +2,15 @@
   "manifest_version": 3,
   "name": "Spendwatch New Tab",
   "description": "Shows your self-hosted Spendwatch capacity dashboard on every new tab.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "chrome_url_overrides": {
     "newtab": "newtab.html"
   },
   "permissions": [
     "bookmarks",
     "favicon",
-    "storage"
+    "storage",
+    "tabGroups"
   ],
   "optional_host_permissions": [
     "http://*/*",
