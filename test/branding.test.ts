@@ -16,6 +16,10 @@ describe("Spendwatch identity", () => {
       "assets/icons/apple-icon-180x180.png",
       "assets/icons/manifest.json",
     ]) expect(existsSync(path)).toBe(true);
+    const webManifest = JSON.parse(readFileSync("assets/icons/manifest.json", "utf8"));
+    expect(webManifest.id).toBe("/");
+    expect(webManifest.scope).toBe("/");
+    expect(webManifest.display).toBe("standalone");
   });
 
   test("ships a configurable private-dashboard new-tab extension", () => {
