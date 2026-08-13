@@ -12,7 +12,23 @@
     <main>
       <nav id="bookmark-bar" aria-label="Tab groups and bookmarks" hidden>
         <div id="tab-groups" aria-label="Open tab groups"></div>
+        <details id="tab-group-overflow" class="bar-menu" hidden>
+          <summary aria-label="More tab groups"></summary>
+          <div id="tab-group-menu" class="bookmark-menu tab-group-menu"></div>
+        </details>
+        <span class="bar-divider" aria-hidden="true"></span>
         <div id="bookmark-items" aria-label="Bookmarks"></div>
+        <details id="bookmark-overflow" class="bar-menu" hidden>
+          <summary title="More bookmarks" aria-label="More bookmarks">»</summary>
+          <div id="bookmark-overflow-menu" class="bookmark-menu bookmark-overflow-menu"></div>
+        </details>
+        <span class="bar-divider" aria-hidden="true"></span>
+        <button id="all-bookmarks" class="bar-fixed" type="button" title="All Bookmarks">
+          <svg class="folder-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M1.75 3.5h4.5l1.5 1.75h6.5v7.25H1.75z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"></path>
+          </svg>
+          <span>All Bookmarks</span>
+        </button>
       </nav>
       <iframe
         id="dashboard"
