@@ -57,7 +57,7 @@ main {
   z-index: 2;
   flex: 0 0 34px;
   align-items: center;
-  gap: 1px;
+  gap: 0;
   overflow: visible;
   padding: 0 8px;
   border-bottom: 1px solid #505050;
@@ -80,41 +80,96 @@ main {
 }
 
 #tab-groups:not(:empty) {
-  max-width: 55vw;
+  max-width: min(420px, 38vw);
   flex: none;
   overflow: hidden;
-  padding-right: 5px;
-  border-right: 1px solid #5b5b5b;
-  margin-right: 4px;
 }
 
 #bookmark-items {
+  flex: 1 1 auto;
   overflow: hidden;
+}
+
+.bar-fixed {
+  display: inline-flex;
+  height: 28px;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 14px;
+  padding: 0 8px;
+  background: transparent;
+  color: inherit;
+  cursor: default;
+  font: inherit;
+}
+
+.bar-fixed:hover,
+.bar-menu > summary:hover,
+.bar-menu[open] > summary {
+  background: var(--chrome-toolbar-hover);
+}
+
+.bar-divider {
+  width: 1px;
+  height: 22px;
+  flex: none;
+  margin: 0 8px;
+  background: #606060;
+}
+
+.bar-menu {
+  position: relative;
+  flex: none;
+}
+
+.bar-menu > summary {
+  display: grid;
+  width: 32px;
+  height: 28px;
+  place-items: center;
+  border-radius: 14px;
+  color: var(--chrome-icon);
+  cursor: default;
+  font-size: 11px;
+  line-height: 1;
+  list-style: none;
+}
+
+#bookmark-overflow > summary {
+  font-size: 19px;
+}
+
+.bar-menu > summary::-webkit-details-marker {
+  display: none;
 }
 
 .tab-group {
   --group-color: #9aa0a6;
   display: inline-flex;
+  min-width: 52px;
   max-width: 180px;
-  height: 28px;
+  height: 26px;
   flex: none;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
   overflow: hidden;
-  border: 0;
-  border-radius: 14px;
+  border: 2px solid var(--group-color);
+  border-radius: 8px;
   padding: 0 9px;
-  background: color-mix(in srgb, var(--group-color) 18%, transparent);
+  background: transparent;
   color: var(--chrome-text);
   cursor: default;
   font: inherit;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
   transition: background-color 80ms ease-out;
 }
 
 .tab-group:hover {
-  background: color-mix(in srgb, var(--group-color) 32%, var(--chrome-toolbar));
+  background: color-mix(in srgb, var(--group-color) 16%, var(--chrome-toolbar));
 }
 
 .tab-group > span:nth-child(2) {
@@ -122,12 +177,45 @@ main {
   text-overflow: ellipsis;
 }
 
+#tab-groups .tab-group-dot {
+  display: none;
+}
+
 .tab-group-dot {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
   border-radius: 50%;
   background: var(--group-color);
+}
+
+.tab-group-menu {
+  min-width: 180px;
+  padding: 7px;
+}
+
+.tab-group-menu .tab-group {
+  width: 100%;
+  max-width: 280px;
+  height: 28px;
+  justify-content: flex-start;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 12px;
+}
+
+.bookmark-overflow-menu {
+  min-width: 260px;
+}
+
+.tab-group-menu .tab-group:hover {
+  background: var(--chrome-menu-hover);
+}
+
+.tab-group.saved .tab-group-dot {
+  border: 2px solid var(--group-color);
+  background: transparent;
 }
 
 .tab-group-shared {
