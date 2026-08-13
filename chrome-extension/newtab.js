@@ -13,6 +13,8 @@ const message = document.querySelector("#message");
 const retry = document.querySelector("#retry");
 const settings = document.querySelector("#settings");
 const bookmarkBar = document.querySelector("#bookmark-bar");
+const bookmarkItems = document.querySelector("#bookmark-items");
+const tabGroups = document.querySelector("#tab-groups");
 const configure = document.querySelector("#configure");
 const dashboardUrlInput = document.querySelector("#dashboard-url");
 const host = document.querySelector("#host");
@@ -51,6 +53,59 @@ function bookmarkLink(bookmark) {
   label.textContent = bookmark.title || new URL(bookmark.url).hostname;
   link.append(icon, label);
   return link;
+}
+
+function updateToolbarVisibility() {
+  bookmarkBar.hidden = bookmarkItems.childElementCount === 0 && tabGroups.childElementCount === 0;
+}
+
+function tabGroupChip(group, tabs) {
+  const button = document.createElement("button");
+  const title = group.title?.trim() || "Tab group";
+  button.className = `tab-group color-${group.color}`;
+  button.type = "button";
+  button.title = `${title} · ${tabs.length} tab${tabs.length === 1 ? "" : "s"}${group.collapsed ? " · collapsed" : ""}`;
+  button.setAttribute("aria-label", `Open ${title} tab group`);
+
+  const dot = document.createElement("span");
+  dot.className = "tab-group-dot";
+  dot.setAttribute("aria-hidden", "true");
+  const label = document.createElement("span");
+  label.textContent = title;
+  button.append(dot, label);
+  if (group.shared) {
+    const shared = document.createElement("span");
+    shared.className = "tab-group-shared";
+    shared.textContent = "◉";
+    shared.title = "Shared group";
+    button.append(shared);
+  }
+  button.addEventListener("click", async () => {
+    const first = tabs[0];
+    if (!first?.id) return;
+    try {
+      if (group.collapsed) await chrome.tabGroups.update(group.id, { collapsed: false });
+      await chrome.tabs.update(first.id, { active: true });
+    } catch {
+      await loadTabGroups();
+    }
+  });
+  return button;
+}
+
+async function loadTabGroups() {
+  try {
+    const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+    const populated = await Promise.all(groups.map(async (group) => ({
+      group,
+      tabs: (await chrome.tabs.query({ groupId: group.id })).sort((a, b) => a.index - b.index),
+    })));
+    populated.sort((a, b) => (a.tabs[0]?.index ?? Infinity) - (b.tabs[0]?.index ?? Infinity));
+    tabGroups.replaceChildren(...populated.filter(({ tabs }) => tabs.length).map(({ group, tabs }) => tabGroupChip(group, tabs)));
+  } catch {
+    tabGroups.replaceChildren();
+  }
+  updateToolbarVisibility();
 }
 
 function folderIcon() {
@@ -143,14 +198,14 @@ async function loadBookmarks() {
     const roots = tree?.children || [];
     const bar = roots.find((node) => node.id === "1") || roots[0];
     const bookmarks = bar?.children || [];
-    bookmarkBar.replaceChildren();
+    bookmarkItems.replaceChildren();
     for (const bookmark of bookmarks) {
-      bookmarkBar.append(bookmark.url ? bookmarkLink(bookmark) : bookmarkFolder(bookmark));
+      bookmarkItems.append(bookmark.url ? bookmarkLink(bookmark) : bookmarkFolder(bookmark));
     }
-    bookmarkBar.hidden = bookmarks.length === 0;
   } catch {
-    bookmarkBar.hidden = true;
+    bookmarkItems.replaceChildren();
   }
+  updateToolbarVisibility();
 }
 
 async function connect() {
@@ -232,6 +287,7 @@ window.addEventListener("resize", () => {
 });
 
 loadBookmarks();
+loadTabGroups();
 for (const event of [
   chrome.bookmarks.onCreated,
   chrome.bookmarks.onRemoved,
@@ -239,6 +295,16 @@ for (const event of [
   chrome.bookmarks.onMoved,
   chrome.bookmarks.onChildrenReordered,
 ]) event.addListener(loadBookmarks);
+for (const event of [
+  chrome.tabGroups.onCreated,
+  chrome.tabGroups.onUpdated,
+  chrome.tabGroups.onMoved,
+  chrome.tabGroups.onRemoved,
+  chrome.tabs.onCreated,
+  chrome.tabs.onUpdated,
+  chrome.tabs.onMoved,
+  chrome.tabs.onRemoved,
+]) event.addListener(loadTabGroups);
 
 dashboardUrl = await loadDashboardUrl();
 if (dashboardUrl) host.textContent = new URL(dashboardUrl).host;

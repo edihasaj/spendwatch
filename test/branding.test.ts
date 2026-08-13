@@ -29,9 +29,9 @@ describe("Spendwatch identity", () => {
     const stylesheet = readFileSync("chrome-extension/newtab.css", "utf8");
 
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.version).toBe("1.4.0");
+    expect(manifest.version).toBe("1.5.0");
     expect(manifest.chrome_url_overrides.newtab).toBe("newtab.html");
-    expect(manifest.permissions).toEqual(["bookmarks", "favicon", "storage"]);
+    expect(manifest.permissions).toEqual(["bookmarks", "favicon", "storage", "tabGroups"]);
     expect(manifest.host_permissions).toBeUndefined();
     expect(manifest.optional_host_permissions).toEqual(["http://*/*", "https://*/*"]);
     expect(manifest.options_ui.page).toBe("options.html");
@@ -45,6 +45,11 @@ describe("Spendwatch identity", () => {
     expect(script).toContain("RETRY_INTERVAL_MS");
     expect(script).toContain("CONNECT_TIMEOUT_MS");
     expect(script).toContain("chrome.bookmarks.getTree");
+    expect(script).toContain("chrome.tabGroups.query");
+    expect(script).toContain("chrome.tabs.query({ groupId: group.id })");
+    expect(script).toContain("chrome.tabs.update(first.id, { active: true })");
+    expect(script).toContain("chrome.tabGroups.update(group.id, { collapsed: false })");
+    expect(script).toContain("chrome.tabGroups.onUpdated");
     expect(script).toContain("positionMenu");
     expect(script).toContain('menu.dataset.positioned = "true"');
     expect(script).toContain('addEventListener("pointerenter"');
@@ -56,6 +61,7 @@ describe("Spendwatch identity", () => {
     expect(stylesheet).toContain("--chrome-menu-edge: #4c4c4c");
     expect(stylesheet).toContain("--chrome-toolbar-hover: #6c6b6b");
     expect(stylesheet).toContain("flex: 0 0 34px");
+    expect(stylesheet).toContain(".tab-group.color-blue");
     expect(stylesheet).toContain('font: 400 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif');
     expect(script).toContain('outline.setAttribute("stroke-width", "1.25")');
     expect(stylesheet).toContain("min-width: 220px");
