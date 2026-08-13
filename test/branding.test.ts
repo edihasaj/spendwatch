@@ -29,14 +29,18 @@ describe("Spendwatch identity", () => {
     const stylesheet = readFileSync("chrome-extension/newtab.css", "utf8");
 
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.version).toBe("1.5.1");
+    expect(manifest.version).toBe("1.7.1");
+    expect(manifest.background).toEqual({ service_worker: "background.js", type: "module" });
     expect(manifest.chrome_url_overrides.newtab).toBe("newtab.html");
-    expect(manifest.permissions).toEqual(["bookmarks", "favicon", "storage", "tabGroups"]);
+    expect(manifest.permissions).toEqual(["bookmarks", "favicon", "storage", "tabGroups", "tabs"]);
     expect(manifest.host_permissions).toBeUndefined();
     expect(manifest.optional_host_permissions).toEqual(["http://*/*", "https://*/*"]);
     expect(manifest.options_ui.page).toBe("options.html");
     expect(page).toContain("<title>New Tab</title>");
     expect(page).toContain('<link rel="icon" href="chrome-new-tab.svg">');
+    expect(page).toContain('id="tab-group-overflow"');
+    expect(page).toContain('id="bookmark-overflow"');
+    expect(page).toContain('id="all-bookmarks"');
     expect(readFileSync("chrome-extension/chrome-new-tab.svg", "utf8")).toContain("#bdc1c6");
     expect(page).not.toContain("<a ");
     expect(page).toContain('id="configure"');
@@ -52,6 +56,17 @@ describe("Spendwatch identity", () => {
     expect(script).toContain("chrome.tabGroups.update(group.id, { collapsed: false })");
     expect(script).toContain("chrome.tabGroups.onUpdated");
     expect(script).toContain("chrome.windows.onFocusChanged");
+    expect(script).toContain("TAB_GROUP_SNAPSHOTS_KEY");
+    expect(script).toContain("chrome.tabs.group({ tabIds })");
+    expect(script).toContain("MAX_VISIBLE_TAB_GROUPS = 3");
+    expect(script).toContain("entries.slice(MAX_VISIBLE_TAB_GROUPS)");
+    expect(script).toContain("layoutBookmarks");
+    expect(script).toContain("bookmarkOverflow.hidden = false");
+    expect(script).toContain('openChromePage("chrome://bookmarks/")');
+    const background = readFileSync("chrome-extension/background.js", "utf8");
+    expect(background).toContain('const SNAPSHOTS_KEY = "tabGroupSnapshots"');
+    expect(background).toContain("chrome.storage.local.set");
+    expect(background).toContain("chrome.tabGroups.onRemoved");
     expect(script).toContain("positionMenu");
     expect(script).toContain('menu.dataset.positioned = "true"');
     expect(script).toContain('addEventListener("pointerenter"');
@@ -64,6 +79,12 @@ describe("Spendwatch identity", () => {
     expect(stylesheet).toContain("--chrome-toolbar-hover: #6c6b6b");
     expect(stylesheet).toContain("flex: 0 0 34px");
     expect(stylesheet).toContain(".tab-group.color-blue");
+    expect(stylesheet).toContain(".tab-group.saved .tab-group-dot");
+    expect(stylesheet).toContain("max-width: min(420px, 38vw)");
+    expect(stylesheet).toContain("min-width: 52px");
+    expect(stylesheet).toContain(".bar-divider");
+    expect(stylesheet).toContain(".bookmark-overflow-menu");
+    expect(stylesheet).toContain(".tab-group-menu .tab-group");
     expect(stylesheet).toContain('font: 400 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif');
     expect(script).toContain('outline.setAttribute("stroke-width", "1.25")');
     expect(stylesheet).toContain("min-width: 220px");
@@ -71,7 +92,7 @@ describe("Spendwatch identity", () => {
     expect(stylesheet).toContain("height: 28px");
     expect(stylesheet).toContain("height: 32px");
     expect(stylesheet).toContain(".bookmark-folder[open] > .bookmark-menu:not([data-positioned])");
-    for (const content of [JSON.stringify(manifest), page, script, stylesheet]) {
+    for (const content of [JSON.stringify(manifest), page, script, background, stylesheet]) {
       expect(content).not.toMatch(/\.ts\.net/);
       expect(content).not.toContain("/Users/");
     }

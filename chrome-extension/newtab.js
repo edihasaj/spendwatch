@@ -7,6 +7,8 @@ import {
 const RETRY_INTERVAL_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 8_000;
 const FRAME_TIMEOUT_MS = 12_000;
+const TAB_GROUP_SNAPSHOTS_KEY = "tabGroupSnapshots";
+const MAX_VISIBLE_TAB_GROUPS = 3;
 
 const dashboard = document.querySelector("#dashboard");
 const message = document.querySelector("#message");
@@ -14,7 +16,12 @@ const retry = document.querySelector("#retry");
 const settings = document.querySelector("#settings");
 const bookmarkBar = document.querySelector("#bookmark-bar");
 const bookmarkItems = document.querySelector("#bookmark-items");
+const bookmarkOverflow = document.querySelector("#bookmark-overflow");
+const bookmarkOverflowMenu = document.querySelector("#bookmark-overflow-menu");
 const tabGroups = document.querySelector("#tab-groups");
+const tabGroupOverflow = document.querySelector("#tab-group-overflow");
+const tabGroupMenu = document.querySelector("#tab-group-menu");
+const allBookmarks = document.querySelector("#all-bookmarks");
 const configure = document.querySelector("#configure");
 const dashboardUrlInput = document.querySelector("#dashboard-url");
 const host = document.querySelector("#host");
@@ -22,6 +29,8 @@ let retryTimer;
 let frameTimer;
 let attempt = 0;
 let dashboardUrl;
+let topLevelBookmarks = [];
+let bookmarkLayoutAttempt = 0;
 
 function setState(state, text) {
   document.body.dataset.state = state;
@@ -56,15 +65,15 @@ function bookmarkLink(bookmark) {
 }
 
 function updateToolbarVisibility() {
-  bookmarkBar.hidden = bookmarkItems.childElementCount === 0 && tabGroups.childElementCount === 0;
+  bookmarkBar.hidden = topLevelBookmarks.length === 0 && tabGroups.childElementCount === 0;
 }
 
-function tabGroupChip(group, tabs) {
+function tabGroupChip(group, tabs, saved = false) {
   const button = document.createElement("button");
   const title = group.title?.trim() || "Tab group";
-  button.className = `tab-group color-${group.color}`;
+  button.className = `tab-group color-${group.color}${saved ? " saved" : ""}`;
   button.type = "button";
-  button.title = `${title} · ${tabs.length} tab${tabs.length === 1 ? "" : "s"}${group.collapsed ? " · collapsed" : ""}`;
+  button.title = `${title} · ${tabs.length} tab${tabs.length === 1 ? "" : "s"}${saved ? " · saved mirror" : group.collapsed ? " · collapsed" : ""}`;
   button.setAttribute("aria-label", `Open ${title} tab group`);
 
   const dot = document.createElement("span");
@@ -81,6 +90,20 @@ function tabGroupChip(group, tabs) {
     button.append(shared);
   }
   button.addEventListener("click", async () => {
+    if (saved) {
+      const created = [];
+      for (const tab of tabs) {
+        try {
+          created.push(await chrome.tabs.create({ active: false, url: tab.url }));
+        } catch {}
+      }
+      const tabIds = created.map(({ id }) => id).filter(Number.isInteger);
+      if (!tabIds.length) return;
+      const groupId = await chrome.tabs.group({ tabIds });
+      await chrome.tabGroups.update(groupId, { color: group.color, title });
+      await chrome.tabs.update(tabIds[0], { active: true });
+      return;
+    }
     const first = tabs[0];
     if (!first?.id) return;
     try {
@@ -91,12 +114,39 @@ function tabGroupChip(group, tabs) {
       await loadTabGroups();
     }
   });
+  if (saved) {
+    button.addEventListener("contextmenu", async (event) => {
+      event.preventDefault();
+      const stored = (await chrome.storage.local.get(TAB_GROUP_SNAPSHOTS_KEY))[TAB_GROUP_SNAPSHOTS_KEY];
+      await chrome.storage.local.set({
+        [TAB_GROUP_SNAPSHOTS_KEY]: (Array.isArray(stored) ? stored : []).filter(({ id }) => id !== group.id),
+      });
+    });
+  }
   return button;
+}
+
+function renderTabGroups(entries) {
+  const visible = entries.slice(0, MAX_VISIBLE_TAB_GROUPS);
+  const overflow = entries.slice(MAX_VISIBLE_TAB_GROUPS);
+  tabGroups.replaceChildren(...visible.map(
+    ({ group, tabs, saved }) => tabGroupChip(group, tabs, saved),
+  ));
+  tabGroupMenu.replaceChildren(...overflow.map(
+    ({ group, tabs, saved }) => tabGroupChip(group, tabs, saved),
+  ));
+  const summary = tabGroupOverflow.querySelector(":scope > summary");
+  summary.textContent = `+${overflow.length}`;
+  summary.title = `${overflow.length} more tab group${overflow.length === 1 ? "" : "s"}`;
+  tabGroupOverflow.hidden = overflow.length === 0;
 }
 
 async function loadTabGroups() {
   try {
-    const groups = await chrome.tabGroups.query({});
+    const [groups, stored] = await Promise.all([
+      chrome.tabGroups.query({}),
+      chrome.storage.local.get(TAB_GROUP_SNAPSHOTS_KEY),
+    ]);
     const populated = await Promise.all(groups.map(async (group) => ({
       group,
       tabs: (await chrome.tabs.query({ groupId: group.id })).sort((a, b) => a.index - b.index),
@@ -105,11 +155,28 @@ async function loadTabGroups() {
       a.group.windowId - b.group.windowId
       || (a.tabs[0]?.index ?? Infinity) - (b.tabs[0]?.index ?? Infinity)
     ));
-    tabGroups.replaceChildren(...populated.filter(({ tabs }) => tabs.length).map(({ group, tabs }) => tabGroupChip(group, tabs)));
+    const openTitles = new Set(populated.map(({ group }) => `${group.title?.trim() || "Tab group"}\n${group.color}`));
+    const snapshots = Array.isArray(stored[TAB_GROUP_SNAPSHOTS_KEY])
+      ? stored[TAB_GROUP_SNAPSHOTS_KEY].filter((snapshot) => (
+        snapshot?.id
+        && snapshot?.title
+        && Array.isArray(snapshot.tabs)
+        && snapshot.tabs.length
+        && !openTitles.has(`${snapshot.title}\n${snapshot.color}`)
+      ))
+      : [];
+    snapshots.sort((a, b) => b.updatedAt - a.updatedAt);
+    renderTabGroups([
+      ...populated.filter(({ tabs }) => tabs.length).map(({ group, tabs }) => ({ group, tabs, saved: false })),
+      ...snapshots.map((snapshot) => ({ group: snapshot, tabs: snapshot.tabs, saved: true })),
+    ]);
   } catch {
     tabGroups.replaceChildren();
+    tabGroupMenu.replaceChildren();
+    tabGroupOverflow.hidden = true;
   }
   updateToolbarVisibility();
+  await layoutBookmarks();
 }
 
 function folderIcon() {
@@ -141,6 +208,20 @@ function positionMenu(summary, menu, nested) {
   menu.style.setProperty("--menu-x", `${Math.max(margin, x)}px`);
   menu.style.setProperty("--menu-y", `${Math.max(margin, y)}px`);
   menu.dataset.positioned = "true";
+}
+
+function setupBarMenu(details, menu) {
+  const summary = details.querySelector(":scope > summary");
+  details.addEventListener("toggle", () => {
+    if (!details.open) {
+      menu.removeAttribute("data-positioned");
+      return;
+    }
+    for (const sibling of bookmarkBar.querySelectorAll(":scope > details[open]")) {
+      if (sibling !== details) sibling.removeAttribute("open");
+    }
+    positionMenu(summary, menu, false);
+  });
 }
 
 function bookmarkFolder(folder, nested = false) {
@@ -196,20 +277,62 @@ function bookmarkFolder(folder, nested = false) {
   return details;
 }
 
+function bookmarkNode(bookmark, nested = false) {
+  return bookmark.url ? bookmarkLink(bookmark) : bookmarkFolder(bookmark, nested);
+}
+
+function nextFrame() {
+  return new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+async function layoutBookmarks() {
+  const layoutAttempt = ++bookmarkLayoutAttempt;
+  bookmarkOverflow.hidden = true;
+  bookmarkOverflowMenu.replaceChildren();
+  bookmarkItems.replaceChildren(...topLevelBookmarks.map((bookmark) => bookmarkNode(bookmark)));
+  if (bookmarkBar.hidden || topLevelBookmarks.length === 0) return;
+  await nextFrame();
+  if (layoutAttempt !== bookmarkLayoutAttempt) return;
+
+  const widths = [...bookmarkItems.children].map((child) => child.getBoundingClientRect().width);
+  const totalWidth = widths.reduce((total, width) => total + width, 0) + Math.max(0, widths.length - 1);
+  if (totalWidth <= bookmarkItems.clientWidth) return;
+
+  bookmarkOverflow.hidden = false;
+  await nextFrame();
+  if (layoutAttempt !== bookmarkLayoutAttempt) return;
+
+  let usedWidth = 0;
+  let visibleCount = 0;
+  for (const width of widths) {
+    const nextWidth = usedWidth + width + (visibleCount ? 1 : 0);
+    if (nextWidth > bookmarkItems.clientWidth) break;
+    usedWidth = nextWidth;
+    visibleCount += 1;
+  }
+  bookmarkItems.replaceChildren(...topLevelBookmarks.slice(0, visibleCount).map((bookmark) => bookmarkNode(bookmark)));
+  bookmarkOverflowMenu.replaceChildren(...topLevelBookmarks.slice(visibleCount).map((bookmark) => bookmarkNode(bookmark, true)));
+}
+
 async function loadBookmarks() {
   try {
     const [tree] = await chrome.bookmarks.getTree();
     const roots = tree?.children || [];
     const bar = roots.find((node) => node.id === "1") || roots[0];
-    const bookmarks = bar?.children || [];
-    bookmarkItems.replaceChildren();
-    for (const bookmark of bookmarks) {
-      bookmarkItems.append(bookmark.url ? bookmarkLink(bookmark) : bookmarkFolder(bookmark));
-    }
+    topLevelBookmarks = bar?.children || [];
   } catch {
-    bookmarkItems.replaceChildren();
+    topLevelBookmarks = [];
   }
   updateToolbarVisibility();
+  await layoutBookmarks();
+}
+
+async function openChromePage(url) {
+  try {
+    await chrome.tabs.update({ url });
+  } catch {
+    await chrome.tabs.create({ url });
+  }
 }
 
 async function connect() {
@@ -275,6 +398,9 @@ configure.addEventListener("submit", async (event) => {
 });
 retry.addEventListener("click", connect);
 settings.addEventListener("click", () => chrome.runtime.openOptionsPage());
+allBookmarks.addEventListener("click", () => openChromePage("chrome://bookmarks/"));
+setupBarMenu(tabGroupOverflow, tabGroupMenu);
+setupBarMenu(bookmarkOverflow, bookmarkOverflowMenu);
 window.addEventListener("online", connect);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && document.body.dataset.state === "offline") connect();
@@ -288,6 +414,7 @@ window.addEventListener("resize", () => {
   for (const folder of bookmarkBar.querySelectorAll("details[open]")) {
     folder.removeAttribute("open");
   }
+  layoutBookmarks();
 });
 
 loadBookmarks();
@@ -309,6 +436,9 @@ for (const event of [
   chrome.tabs.onMoved,
   chrome.tabs.onRemoved,
 ]) event.addListener(loadTabGroups);
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes[TAB_GROUP_SNAPSHOTS_KEY]) loadTabGroups();
+});
 for (const event of [
   chrome.windows.onCreated,
   chrome.windows.onRemoved,
