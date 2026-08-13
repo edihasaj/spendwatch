@@ -123,7 +123,7 @@ describe("portable reports", () => {
     expect(html).toContain("Codex · first@example.com");
     expect(html).toContain("Codex · second@example.com");
     expect(html).toContain("Codex · third@example.com");
-    expect(html).toContain("td .account-identity{align-items:flex-start;flex-direction:column;gap:4px;min-width:180px}");
+    expect(html).toContain("td .account-identity{align-items:flex-start;flex-direction:column;gap:4px;min-width:140px}");
   });
 
   test("uses the same application shell as the capacity view", () => {
@@ -139,6 +139,8 @@ describe("portable reports", () => {
     expect(html).toContain('href="./#setup">Add account</a>');
     expect(html).toContain("Fragment+Mono");
     expect(html).toContain('class="panels"');
+    expect(html).toContain('role="region" aria-label="By machine"');
+    expect(html).toContain("min-height:44px");
     expect(html).toContain("refreshValues");
     expect(html).not.toContain("location.reload()");
     expect(html).not.toContain("Know what you can");
