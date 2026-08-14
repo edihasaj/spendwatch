@@ -82,6 +82,7 @@ main {
 #tab-groups:not(:empty) {
   max-width: min(420px, 38vw);
   flex: none;
+  gap: 3px;
   overflow: hidden;
 }
 
@@ -148,21 +149,21 @@ main {
 .tab-group {
   --group-color: #9aa0a6;
   display: inline-flex;
-  min-width: 52px;
+  min-width: 0;
   max-width: 180px;
-  height: 26px;
+  height: 22px;
   flex: none;
   align-items: center;
   gap: 5px;
   overflow: hidden;
-  border: 2px solid var(--group-color);
-  border-radius: 8px;
-  padding: 0 9px;
+  border: 1px solid var(--group-color);
+  border-radius: 7px;
+  padding: 0 6px;
   background: transparent;
   color: var(--chrome-text);
   cursor: default;
   font: inherit;
-  font-size: 13px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
   transition: background-color 80ms ease-out;
@@ -229,7 +230,7 @@ main {
 .bookmark-link,
 .bookmark-folder summary {
   display: inline-flex;
-  max-width: 180px;
+  max-width: none;
   height: 28px;
   align-items: center;
   gap: 7px;
@@ -241,6 +242,11 @@ main {
   text-decoration: none;
   text-overflow: ellipsis;
   transition: background-color 80ms ease-out;
+}
+
+#bookmark-items > .bookmark-link,
+#bookmark-items > .bookmark-folder {
+  flex: none;
 }
 
 .bookmark-link:hover,
