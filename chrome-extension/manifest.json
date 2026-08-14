@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Spendwatch New Tab",
   "description": "Shows your self-hosted Spendwatch capacity dashboard on every new tab.",
-  "version": "1.7.1",
+  "version": "1.7.5",
   "background": {
     "service_worker": "background.js",
     "type": "module"
