@@ -20,11 +20,18 @@ describe("90% capacity utilization planning", () => {
     expect(plan?.action).toBe("more");
   });
 
-  test("waits during an early cycle instead of recommending a purchase", () => {
-    const plan = planWindowUtilization(window(4), Date.parse("2026-08-11T06:00:00Z"));
+  test("uses live pace for routing during an early cycle", () => {
+    const plan = planWindowUtilization(window(1), Date.parse("2026-08-11T06:00:00Z"));
     expect(plan?.confidence).toBe("early");
-    expect(plan?.projectedUsedPercent).toBeUndefined();
+    expect(plan?.projectedUsedPercent).toBeCloseTo(28, 0);
     expect(plan?.action).toBe("rebalance");
+  });
+
+  test("shifts work away immediately when early live pace predicts exhaustion", () => {
+    const plan = planWindowUtilization(window(29), Date.parse("2026-08-11T06:00:00Z"));
+    expect(plan?.confidence).toBe("early");
+    expect(plan?.projectedUsedPercent).toBeGreaterThan(100);
+    expect(plan?.action).toBe("more");
   });
 
   test("recommends less only after a mature, deeply underused cycle", () => {
