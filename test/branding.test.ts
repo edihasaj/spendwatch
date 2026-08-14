@@ -29,7 +29,7 @@ describe("Spendwatch identity", () => {
     const stylesheet = readFileSync("chrome-extension/newtab.css", "utf8");
 
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.version).toBe("1.7.1");
+    expect(manifest.version).toBe("1.7.5");
     expect(manifest.background).toEqual({ service_worker: "background.js", type: "module" });
     expect(manifest.chrome_url_overrides.newtab).toBe("newtab.html");
     expect(manifest.permissions).toEqual(["bookmarks", "favicon", "storage", "tabGroups", "tabs"]);
@@ -81,9 +81,13 @@ describe("Spendwatch identity", () => {
     expect(stylesheet).toContain(".tab-group.color-blue");
     expect(stylesheet).toContain(".tab-group.saved .tab-group-dot");
     expect(stylesheet).toContain("max-width: min(420px, 38vw)");
-    expect(stylesheet).toContain("min-width: 52px");
+    expect(stylesheet).toContain("gap: 3px");
+    expect(stylesheet).toContain("min-width: 0");
+    expect(stylesheet).toContain("border: 1px solid var(--group-color)");
     expect(stylesheet).toContain(".bar-divider");
     expect(stylesheet).toContain(".bookmark-overflow-menu");
+    expect(stylesheet).toContain("#bookmark-items > .bookmark-link");
+    expect(stylesheet).toContain("max-width: none");
     expect(stylesheet).toContain(".tab-group-menu .tab-group");
     expect(stylesheet).toContain('font: 400 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif');
     expect(script).toContain('outline.setAttribute("stroke-width", "1.25")');
