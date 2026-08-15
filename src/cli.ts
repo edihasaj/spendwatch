@@ -10,6 +10,7 @@ import { importCapacityHistory, loadCapacityHistory, writeCapacitySnapshot } fro
 import { runCapacityCommand } from "./capacity-cli";
 import { loadCapacityDashboard } from "./capacity-dashboard";
 import { exportCapacityHistory } from "./capacity-export";
+import { currentCodexCapacity } from "./capacity-current";
 import { writeSnapshot } from "./db";
 import { renderHistoryHtml } from "./history";
 import { renderHtml } from "./html";
@@ -27,7 +28,7 @@ import { discover, type SourceStatus } from "./sources";
 import { reportOperationalError } from "./telemetry";
 
 interface Args {
-  cmd: "report" | "watch" | "limits" | "guard" | "server" | "push-test" | "capacity-history-export";
+  cmd: "report" | "watch" | "limits" | "guard" | "server" | "push-test" | "capacity-history-export" | "capacity-current";
   days: number;
   project?: string;
   account?: string;
@@ -128,7 +129,7 @@ function parseArgs(argv: string[]): Args {
   const rest = [...argv];
   while (rest.length) {
     const x = rest.shift()!;
-    if (x === "report" || x === "watch" || x === "limits" || x === "guard" || x === "server" || x === "push-test" || x === "capacity-history-export") a.cmd = x;
+    if (x === "report" || x === "watch" || x === "limits" || x === "guard" || x === "server" || x === "push-test" || x === "capacity-history-export" || x === "capacity-current") a.cmd = x;
     else if (x === "--days") a.days = Number(rest.shift());
     else if (x === "--project") a.project = rest.shift();
     else if (x === "--agent" || x === "--source") a.agents = new Set((rest.shift() ?? "").split(",").map((s) => s.trim()).filter(Boolean));
@@ -173,7 +174,7 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--help" || x === "-h") {
       console.log(`spendwatch — token/$ leaderboards across coding agents
 
-usage: spendwatch [report|watch|limits|guard|route|run|eval|capacity|server|push-test|capacity-history-export] [options]
+usage: spendwatch [report|watch|limits|guard|route|run|eval|capacity|capacity-current|server|push-test|capacity-history-export] [options]
        spendwatch account add PROVIDER [options]
 
   report            aggregate past sessions (default)
@@ -184,6 +185,7 @@ usage: spendwatch [report|watch|limits|guard|route|run|eval|capacity|server|push
   run TASK          execute, verify, record, and escalate a routed task
   eval [JSONL]      replay tasks through the routing policy without model calls
   capacity          archive or restore old capacity history safely
+  capacity-current  current Codex capacity per profile, read from local rollouts
   server            serve the dashboard and deliver background Web Push alerts
   push-test         send a background test to every enrolled browser
   capacity-history-export
@@ -474,6 +476,7 @@ if (routeExit !== undefined) {
         }
         const args = parseArgs(argv);
         if (args.cmd === "watch") watch(args);
+        else if (args.cmd === "capacity-current") process.stdout.write(JSON.stringify(currentCodexCapacity(), null, 2) + "\n");
         else if (args.cmd === "limits") await limits(args);
         else if (args.cmd === "guard") process.exitCode = guard(args);
         else if (args.cmd === "server") await server(args);
