@@ -57,15 +57,16 @@ const sample = [
 ];
 
 describe("Codex limits", () => {
-  test("normalizes and sorts accounts by weekly headroom", () => {
+  test("names and sorts accounts alphabetically", () => {
     const accounts = normalizeCodexLimits(sample);
     expect(accounts.map((account) => account.email)).toEqual([
-      "work@example.com",
       "personal@example.com",
+      "work@example.com",
     ]);
-    expect(accounts[0].plan).toBe("Pro");
-    expect(accounts[0].session?.windowMinutes).toBe(300);
-    expect(accounts[0].weekly?.usedPercent).toBe(14);
+    expect(accounts.map((account) => account.name)).toEqual(["Codex Primary", "Codex Secondary"]);
+    expect(accounts[1].plan).toBe("Pro");
+    expect(accounts[1].session?.windowMinutes).toBe(300);
+    expect(accounts[1].weekly?.usedPercent).toBe(14);
   });
 
   test("keeps the freshest duplicate account snapshot", () => {
@@ -135,6 +136,9 @@ describe("Codex limits", () => {
     expect(html).not.toContain("account-number");
     expect(html).toContain("Current capacity");
     expect(html).toContain("2 accounts · 1 service");
+    expect(html).toContain("<h2>Codex Primary</h2><span class=\"account-email\">personal@example.com</span>");
+    expect(html).toContain("<h2>Codex Secondary</h2><span class=\"account-email\">work@example.com</span>");
+    expect(html.indexOf("Codex Primary")).toBeLessThan(html.indexOf("Codex Secondary"));
     expect(html).toContain("grid-template-columns:repeat(auto-fit,minmax(220px,1fr))");
     expect(html).toContain("data-account-key=");
     expect(html).toContain("patchNode(card,nextCard)");
@@ -359,7 +363,7 @@ describe("Codex limits", () => {
     expect(html).not.toContain("Cloud route");
     expect(renderLimitsText(accounts)).toContain("$4.60 left");
     expect(renderLimitsText(accounts)).toContain("3000 credits/seat shared pool");
-    expect(html.indexOf("Kimi K3 Cloud")).toBeLessThan(html.indexOf("DeepSeek V4 Flash"));
+    expect(html.indexOf("DeepSeek V4 Flash")).toBeLessThan(html.indexOf("Kimi K3 Cloud"));
     expect(html).not.toContain("Ollama Cloud");
     expect(html).not.toContain("Premium interactions");
     expect(html).not.toContain("Unlimited");
