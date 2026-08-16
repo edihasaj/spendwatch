@@ -185,7 +185,7 @@ usage: spendwatch [report|watch|limits|guard|route|run|eval|capacity|capacity-cu
   run TASK          execute, verify, record, and escalate a routed task
   eval [JSONL]      replay tasks through the routing policy without model calls
   capacity          archive or restore old capacity history safely
-  capacity-current  current Codex capacity per profile, read from local rollouts
+  capacity-current  read live Codex capacity through the official app-server
   server            serve the dashboard and deliver background Web Push alerts
   push-test         send a background test to every enrolled browser
   capacity-history-export
@@ -476,7 +476,7 @@ if (routeExit !== undefined) {
         }
         const args = parseArgs(argv);
         if (args.cmd === "watch") watch(args);
-        else if (args.cmd === "capacity-current") process.stdout.write(JSON.stringify(currentCodexCapacity(), null, 2) + "\n");
+        else if (args.cmd === "capacity-current") process.stdout.write(JSON.stringify(await currentCodexCapacity(), null, 2) + "\n");
         else if (args.cmd === "limits") await limits(args);
         else if (args.cmd === "guard") process.exitCode = guard(args);
         else if (args.cmd === "server") await server(args);
