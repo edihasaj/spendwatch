@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Pace Copilot against a manual monthly ceiling of 400,000 AI credits for $400 ($0.001 per credit, overridable) and drop the per-seat shared-pool and promotion maths.
 - Remove the private dashboard hostname from the public Chrome extension, add origin-scoped URL configuration, and enable repository security automation.
 - Add a 90% utilization planner for subscription-backed capacity, excluding PAYG API balances from subscription sizing.
 - Match Chrome's native dark bookmark bar and menu typography, sizing, colors, and surfaces.
