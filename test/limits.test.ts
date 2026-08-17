@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { copilotBudget, copilotCreditWindow } from "../src/copilot-budget";
+import { copilotBudget, copilotBudgetStatus, copilotCreditWindow } from "../src/copilot-budget";
 import { normalizeCodexLimits, predictWindow, renderLimitsHtml, renderLimitsText } from "../src/limits";
 import { normalizeSourceHealth } from "../src/capacity-dashboard";
-import { recommendAccount } from "../src/capacity-planner";
+import { buildUtilizationPlans, recommendAccount } from "../src/capacity-planner";
 
 const sample = [
   {
@@ -351,7 +351,9 @@ describe("Codex limits", () => {
     expect(html).toContain("$1,861.79 / $400");
     expect(html).toContain("Monthly budget");
     expect(html).toContain("$0.01 per credit");
-    expect(html).toContain("Paid overflow on");
+    expect(html).toContain("Over budget by 146,179 credits");
+    expect(html).toContain("$1,461.79 over the $400 ceiling");
+    expect(html).toContain("Ceiling passed, spending allowed");
     expect(html).toContain("Token-based billing");
     expect(html).toContain('data-reset="2026-09-01T00:00:00Z"');
     expect(html).toContain("Lokai");
@@ -363,13 +365,50 @@ describe("Codex limits", () => {
     expect(html).toContain("LiteLLM · 1M context");
     expect(html).not.toContain("Cloud route");
     expect(renderLimitsText(accounts)).toContain("$4.60 left");
-    expect(renderLimitsText(accounts)).toContain("186179 of 40000 AI credits used ($1,861.79 of $400)");
+    expect(renderLimitsText(accounts)).toContain("186179 of 40000 AI credits used ($1,861.79 of $400)\tover budget by 146179 credits ($1,461.79)");
     expect(html.indexOf("DeepSeek V4 Flash")).toBeLessThan(html.indexOf("Kimi K3 Cloud"));
     expect(html).not.toContain("Ollama Cloud");
     expect(html).not.toContain("Premium interactions");
     expect(html).not.toContain("Unlimited");
     expect(html).not.toContain("5-hour session");
     expect(html).not.toContain("DeepSeek V4 Flash\t5h not active");
+  });
+
+  test("reports overspend instead of clamping the monthly budget", () => {
+    const accounts = normalizeCodexLimits({
+      provider: "copilot",
+      account: "dev (Business)",
+      usage: { accountEmail: "dev (Business)", loginMethod: "business", updatedAt: "2026-08-17T12:00:00Z" },
+      copilot: { premiumCreditsUsed: 52_500, overagePermitted: true, resetsAt: "2026-09-01T00:00:00Z" },
+    });
+    const status = copilotBudgetStatus(accounts[0]!);
+    expect(status.creditsOver).toBe(12_500);
+    expect(status.usdOver).toBeCloseTo(125, 6);
+    expect(status.usedPercent).toBeCloseTo(131.25, 2);
+    expect(status.over).toBe(true);
+    const html = renderLimitsHtml(accounts, { generatedAt: Date.parse("2026-08-17T12:00:00Z") });
+    expect(html).toContain("52,500 / 40,000");
+    expect(html).toContain("Over budget by 12,500 credits");
+    expect(html).toContain("$125 over the $400 ceiling");
+    expect(html).toContain("copilot-usage danger");
+    expect(html).not.toContain("% of budget left");
+    const plan = buildUtilizationPlans(accounts, Date.parse("2026-08-17T12:00:00Z"))[0];
+    expect(plan?.action).toBe("more");
+    expect(plan?.detail).toContain("Monthly ceiling passed by 12,500 credits");
+  });
+
+  test("keeps the budget meter and overflow copy while inside the ceiling", () => {
+    const accounts = normalizeCodexLimits({
+      provider: "copilot",
+      account: "dev (Business)",
+      usage: { accountEmail: "dev (Business)", loginMethod: "business", updatedAt: "2026-08-17T12:00:00Z" },
+      copilot: { premiumCreditsUsed: 10_000, overagePermitted: true, resetsAt: "2026-09-01T00:00:00Z" },
+    });
+    const html = renderLimitsHtml(accounts, { generatedAt: Date.parse("2026-08-17T12:00:00Z") });
+    expect(html).toContain("10,000 / 40,000");
+    expect(html).toContain("75% of budget left");
+    expect(html).toContain("Paid overflow on");
+    expect(html).not.toContain("Over budget by");
   });
 
   test("paces the manual monthly credit budget instead of a seat allowance", () => {
