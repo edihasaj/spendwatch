@@ -20,12 +20,26 @@ function isReport(value: unknown): value is Report {
   );
 }
 
+function normalizeTokenTotals(report: Report): Report {
+  const modelsTotal = report.models.reduce(
+    (sum, model) => sum + model.inTok + model.outTok + model.cacheReadTok + model.cacheWriteTok,
+    0,
+  );
+  return {
+    ...report,
+    totalTokens: typeof report.totalTokens === "number" ? report.totalTokens : modelsTotal,
+    accounts: report.accounts.map((row) => ({ ...row, tokens: typeof row.tokens === "number" ? row.tokens : 0 })),
+    prompts: report.prompts.map((row) => ({ ...row, tokens: typeof row.tokens === "number" ? row.tokens : row.outTok })),
+    projects: report.projects.map((row) => ({ ...row, tokens: typeof row.tokens === "number" ? row.tokens : 0 })),
+  };
+}
+
 export function loadReports(paths: string[]): Report[] {
   return paths.flatMap((path) => {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
     const values = Array.isArray(parsed) ? parsed : [parsed];
     if (!values.every(isReport)) throw new Error(`invalid spendwatch report: ${path}`);
-    return values;
+    return values.map(normalizeTokenTotals);
   });
 }
 
@@ -53,6 +67,7 @@ export function sourceLabel(source: string): string {
 
 export interface SpendBreakdown {
   label: string;
+  tokens: number;
   cost: number;
   calls: number;
   sessions: number;
@@ -79,13 +94,14 @@ function breakdown(
   const rows = new Map<string, SpendBreakdown>();
   for (const report of reports) {
     const label = key(report);
-    const row = rows.get(label) ?? { label, cost: 0, calls: 0, sessions: 0 };
+    const row = rows.get(label) ?? { label, tokens: 0, cost: 0, calls: 0, sessions: 0 };
+    row.tokens += report.totalTokens;
     row.cost += report.totalCost;
     row.calls += report.apiCalls;
     row.sessions += report.sessions;
     rows.set(label, row);
   }
-  return [...rows.values()].sort((a, b) => b.cost - a.cost);
+  return [...rows.values()].sort((a, b) => b.tokens - a.tokens);
 }
 
 export function reportBreakdowns(reports: Report[], accountGrouping: AccountGrouping = "service"): {
@@ -99,10 +115,12 @@ export function reportBreakdowns(reports: Report[], accountGrouping: AccountGrou
       const label = accountLabel(report.source, account.account, accountGrouping);
       const row = accounts.get(label) ?? {
         label,
+        tokens: 0,
         cost: 0,
         calls: 0,
         sessions: 0,
       };
+      row.tokens += account.tokens;
       row.cost += account.cost;
       row.calls += account.calls;
       row.sessions += account.sessions;
@@ -112,7 +130,7 @@ export function reportBreakdowns(reports: Report[], accountGrouping: AccountGrou
   return {
     machines: breakdown(reports, (report) => sourceParts(report.source).machine),
     agents: breakdown(reports, (report) => sourceLabel(sourceParts(report.source).agent)),
-    accounts: [...accounts.values()].sort((a, b) => b.cost - a.cost),
+    accounts: [...accounts.values()].sort((a, b) => b.tokens - a.tokens),
   };
 }
 
@@ -192,7 +210,7 @@ export function mergeReports(
   const prompts = reports
     .flatMap((report) => report.prompts)
     .map<PromptRow>((row, index) => ({ ...row, key: `${index}:${row.key}` }))
-    .sort((a, b) => b.cost - a.cost)
+    .sort((a, b) => b.tokens - a.tokens)
     .slice(0, 15);
   const models = mergeNamed<ModelRow>(
     reports.flatMap((report) => report.models),
@@ -205,13 +223,13 @@ export function mergeReports(
       current.cacheWriteTok += row.cacheWriteTok;
       current.cost += row.cost;
     },
-    (row) => row.cost,
+    (row) => row.inTok + row.outTok + row.cacheReadTok + row.cacheWriteTok,
   );
   const projects = mergeNamed(
     reports.flatMap((report) => report.projects),
     (row) => row.project,
-    (current, row) => { current.cost += row.cost; },
-    (row) => row.cost,
+    (current, row) => { current.tokens += row.tokens; current.cost += row.cost; },
+    (row) => row.tokens,
   );
   const accounts = mergeNamed<AccountRow>(
     reports.flatMap((report) =>
@@ -222,14 +240,16 @@ export function mergeReports(
     ),
     (row) => row.account,
     (current, row) => {
+      current.tokens += row.tokens;
       current.cost += row.cost;
       current.calls += row.calls;
       current.sessions += row.sessions;
     },
-    (row) => row.cost,
+    (row) => row.tokens,
   );
   return {
     source,
+    totalTokens: reports.reduce((sum, report) => sum + report.totalTokens, 0),
     totalCost: reports.reduce((sum, report) => sum + report.totalCost, 0),
     apiCalls: reports.reduce((sum, report) => sum + report.apiCalls, 0),
     sessions: reports.reduce((sum, report) => sum + report.sessions, 0),

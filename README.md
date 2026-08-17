@@ -398,7 +398,8 @@ The **AUTOMATE — top targets** list (top of the report, and `--brief`) ranks s
 
 ## What the numbers mean
 
-- **$** — from real per-request `usage` fields (Claude: `cache_creation`/`cache_read`; Codex: `last_token_usage`, summed — verified equal to cumulative). GPT-5.6 Sol/Terra/Luna, GPT-5.5/5.4, and DeepSeek V4 prices are model-specific; OpenAI requests above 272K input context use published long-context rates. Codex $ remains an estimate because much usage is subscription/credit-billed. Cache prices are model-specific when published.
+- **tokens**: the primary Spend detail metric, summed from exact input, output, cache-read, and cache-write usage fields. The hero, source tabs, machine/account/agent breakdowns, and detail tables rank usage by tokens before cost.
+- **$**: the API-equivalent estimate from those same per-request `usage` fields (Claude: `cache_creation`/`cache_read`; Codex: `last_token_usage`, summed and verified equal to cumulative). GPT-5.6 Sol/Terra/Luna, GPT-5.5/5.4, and DeepSeek V4 prices are model-specific; OpenAI requests above 272K input context use published long-context rates. Codex $ remains an estimate because much usage is subscription/credit-billed. Cache prices are model-specific when published.
 - **ctx $** (per tool/command) — est. cost a call's *results* impose on the session: result tokens (chars/4) × one cache write + a 0.1× reread on every later request in that session. Big outputs early in long sessions cost the most.
 - **BY COMMAND** — shell calls split by executable (`echo`, `docker`, `grep`, `ssh`…), skipping `cd X &&`/env/wrappers.
 - **BY COMMAND — DEEP** — executable + subcommand (`git diff`, `docker compose`, `pnpm lint`) and, for `ssh`, the remote command head. This is the "what to build a CLI for" list.
