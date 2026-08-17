@@ -56,3 +56,39 @@ export function copilotCreditWindow(
     windowMinutes,
   };
 }
+
+export interface CopilotBudgetStatus {
+  budget: CopilotBudget;
+  creditsUsed: number;
+  usdSpent: number;
+  /** Unclamped share of the monthly ceiling, so overspend stays visible. */
+  usedPercent: number;
+  /** Credits still inside the ceiling. */
+  creditsLeft: number;
+  /** Credits spent past the ceiling; 0 while inside it. */
+  creditsOver: number;
+  usdOver: number;
+  over: boolean;
+}
+
+/**
+ * The budget is a reporting ceiling, never an enforced stop: spending past it is allowed and
+ * reported as an overspend rather than clamped away.
+ */
+export function copilotBudgetStatus(
+  account: CodexLimitAccount,
+  budget: CopilotBudget = copilotBudget(),
+): CopilotBudgetStatus {
+  const creditsUsed = Math.max(0, account.copilot?.premiumCreditsUsed ?? 0);
+  const creditsOver = Math.max(0, creditsUsed - budget.credits);
+  return {
+    budget,
+    creditsUsed,
+    usdSpent: creditsUsed * budget.creditUsd,
+    usedPercent: (creditsUsed / budget.credits) * 100,
+    creditsLeft: Math.max(0, budget.credits - creditsUsed),
+    creditsOver,
+    usdOver: creditsOver * budget.creditUsd,
+    over: creditsOver > 0,
+  };
+}

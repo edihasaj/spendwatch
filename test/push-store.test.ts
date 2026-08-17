@@ -46,6 +46,50 @@ describe("background push state", () => {
     store.close();
   });
 
+  test("alerts once when Copilot passes its manual monthly budget", () => {
+    const dir = mkdtempSync(join(tmpdir(), "spendwatch-push-copilot-"));
+    const store = new PushStore(join(dir, "push.db"));
+    store.upsertSubscription({
+      endpoint: "https://push.example.test/copilot",
+      keys: { p256dh: "public-key", auth: "auth-secret" },
+    }, "test browser", 1);
+    const nowMs = Date.parse("2026-08-17T12:00:00Z");
+    const account: CodexLimitAccount = {
+      provider: "copilot",
+      email: "org (Business)",
+      plan: "Business",
+      devices: ["studio"],
+      copilot: {
+        chatUnlimited: false,
+        completionsUnlimited: false,
+        premiumUnlimited: false,
+        premiumCreditsUsed: 20_000,
+        overagePermitted: true,
+        tokenBasedBilling: true,
+        resetsAt: "2026-09-01T00:00:00Z",
+      },
+    };
+
+    expect(store.observe([account], nowMs)).toBe(0);
+    account.copilot!.premiumCreditsUsed = 39_000;
+    expect(store.observe([account], nowMs + 1)).toBe(1);
+    expect(store.pendingDeliveries().map((delivery) => delivery.threshold)).toEqual([5]);
+    const warning = store.pendingDeliveries()[0]!;
+    store.markSent(warning.eventId, warning.endpoint, nowMs + 2);
+
+    account.copilot!.premiumCreditsUsed = 52_500;
+    expect(store.observe([account], nowMs + 3)).toBe(1);
+    const spent = store.pendingDeliveries()[0]!;
+    expect(spent.threshold).toBe(0);
+    expect(spent.provider).toBe("copilot");
+    store.markSent(spent.eventId, spent.endpoint, nowMs + 4);
+
+    account.copilot!.premiumCreditsUsed = 80_000;
+    expect(store.observe([account], nowMs + 5)).toBe(0);
+    expect(store.pendingDeliveries()).toEqual([]);
+    store.close();
+  });
+
   test("adds delivery verification state to an existing subscription table", () => {
     const dir = mkdtempSync(join(tmpdir(), "spendwatch-push-migration-"));
     const path = join(dir, "push.db");
