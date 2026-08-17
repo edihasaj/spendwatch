@@ -3,6 +3,7 @@ import { BRAND_HEAD_HTML } from "./branding";
 import type { CapacityAuthenticationRequirement, CapacitySourceHealth } from "./capacity-dashboard";
 import { predictWindow } from "./capacity-prediction";
 import { buildUtilizationPlans, recommendAccount, UTILIZATION_TARGET_PERCENT, type AccountUtilizationPlan } from "./capacity-planner";
+import { copilotBudget, copilotCreditWindow } from "./copilot-budget";
 import { compactDuration } from "./duration";
 
 export { predictWindow } from "./capacity-prediction";
@@ -367,43 +368,38 @@ function paceMarker(window: LimitWindow, nowMs: number): string {
   return `<span class="pace-marker ${tone}" style="--pace-left:${expectedLeft}%" role="img" aria-label="${esc(label)}" title="${esc(label)}"><b></b><b></b><b></b></span>`;
 }
 
-const COPILOT_CREDIT_USD = 0.01;
-const COPILOT_BUSINESS_STANDARD_CREDITS = 1_900;
-const COPILOT_BUSINESS_PROMO_CREDITS = 3_000;
-const COPILOT_PROMO_START_MS = Date.parse("2026-06-01T00:00:00Z");
-const COPILOT_PROMO_END_MS = Date.parse("2026-09-01T00:00:00Z");
-
-export function copilotBusinessCreditsPerSeat(account: CodexLimitAccount, nowMs: number): number | undefined {
-  if (account.provider !== "copilot" || account.plan.toLowerCase() !== "business") return undefined;
-  const assignedAt = account.copilot?.seatAssignedAt ? Date.parse(account.copilot.seatAssignedAt) : Number.NaN;
-  const existingCustomer = !Number.isFinite(assignedAt) || assignedAt < COPILOT_PROMO_START_MS;
-  return existingCustomer && nowMs >= COPILOT_PROMO_START_MS && nowMs < COPILOT_PROMO_END_MS
-    ? COPILOT_BUSINESS_PROMO_CREDITS
-    : COPILOT_BUSINESS_STANDARD_CREDITS;
-}
-
-function formatUsd(value: number): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
+function formatUsd(value: number, maximumFractionDigits = 2): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: Number.isInteger(value) ? 0 : Math.min(2, maximumFractionDigits),
+    maximumFractionDigits,
+  }).format(value);
 }
 
 function copilotLimits(account: CodexLimitAccount, nowMs: number): string {
   const capacity = account.copilot!;
-  const credits = Math.max(0, capacity.premiumCreditsUsed);
-  const allowance = copilotBusinessCreditsPerSeat(account, nowMs);
-  const reset = capacity.resetsAt
-    ? `<span class="reset" data-reset="${esc(capacity.resetsAt)}">Reset time loading</span>`
+  const budget = copilotBudget();
+  const used = Math.max(0, capacity.premiumCreditsUsed);
+  const window = copilotCreditWindow(account, nowMs, budget);
+  const left = Math.round(100 - (window?.usedPercent ?? 0));
+  const tone = left <= 15 ? "danger" : left <= 35 ? "warn" : "good";
+  const marker = window ? paceMarker(window, nowMs) : "";
+  const reset = window
+    ? `<span class="reset" data-reset="${esc(window.resetsAt!)}">Reset time loading</span>`
     : "<span>Monthly reset</span>";
   const billing = capacity.tokenBasedBilling ? "Token-based billing" : "AI credit billing";
   const overflow = capacity.overagePermitted ? "Paid overflow on" : "Stops at budget";
-  const promo = allowance === COPILOT_BUSINESS_PROMO_CREDITS ? "August promotion" : "Business allowance";
-  return `<section class="limit copilot-usage good">
-    <div class="limit-head"><span>AI credits used</span><strong>${credits.toLocaleString()}</strong></div>
-    <div class="limit-meta split"><span>${esc(formatUsd(credits * COPILOT_CREDIT_USD))} usage value</span><span>${esc(overflow)}</span></div>
-  </section>${allowance === undefined ? "" : `<section class="limit copilot-pool good">
-    <div class="limit-head"><span>Shared pool contribution</span><strong>${allowance.toLocaleString()} / seat</strong></div>
-    <div class="limit-meta split"><span>${esc(promo)}</span>${reset}</div>
-    <div class="pace"><span>Company pool</span><strong>${esc(billing)}</strong></div>
-  </section>`}`;
+  return `<section class="limit copilot-usage ${tone}">
+    <div class="limit-head"><span>AI credits used</span><strong>${used.toLocaleString()} / ${budget.credits.toLocaleString()}</strong></div>
+    <div class="track" role="progressbar" aria-label="Monthly AI credit budget remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${left}"><i style="width:${left}%"></i>${marker}</div>
+    <div class="limit-meta split"><span>${left}% of budget left</span>${reset}</div>
+    ${window ? paceBlock(window, nowMs) : ""}
+  </section><section class="limit copilot-pool ${tone}">
+    <div class="limit-head"><span>Monthly budget</span><strong>${esc(formatUsd(used * budget.creditUsd))} / ${esc(formatUsd(budget.usd))}</strong></div>
+    <div class="limit-meta split"><span>${esc(overflow)}</span><span>${esc(formatUsd(budget.creditUsd, 4))} per credit</span></div>
+    <div class="pace"><span>Manual ceiling</span><strong>${esc(billing)}</strong></div>
+  </section>`;
 }
 
 function providerLimits(account: CodexLimitAccount, nowMs: number): string {
@@ -479,10 +475,10 @@ function utilizationPlanCard(plan: AccountUtilizationPlan, index: number): strin
 export function renderLimitsText(accounts: CodexLimitAccount[]): string {
   return accounts.map((account) => {
     if (account.copilot) {
-      const sampledAt = account.updatedAt ? Date.parse(account.updatedAt) : Date.now();
-      const allowance = copilotBusinessCreditsPerSeat(account, Number.isFinite(sampledAt) ? sampledAt : Date.now());
+      const budget = copilotBudget();
+      const used = Math.max(0, account.copilot.premiumCreditsUsed);
       const overflow = account.copilot.overagePermitted ? "paid overflow on" : "stops at budget";
-      return `${account.email}\t${account.plan}\t${account.copilot.premiumCreditsUsed} AI credits used (${formatUsd(account.copilot.premiumCreditsUsed * COPILOT_CREDIT_USD)})\t${allowance ? `${allowance} credits/seat shared pool` : "shared pool"}\t${overflow}`;
+      return `${account.email}\t${account.plan}\t${used} of ${budget.credits} AI credits used (${formatUsd(used * budget.creditUsd)} of ${formatUsd(budget.usd)})\t${overflow}`;
     }
     if (account.route) {
       const balance = account.route.balances.map(formatBalance).join(" + ");
