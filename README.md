@@ -144,7 +144,12 @@ monthly ceiling instead of GitHub seat maths: 40,000 AI credits for $400 per
 calendar month, which fixes the credit price at $0.01. The card shows credits
 used against that budget, percent left, the money spent against the $400 cap,
 the per-credit price, paid-overflow status, and monthly reset, and it gets the
-same pace forecast and utilization plan as the subscription providers. Override
+same pace forecast and utilization plan as the subscription providers. The
+ceiling only reports, it never blocks: past it the card switches to
+`Over budget by N credits`, shows the dollars spent beyond the cap, and the plan
+turns to `More capacity`. Browser alerts follow the same 30/15/10/5/0 steps as
+weekly quota, so the 0% alert is the notification that the budget was passed,
+sent once per monthly cycle. Override
 the ceiling with `SPENDWATCH_COPILOT_MONTHLY_CREDITS` and
 `SPENDWATCH_COPILOT_MONTHLY_USD`. When GitHub reports no monthly reset the next
 UTC month boundary is used. It never labels paid overflow as unlimited. API-backed

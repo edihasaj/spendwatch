@@ -40,7 +40,10 @@ function postAllowed(request: Request): boolean {
 
 function notificationPayload(delivery: PendingPushDelivery): string {
   const provider = delivery.provider.charAt(0).toUpperCase() + delivery.provider.slice(1);
-  const title = delivery.threshold === 0 ? "Weekly capacity gone" : `${delivery.threshold}% weekly capacity left`;
+  const budgetAlert = delivery.provider === "copilot";
+  const title = delivery.threshold === 0
+    ? budgetAlert ? "Monthly Copilot budget spent" : "Weekly capacity gone"
+    : `${delivery.threshold}% ${budgetAlert ? "Copilot budget" : "weekly capacity"} left`;
   return JSON.stringify({
     title,
     body: `${provider} · ${delivery.account}`,

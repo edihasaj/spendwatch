@@ -1,5 +1,5 @@
 import type { CapacitySourceHealth } from "./capacity-dashboard";
-import { copilotBudget, copilotCreditWindow } from "./copilot-budget";
+import { copilotBudgetStatus, copilotCreditWindow } from "./copilot-budget";
 import { predictWindow } from "./capacity-prediction";
 import type { CapacityProvider, CodexLimitAccount, LimitWindow } from "./limits";
 
@@ -131,23 +131,24 @@ export function buildUtilizationPlans(
       }
     }
     if (account.provider === "copilot" && account.copilot) {
-      const budget = copilotBudget();
-      const creditWindow = copilotCreditWindow(account, nowMs, budget);
+      const status = copilotBudgetStatus(account);
+      const creditWindow = copilotCreditWindow(account, nowMs, status.budget);
       const window = creditWindow ? planWindowUtilization(creditWindow, nowMs, targetPercent) : undefined;
-      const used = Math.max(0, account.copilot.premiumCreditsUsed);
       plans.push({
         provider: account.provider,
         account: account.email,
         resource: "Monthly AI credit budget",
-        action: window?.action ?? "measure",
+        action: status.over ? "more" : window?.action ?? "measure",
         confidence: window?.confidence ?? "unavailable",
         window,
-        currentValue: `${used.toLocaleString()} of ${budget.credits.toLocaleString()} credits used`,
+        currentValue: `${status.creditsUsed.toLocaleString()} of ${status.budget.credits.toLocaleString()} credits used`,
         paceValue: window ? undefined : "Cycle reset needed",
         resetsAt: creditWindow?.resetsAt ?? account.copilot.resetsAt,
-        detail: window
-          ? windowDetail(window)
-          : "A monthly cycle reset is required before pacing the manual credit budget.",
+        detail: status.over
+          ? `Monthly ceiling passed by ${status.creditsOver.toLocaleString()} credits. Spending continues; raise the budget or move work off Copilot.`
+          : window
+            ? windowDetail(window)
+            : "A monthly cycle reset is required before pacing the manual credit budget.",
       });
       continue;
     }

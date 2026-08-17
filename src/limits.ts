@@ -3,7 +3,7 @@ import { BRAND_HEAD_HTML } from "./branding";
 import type { CapacityAuthenticationRequirement, CapacitySourceHealth } from "./capacity-dashboard";
 import { predictWindow } from "./capacity-prediction";
 import { buildUtilizationPlans, recommendAccount, UTILIZATION_TARGET_PERCENT, type AccountUtilizationPlan } from "./capacity-planner";
-import { copilotBudget, copilotCreditWindow } from "./copilot-budget";
+import { copilotBudgetStatus, copilotCreditWindow } from "./copilot-budget";
 import { compactDuration } from "./duration";
 
 export { predictWindow } from "./capacity-prediction";
@@ -379,26 +379,32 @@ function formatUsd(value: number, maximumFractionDigits = 2): string {
 
 function copilotLimits(account: CodexLimitAccount, nowMs: number): string {
   const capacity = account.copilot!;
-  const budget = copilotBudget();
-  const used = Math.max(0, capacity.premiumCreditsUsed);
+  const status = copilotBudgetStatus(account);
+  const budget = status.budget;
   const window = copilotCreditWindow(account, nowMs, budget);
-  const left = Math.round(100 - (window?.usedPercent ?? 0));
-  const tone = left <= 15 ? "danger" : left <= 35 ? "warn" : "good";
-  const marker = window ? paceMarker(window, nowMs) : "";
+  const left = Math.max(0, Math.round(100 - (window?.usedPercent ?? 0)));
+  const tone = status.over || left <= 15 ? "danger" : left <= 35 ? "warn" : "good";
+  const marker = window && !status.over ? paceMarker(window, nowMs) : "";
   const reset = window
     ? `<span class="reset" data-reset="${esc(window.resetsAt!)}">Reset time loading</span>`
     : "<span>Monthly reset</span>";
   const billing = capacity.tokenBasedBilling ? "Token-based billing" : "AI credit billing";
-  const overflow = capacity.overagePermitted ? "Paid overflow on" : "Stops at budget";
+  const overflow = capacity.overagePermitted ? "Paid overflow on" : "Overflow off at GitHub";
+  const standing = status.over
+    ? `Over budget by ${status.creditsOver.toLocaleString()} credits`
+    : `${left}% of budget left`;
+  const money = status.over
+    ? `${esc(formatUsd(status.usdOver))} over the ${esc(formatUsd(budget.usd))} ceiling`
+    : `${esc(overflow)}`;
   return `<section class="limit copilot-usage ${tone}">
-    <div class="limit-head"><span>AI credits used</span><strong>${used.toLocaleString()} / ${budget.credits.toLocaleString()}</strong></div>
+    <div class="limit-head"><span>AI credits used</span><strong>${status.creditsUsed.toLocaleString()} / ${budget.credits.toLocaleString()}</strong></div>
     <div class="track" role="progressbar" aria-label="Monthly AI credit budget remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${left}"><i style="width:${left}%"></i>${marker}</div>
-    <div class="limit-meta split"><span>${left}% of budget left</span>${reset}</div>
-    ${window ? paceBlock(window, nowMs) : ""}
+    <div class="limit-meta split"><span>${esc(standing)}</span>${reset}</div>
+    ${window && !status.over ? paceBlock(window, nowMs) : ""}
   </section><section class="limit copilot-pool ${tone}">
-    <div class="limit-head"><span>Monthly budget</span><strong>${esc(formatUsd(used * budget.creditUsd))} / ${esc(formatUsd(budget.usd))}</strong></div>
-    <div class="limit-meta split"><span>${esc(overflow)}</span><span>${esc(formatUsd(budget.creditUsd, 4))} per credit</span></div>
-    <div class="pace"><span>Manual ceiling</span><strong>${esc(billing)}</strong></div>
+    <div class="limit-head"><span>Monthly budget</span><strong>${esc(formatUsd(status.usdSpent))} / ${esc(formatUsd(budget.usd))}</strong></div>
+    <div class="limit-meta split"><span>${money}</span><span>${esc(formatUsd(budget.creditUsd, 4))} per credit</span></div>
+    <div class="pace"><span>${status.over ? "Ceiling passed, spending allowed" : "Manual ceiling"}</span><strong>${esc(billing)}</strong></div>
   </section>`;
 }
 
@@ -475,10 +481,11 @@ function utilizationPlanCard(plan: AccountUtilizationPlan, index: number): strin
 export function renderLimitsText(accounts: CodexLimitAccount[]): string {
   return accounts.map((account) => {
     if (account.copilot) {
-      const budget = copilotBudget();
-      const used = Math.max(0, account.copilot.premiumCreditsUsed);
-      const overflow = account.copilot.overagePermitted ? "paid overflow on" : "stops at budget";
-      return `${account.email}\t${account.plan}\t${used} of ${budget.credits} AI credits used (${formatUsd(used * budget.creditUsd)} of ${formatUsd(budget.usd)})\t${overflow}`;
+      const status = copilotBudgetStatus(account);
+      const standing = status.over
+        ? `over budget by ${status.creditsOver} credits (${formatUsd(status.usdOver)})`
+        : `${status.creditsLeft} credits left`;
+      return `${account.email}\t${account.plan}\t${status.creditsUsed} of ${status.budget.credits} AI credits used (${formatUsd(status.usdSpent)} of ${formatUsd(status.budget.usd)})\t${standing}`;
     }
     if (account.route) {
       const balance = account.route.balances.map(formatBalance).join(" + ");
