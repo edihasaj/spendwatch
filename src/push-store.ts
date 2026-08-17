@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { crossedWeeklyThreshold, type WeeklyAlertThreshold } from "./capacity-alerts";
+import { copilotCreditWindow } from "./copilot-budget";
 import type { CodexLimitAccount } from "./limits";
 
 const PUSH_SCHEMA = `
@@ -131,10 +132,12 @@ export class PushStore {
     let created = 0;
     const transaction = this.db.transaction(() => {
       for (const account of accounts) {
-        if (!account.weekly) continue;
+        // Copilot is watched through its manual monthly credit budget; the others through weekly quota.
+        const watched = account.weekly ?? copilotCreditWindow(account, nowMs);
+        if (!watched) continue;
         const accountKey = account.email.toLowerCase();
-        const resetKey = account.weekly.resetsAt ?? `window-${account.weekly.windowMinutes}`;
-        const remaining = Math.max(0, Math.min(100, Math.round(100 - account.weekly.usedPercent)));
+        const resetKey = watched.resetsAt ?? `window-${watched.windowMinutes}`;
+        const remaining = Math.max(0, Math.min(100, Math.round(100 - watched.usedPercent)));
         const state = this.db.query<AccountStateRow, [string, string, string]>(`
           SELECT last_left AS lastLeft FROM push_account_state
           WHERE provider=? AND account_key=? AND reset_key=?
