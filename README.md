@@ -140,8 +140,8 @@ planning page with one account card per identity. Cards show only account,
 plan, freshness, reported quota windows, reset times, and pace forecasts;
 unreported windows are omitted instead of shown as empty limits. Codex and
 Claude show rolling 5-hour and weekly capacity. Copilot is paced against a manual
-monthly ceiling instead of GitHub seat maths: 400,000 AI credits for $400 per
-calendar month, which fixes the credit price at $0.001. The card shows credits
+monthly ceiling instead of GitHub seat maths: 40,000 AI credits for $400 per
+calendar month, which fixes the credit price at $0.01. The card shows credits
 used against that budget, percent left, the money spent against the $400 cap,
 the per-credit price, paid-overflow status, and monthly reset, and it gets the
 same pace forecast and utilization plan as the subscription providers. Override

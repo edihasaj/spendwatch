@@ -68,7 +68,7 @@ describe("90% capacity utilization planning", () => {
           chatUnlimited: false,
           completionsUnlimited: false,
           premiumUnlimited: false,
-          premiumCreditsUsed: 42_000,
+          premiumCreditsUsed: 4_200,
           overagePermitted: true,
           tokenBasedBilling: true,
         },
@@ -88,7 +88,7 @@ describe("90% capacity utilization planning", () => {
     const plans = buildUtilizationPlans(accounts, Date.parse("2026-08-15T00:00:00Z"));
     expect(plans).toHaveLength(2);
     expect(plans[1]?.resource).toBe("Monthly AI credit budget");
-    expect(plans[1]?.currentValue).toBe("42,000 of 400,000 credits used");
+    expect(plans[1]?.currentValue).toBe("4,200 of 40,000 credits used");
     expect(plans[1]?.window?.currentUsedPercent).toBeCloseTo(10.5, 1);
     expect(plans[1]?.action).toBe("rebalance");
     expect(plans.some((plan) => plan.provider === "lokai")).toBe(false);
