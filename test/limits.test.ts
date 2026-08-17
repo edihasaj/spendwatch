@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { copilotBusinessCreditsPerSeat, normalizeCodexLimits, predictWindow, renderLimitsHtml, renderLimitsText } from "../src/limits";
+import { copilotBudget, copilotCreditWindow } from "../src/copilot-budget";
+import { normalizeCodexLimits, predictWindow, renderLimitsHtml, renderLimitsText } from "../src/limits";
 import { normalizeSourceHealth } from "../src/capacity-dashboard";
 import { recommendAccount } from "../src/capacity-planner";
 
@@ -346,10 +347,10 @@ describe("Codex limits", () => {
     expect(html).toContain("Copilot");
     expect(html).toContain("AI credits used");
     expect(html).toContain("186,179");
-    expect(html).toContain("$1,861.79 usage value");
-    expect(html).toContain("3,000 / seat");
-    expect(html).toContain("Shared pool contribution");
-    expect(html).toContain("August promotion");
+    expect(html).toContain("186,179 / 400,000");
+    expect(html).toContain("$186.18 / $400");
+    expect(html).toContain("Monthly budget");
+    expect(html).toContain("$0.001 per credit");
     expect(html).toContain("Paid overflow on");
     expect(html).toContain("Token-based billing");
     expect(html).toContain('data-reset="2026-09-01T00:00:00Z"');
@@ -362,7 +363,7 @@ describe("Codex limits", () => {
     expect(html).toContain("LiteLLM · 1M context");
     expect(html).not.toContain("Cloud route");
     expect(renderLimitsText(accounts)).toContain("$4.60 left");
-    expect(renderLimitsText(accounts)).toContain("3000 credits/seat shared pool");
+    expect(renderLimitsText(accounts)).toContain("186179 of 400000 AI credits used ($186.18 of $400)");
     expect(html.indexOf("DeepSeek V4 Flash")).toBeLessThan(html.indexOf("Kimi K3 Cloud"));
     expect(html).not.toContain("Ollama Cloud");
     expect(html).not.toContain("Premium interactions");
@@ -371,15 +372,37 @@ describe("Codex limits", () => {
     expect(html).not.toContain("DeepSeek V4 Flash\t5h not active");
   });
 
-  test("uses the standard Business contribution after the existing-customer promotion", () => {
+  test("paces the manual monthly credit budget instead of a seat allowance", () => {
     const account = normalizeCodexLimits({
       provider: "copilot",
       account: "dev (Business)",
       usage: { accountEmail: "dev (Business)", loginMethod: "business" },
-      copilot: { premiumCreditsUsed: 10, seatAssignedAt: "2026-05-13T12:12:57Z" },
-    })[0];
-    expect(copilotBusinessCreditsPerSeat(account, Date.parse("2026-08-31T23:59:59Z"))).toBe(3000);
-    expect(copilotBusinessCreditsPerSeat(account, Date.parse("2026-09-01T00:00:00Z"))).toBe(1900);
+      copilot: { premiumCreditsUsed: 200_000, resetsAt: "2026-09-01T00:00:00Z" },
+    })[0]!;
+    const budget = copilotBudget({});
+    expect(budget).toEqual({ credits: 400_000, usd: 400, creditUsd: 0.001 });
+    const window = copilotCreditWindow(account, Date.parse("2026-08-16T00:00:00Z"), budget);
+    expect(window?.usedPercent).toBe(50);
+    expect(window?.resetsAt).toBe("2026-09-01T00:00:00Z");
+    expect(window?.windowMinutes).toBe(31 * 24 * 60);
+  });
+
+  test("falls back to the next month boundary when GitHub reports no reset", () => {
+    const account = normalizeCodexLimits({
+      provider: "copilot",
+      account: "dev (Business)",
+      usage: { accountEmail: "dev (Business)", loginMethod: "business" },
+      copilot: { premiumCreditsUsed: 500_000 },
+    })[0]!;
+    const window = copilotCreditWindow(account, Date.parse("2026-08-16T00:00:00Z"));
+    expect(window?.resetsAt).toBe("2026-09-01T00:00:00.000Z");
+    expect(window?.usedPercent).toBe(100);
+  });
+
+  test("honours budget overrides from the environment", () => {
+    expect(copilotBudget({ SPENDWATCH_COPILOT_MONTHLY_CREDITS: "200000", SPENDWATCH_COPILOT_MONTHLY_USD: "400" }))
+      .toEqual({ credits: 200_000, usd: 400, creditUsd: 0.002 });
+    expect(copilotBudget({ SPENDWATCH_COPILOT_MONTHLY_CREDITS: "0" }).credits).toBe(400_000);
   });
 
   test("never calls a reachable API route unlimited when balance is missing", () => {

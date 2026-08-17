@@ -1,4 +1,5 @@
 import type { CapacitySourceHealth } from "./capacity-dashboard";
+import { copilotBudget, copilotCreditWindow } from "./copilot-budget";
 import { predictWindow } from "./capacity-prediction";
 import type { CapacityProvider, CodexLimitAccount, LimitWindow } from "./limits";
 
@@ -130,16 +131,23 @@ export function buildUtilizationPlans(
       }
     }
     if (account.provider === "copilot" && account.copilot) {
+      const budget = copilotBudget();
+      const creditWindow = copilotCreditWindow(account, nowMs, budget);
+      const window = creditWindow ? planWindowUtilization(creditWindow, nowMs, targetPercent) : undefined;
+      const used = Math.max(0, account.copilot.premiumCreditsUsed);
       plans.push({
         provider: account.provider,
         account: account.email,
-        resource: "Monthly AI credit pool",
-        action: "measure",
-        confidence: "unavailable",
-        currentValue: `${Math.max(0, account.copilot.premiumCreditsUsed).toLocaleString()} credits used`,
-        paceValue: "Pool total needed",
-        resetsAt: account.copilot.resetsAt,
-        detail: "Need organization seat count, shared-pool value, and paid-overage budget before a 90% target or purchase call is honest.",
+        resource: "Monthly AI credit budget",
+        action: window?.action ?? "measure",
+        confidence: window?.confidence ?? "unavailable",
+        window,
+        currentValue: `${used.toLocaleString()} of ${budget.credits.toLocaleString()} credits used`,
+        paceValue: window ? undefined : "Cycle reset needed",
+        resetsAt: creditWindow?.resetsAt ?? account.copilot.resetsAt,
+        detail: window
+          ? windowDetail(window)
+          : "A monthly cycle reset is required before pacing the manual credit budget.",
       });
       continue;
     }
