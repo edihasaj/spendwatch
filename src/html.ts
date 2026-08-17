@@ -42,10 +42,10 @@ function dataTable(cols: Col[], rows: string[][], barValues?: number[]): string 
 // Tool/command table with a click-to-expand drill-down of actual invocations.
 function toolTable(rows: ToolRow[], firstHead: string, limit: number): string {
   const r = rows.slice(0, limit);
-  const max = Math.max(1, ...r.map((t) => t.ctxCost));
+  const max = Math.max(1, ...r.map((t) => t.resultTok));
   const body = r
     .map((t, ri) => {
-      const pct = Math.round((t.ctxCost / max) * 100);
+      const pct = Math.round((t.resultTok / max) * 100);
       const samples = (t.samples ?? []).filter((s) => s.detail && s.detail.trim()).slice(0, 30);
       const has = samples.length > 0;
       const cells =
@@ -71,9 +71,9 @@ function toolTable(rows: ToolRow[], firstHead: string, limit: number): string {
 
 function promptTable(rows: PromptRow[]): string {
   return dataTable(
-    [{ head: "$", num: true, bar: true }, { head: "tools", num: true }, { head: "out tok", num: true }, { head: "project" }, { head: "prompt" }],
-    rows.map((p) => [fmtUsd(p.cost), String(p.toolCalls), fmtTok(p.outTok), p.project, p.text.replace(/\s+/g, " ").trim().slice(0, 160)]),
-    rows.map((p) => p.cost),
+    [{ head: "tokens", num: true, bar: true }, { head: "out tok", num: true }, { head: "$ est.", num: true }, { head: "tools", num: true }, { head: "project" }, { head: "prompt" }],
+    rows.map((p) => [fmtTok(p.tokens), fmtTok(p.outTok), fmtUsd(p.cost), String(p.toolCalls), p.project, p.text.replace(/\s+/g, " ").trim().slice(0, 160)]),
+    rows.map((p) => p.tokens),
   );
 }
 
@@ -117,17 +117,17 @@ function accountIdentity(label: string, number?: number): string {
 
 function breakdownTable(
   rows: SpendBreakdown[],
-  total: number,
+  totalTokens: number,
   accountNumbers?: Map<string, number>,
 ): string {
-  const max = Math.max(1, ...rows.map((row) => row.cost));
+  const max = Math.max(1, ...rows.map((row) => row.tokens));
   return `<div class="break-list">${rows.map((row, index) => {
-    const share = total ? (row.cost / total) * 100 : 0;
-    const width = (row.cost / max) * 100;
+    const share = totalTokens ? (row.tokens / totalTokens) * 100 : 0;
+    const width = (row.tokens / max) * 100;
     return `<div class="break-row" style="--i:${index}">
-      <div class="break-main"><span class="break-name">${accountNumbers ? accountIdentity(row.label, accountNumbers.get(row.label)) : esc(row.label)}</span><span class="break-value">${fmtUsd(row.cost)} <em>${share.toFixed(0)}%</em></span></div>
+      <div class="break-main"><span class="break-name">${accountNumbers ? accountIdentity(row.label, accountNumbers.get(row.label)) : esc(row.label)}</span><span class="break-value">${fmtTok(row.tokens)} tok <em>${share.toFixed(0)}%</em></span></div>
       <div class="break-track"><span style="width:${width.toFixed(1)}%"></span></div>
-      <div class="break-meta">${row.calls.toLocaleString()} calls · ${row.sessions.toLocaleString()} sessions</div>
+      <div class="break-meta">${fmtUsd(row.cost)} estimated · ${row.calls.toLocaleString()} calls · ${row.sessions.toLocaleString()} sessions</div>
     </div>`;
   }).join("")}</div>`;
 }
@@ -140,22 +140,22 @@ function agentPanel(
   combinedAccountTitle?: string,
 ): string {
   const stat = (label: string, val: string) => `<div class="stat"><span class="n">${val}</span><span class="l">${esc(label)}</span></div>`;
-  const stats = `<div class="stats">${stat("est spend", fmtUsd(r.totalCost))}${stat("API calls", r.apiCalls.toLocaleString())}${stat("sessions", String(r.sessions))}</div>`;
+  const stats = `<div class="stats">${stat("tokens", fmtTok(r.totalTokens))}${stat("estimated spend", fmtUsd(r.totalCost))}${stat("API calls", r.apiCalls.toLocaleString())}${stat("sessions", String(r.sessions))}</div>`;
   const parts: string[] = [stats];
   if (r.accounts.length > 1)
     parts.push(
       section(
         combinedAccountTitle ?? "By account",
         combinedAccountTitle
-          ? `merged across machines (${fmtUsd(r.totalCost)})`
-          : `same service · summed above (${fmtUsd(r.totalCost)})`,
+          ? `merged across machines (${fmtTok(r.totalTokens)} tok · ${fmtUsd(r.totalCost)})`
+          : `same service · summed above (${fmtTok(r.totalTokens)} tok · ${fmtUsd(r.totalCost)})`,
         dataTable(
-          [{ head: "account", bar: true, html: true }, { head: "$", num: true }, { head: "calls", num: true }, { head: "sessions", num: true }],
+          [{ head: "account", bar: true, html: true }, { head: "tokens", num: true }, { head: "$ est.", num: true }, { head: "calls", num: true }, { head: "sessions", num: true }],
           r.accounts.map((x) => {
             const key = combinedAccountTitle ? x.account : accountKey(r.source, x.account, accountGrouping);
-            return [accountIdentity(x.account, accountNumbers.get(key)), fmtUsd(x.cost), x.calls.toLocaleString(), String(x.sessions)];
+            return [accountIdentity(x.account, accountNumbers.get(key)), fmtTok(x.tokens), fmtUsd(x.cost), x.calls.toLocaleString(), String(x.sessions)];
           }),
-          r.accounts.map((x) => x.cost),
+          r.accounts.map((x) => x.tokens),
         ),
       ),
     );
@@ -182,9 +182,9 @@ function agentPanel(
         "By model",
         "",
         dataTable(
-          [{ head: "model", bar: true }, { head: "calls", num: true }, { head: "in", num: true }, { head: "out", num: true }, { head: "cache rd", num: true }, { head: "cache wr", num: true }, { head: "$", num: true }],
-          r.models.map((m) => [m.model, String(m.calls), fmtTok(m.inTok), fmtTok(m.outTok), fmtTok(m.cacheReadTok), fmtTok(m.cacheWriteTok), fmtUsd(m.cost)]),
-          r.models.map((m) => m.cost),
+          [{ head: "model", bar: true }, { head: "tokens", num: true }, { head: "calls", num: true }, { head: "in", num: true }, { head: "out", num: true }, { head: "cache rd", num: true }, { head: "cache wr", num: true }, { head: "$ est.", num: true }],
+          r.models.map((m) => [m.model, fmtTok(m.inTok + m.outTok + m.cacheReadTok + m.cacheWriteTok), String(m.calls), fmtTok(m.inTok), fmtTok(m.outTok), fmtTok(m.cacheReadTok), fmtTok(m.cacheWriteTok), fmtUsd(m.cost)]),
+          r.models.map((m) => m.inTok + m.outTok + m.cacheReadTok + m.cacheWriteTok),
         ),
       ),
     );
@@ -194,9 +194,9 @@ function agentPanel(
         "By project",
         "",
         dataTable(
-          [{ head: "project", bar: true }, { head: "$", num: true }],
-          r.projects.slice(0, 16).map((p) => [p.project, fmtUsd(p.cost)]),
-          r.projects.slice(0, 16).map((p) => p.cost),
+          [{ head: "project", bar: true }, { head: "tokens", num: true }, { head: "$ est.", num: true }],
+          r.projects.slice(0, 16).map((p) => [p.project, fmtTok(p.tokens), fmtUsd(p.cost)]),
+          r.projects.slice(0, 16).map((p) => p.tokens),
         ),
       ),
     );
@@ -207,31 +207,33 @@ export function renderHtml(
   reports: Report[],
   opts: { generatedAt: number; days: number; accountGrouping?: AccountGrouping; limitsHref?: string; historyHref?: string },
 ): string {
-  const sources = reports.filter((r) => r.apiCalls > 0).sort((a, b) => b.totalCost - a.totalCost);
+  const sources = reports.filter((r) => r.apiCalls > 0).sort((a, b) => b.totalTokens - a.totalTokens);
   const accountGrouping = opts.accountGrouping ?? "service";
   const accountTitle = accountGrouping === "service" ? "By service & account" : "By account email";
   const combined = mergeReports(sources, "all", accountGrouping);
   const live = sources.length > 1 ? [combined, ...sources] : sources;
   const total = combined.totalCost;
+  const totalTokens = combined.totalTokens;
   const since = combined.sinceTs;
   const sinceStr = since && isFinite(since) ? new Date(since).toISOString().slice(0, 10) : "?";
   const genStr = new Date(opts.generatedAt).toISOString().replace("T", " ").slice(0, 16) + " UTC";
+  const dayLabel = opts.days === 1 ? "day" : "days";
   const dimensions = reportBreakdowns(sources, accountGrouping);
   const accountNumbers = accountChipNumbers(sources, accountGrouping);
 
   const overview = [
-    section("By machine", "where the usage happened", breakdownTable(dimensions.machines, total)),
+    section("By machine", "where the usage happened", breakdownTable(dimensions.machines, totalTokens)),
     section(
       accountTitle,
       accountGrouping === "service"
         ? "same service and identity merged across machines"
         : "same email merged across machines and services",
-      breakdownTable(dimensions.accounts, total, accountNumbers),
+      breakdownTable(dimensions.accounts, totalTokens, accountNumbers),
     ),
-    section("By agent", "same agent merged across machines", breakdownTable(dimensions.agents, total)),
+    section("By agent", "same agent merged across machines", breakdownTable(dimensions.agents, totalTokens)),
   ].join("");
 
-  const tabs = live.map((r, i) => `<button class="tab${i === 0 ? " active" : ""}" data-tab="${esc(r.source)}">${esc(sourceLabel(r.source))} <em>${fmtUsd(r.totalCost)}</em></button>`).join("");
+  const tabs = live.map((r, i) => `<button class="tab${i === 0 ? " active" : ""}" data-tab="${esc(r.source)}">${esc(sourceLabel(r.source))} <em>${fmtTok(r.totalTokens)} tok</em><small>${fmtUsd(r.totalCost)}</small></button>`).join("");
   const panels = live
     .map((r, i) => agentPanel(r, i, accountGrouping, accountNumbers, r.source === "all" ? accountTitle : undefined))
     .join("");
@@ -258,7 +260,7 @@ h1,h2,h3{font-family:"Manrope",sans-serif;letter-spacing:-.025em}
 .brand{font-family:"Fragment Mono",monospace;font-size:14px;letter-spacing:-.04em}.brand b{color:var(--amber);font-weight:400}
 .nav{display:flex;gap:5px;margin-left:18px;padding:4px;background:#0d1014;border:1px solid #20262d;border-radius:9px}.nav a{padding:7px 11px;border-radius:6px;color:var(--dim);text-decoration:none;font-size:12px;font-weight:600}.nav a.active{color:var(--ink);background:var(--panel2)}
 .top-actions{margin-left:auto;display:flex;gap:8px}.button{appearance:none;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:9px 12px;font:600 12px "Manrope",sans-serif;cursor:pointer;text-decoration:none;transition:border-color .15s,transform .15s}.button:hover{border-color:#52606d;transform:translateY(-1px)}.button.primary{border-color:rgba(104,213,220,.5);background:rgba(104,213,220,.09);color:#bdf5f7}
-.report-hero{display:grid;grid-template-columns:1fr auto;gap:28px;align-items:end;padding:44px 0 30px}.eyebrow{margin:0 0 8px;color:var(--amber);font:12px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.12em}.report-hero h1{font-size:clamp(34px,6vw,58px);line-height:.98;letter-spacing:-.055em;margin:0}.report-hero h1 span{color:#75808a}.hero-copy{margin:16px 0 0;color:var(--dim);font-size:14px;max-width:680px}.head-total{text-align:right;padding-bottom:4px}.head-total .big{font:24px "Fragment Mono",monospace;color:var(--amber)}.head-total .meta{color:var(--dim);font:10px "Fragment Mono",monospace;margin-top:6px;max-width:330px}
+.report-hero{display:grid;grid-template-columns:1fr auto;gap:28px;align-items:end;padding:44px 0 30px}.eyebrow{margin:0 0 8px;color:var(--amber);font:12px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.12em}.report-hero h1{font-size:clamp(34px,6vw,58px);line-height:.98;letter-spacing:-.055em;margin:0}.report-hero h1 span{color:#75808a}.hero-copy{margin:16px 0 0;color:var(--dim);font-size:14px;max-width:680px}.head-total{text-align:right;padding-bottom:4px}.head-total .big{font:28px "Fragment Mono",monospace;color:var(--amber)}.head-total .exact{font:10px "Fragment Mono",monospace;color:var(--dim);margin-top:2px}.head-total .cost{font:13px "Fragment Mono",monospace;color:var(--ink);margin-top:5px}.head-total .meta{color:var(--dim);font:10px "Fragment Mono",monospace;margin-top:6px;max-width:330px}
 .overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-bottom:30px}
 .overview .block{margin-top:0;min-width:0}
 .break-list{height:calc(100% - 27px);background:linear-gradient(145deg,rgba(21,26,32,.98),rgba(15,19,24,.98));border:1px solid var(--line);border-radius:12px;overflow:hidden}
@@ -278,7 +280,7 @@ h1,h2,h3{font-family:"Manrope",sans-serif;letter-spacing:-.025em}
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:22px}
 .tab{font-family:"Fragment Mono";font-size:12px;color:var(--dim);background:var(--panel);border:1px solid var(--line);
   padding:9px 15px;border-radius:10px;cursor:pointer;transition:.15s}
-.tab em{font-style:normal;color:var(--amber);margin-left:5px}
+.tab em{font-style:normal;color:var(--amber);margin-left:5px}.tab small{color:var(--dim);font-size:10px;margin-left:6px}
 .tab:hover{color:var(--ink);border-color:#33414f}
 .tab.active{color:var(--ink);background:var(--panel2);border-color:var(--amber2);box-shadow:0 0 0 1px rgba(240,136,62,.25)}
 .panel{display:none}.panel.active{display:block}
@@ -332,7 +334,7 @@ footer b{color:var(--amber)}
 </style></head>
 <body><div class="wrap">
 <div class="topbar"><div class="brand"><b>spend</b>watch</div>${opts.limitsHref ? `<nav class="nav"><a href="${esc(opts.limitsHref)}">Capacity</a><a class="active" href="./spend.html">Spend detail</a><a href="${esc(opts.historyHref ?? "history.html")}">History</a></nav>` : ""}<div class="top-actions"><button class="button" id="refresh">Refresh</button>${opts.limitsHref ? `<a class="button primary" href="${esc(opts.limitsHref)}#setup">Add account</a>` : ""}</div></div>
-<section class="report-hero"><div><p class="eyebrow">Spend detail</p><h1>Understand where <span>usage goes.</span></h1><p class="hero-copy">Token and API-equivalent cost detail across every machine, account, agent, tool, and project for the last ${opts.days} days.</p></div><div class="head-total"><div class="big">${fmtUsd(total)} estimated</div><div class="meta">${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · since ${esc(sinceStr)} · generated ${esc(genStr)}</div></div></section>
+<section class="report-hero"><div><p class="eyebrow">Spend detail</p><h1>Understand where <span>usage goes.</span></h1><p class="hero-copy">Exact token usage with API-equivalent cost estimates across every machine, account, agent, tool, and project for the last ${opts.days} ${dayLabel}.</p></div><div class="head-total"><div class="big">${fmtTok(totalTokens)} tokens</div><div class="exact">${totalTokens.toLocaleString("en-US")} exact</div><div class="cost">${fmtUsd(total)} estimated</div><div class="meta">${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · since ${esc(sinceStr)} · generated ${esc(genStr)}</div></div></section>
 
 <div class="overview">${overview}</div>
 
@@ -340,7 +342,7 @@ footer b{color:var(--amber)}
 <div class="panels">${panels}</div>
 
 <footer>
-<b>$</b> from real per-request usage fields. Prices/MTok — Fable $10/$50, Opus $5/$25, Sonnet $3/$15, Haiku $1/$5, gpt-5 tier $1.25/$10 (Codex is largely subscription-billed, so its $ is an estimate). Cache: write 1.25×/2×, read 0.1×.<br>
+<b>tokens</b> are the exact input, output, cache read, and cache write counts reported by each request. <b>$</b> is the API-equivalent estimate from those same fields. Prices/MTok: Fable $10/$50, Opus $5/$25, Sonnet $3/$15, Haiku $1/$5, gpt-5 tier $1.25/$10 (Codex is largely subscription-billed). Cache: write 1.25×/2×, read 0.1×.<br>
 <b>ctx $</b> estimates the cost a call's results impose on the rest of its session (result tokens × cache write + 0.1× reread per later request). <b>deep</b> commands = executable + subcommand / ssh remote — the build-a-CLI shortlist.
 </footer>
 </div>

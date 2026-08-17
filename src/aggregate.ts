@@ -44,6 +44,7 @@ export interface TargetRow {
 }
 export interface AccountRow {
   account: string;
+  tokens: number;
   cost: number;
   calls: number;
   sessions: number;
@@ -52,6 +53,7 @@ export interface PromptRow {
   key: string;
   text: string;
   project: string;
+  tokens: number;
   cost: number;
   toolCalls: number;
   outTok: number;
@@ -67,6 +69,7 @@ export interface ModelRow {
   cost: number;
 }
 export interface Report {
+  totalTokens: number;
   totalCost: number;
   apiCalls: number;
   sessions: number;
@@ -76,7 +79,7 @@ export interface Report {
   targets: TargetRow[]; // ranked "what to automate" shortlist (cost × frequency × friction)
   prompts: PromptRow[];
   models: ModelRow[];
-  projects: Array<{ project: string; cost: number }>;
+  projects: Array<{ project: string; tokens: number; cost: number }>;
   accounts: AccountRow[];
   source: string;
   sinceTs: number;
@@ -157,9 +160,9 @@ export class Aggregator {
     const sources = new Set<string>();
     const prompts = new Map<string, PromptRow>();
     const models = new Map<string, ModelRow>();
-    const projects = new Map<string, number>();
+    const projects = new Map<string, { tokens: number; cost: number }>();
     const sessions = new Set<string>();
-    const accounts = new Map<string, { cost: number; calls: number; sessions: Set<string> }>();
+    const accounts = new Map<string, { tokens: number; cost: number; calls: number; sessions: Set<string> }>();
     // detail samples per (table, key): map key -> map detail -> {count, resultTok}
     const samp = { tools: new Map<string, Map<string, SampleRow>>(), bash: new Map<string, Map<string, SampleRow>>(), deep: new Map<string, Map<string, SampleRow>>() };
     const SAMP_CAP = 1500; // max distinct details per key (bounds memory)
@@ -175,6 +178,7 @@ export class Aggregator {
       row.resultTok += resultTok;
     };
     let totalCost = 0;
+    let totalTokens = 0;
     let apiCalls = 0;
     let sinceTs = Infinity;
 
@@ -182,16 +186,22 @@ export class Aggregator {
       sessions.add(s.sessionId);
       sources.add(s.source);
       let acc = accounts.get(s.account);
-      if (!acc) accounts.set(s.account, (acc = { cost: 0, calls: 0, sessions: new Set() }));
+      if (!acc) accounts.set(s.account, (acc = { tokens: 0, cost: 0, calls: 0, sessions: new Set() }));
       acc.sessions.add(s.sessionId);
       for (const [, u] of s.usage) {
         apiCalls++;
+        const tokens = u.usage.input + u.usage.output + u.usage.cacheRead + u.usage.cache5m + u.usage.cache1h;
         const cost = usageCost(u.model, u.usage);
+        totalTokens += tokens;
         totalCost += cost;
+        acc.tokens += tokens;
         acc.cost += cost;
         acc.calls++;
         if (u.lastTs && u.lastTs < sinceTs) sinceTs = u.lastTs;
-        projects.set(s.project, (projects.get(s.project) ?? 0) + cost);
+        const project = projects.get(s.project) ?? { tokens: 0, cost: 0 };
+        project.tokens += tokens;
+        project.cost += cost;
+        projects.set(s.project, project);
         const mk = u.model ?? "unknown";
         let m = models.get(mk);
         if (!m) models.set(mk, (m = { model: mk, calls: 0, inTok: 0, outTok: 0, cacheReadTok: 0, cacheWriteTok: 0, cost: 0 }));
@@ -204,6 +214,7 @@ export class Aggregator {
         if (u.promptKey) {
           const p = this.promptRow(prompts, u.promptKey);
           if (p) {
+            p.tokens += tokens;
             p.cost += cost;
             p.outTok += u.usage.output;
           }
@@ -284,6 +295,7 @@ export class Aggregator {
 
     const by = <T>(arr: T[], f: (x: T) => number) => arr.sort((a, b) => f(b) - f(a));
     return {
+      totalTokens,
       totalCost,
       apiCalls,
       sessions: sessions.size,
@@ -293,8 +305,8 @@ export class Aggregator {
       targets: top,
       prompts: by([...prompts.values()], (p) => p.cost).slice(0, topN),
       models: by([...models.values()], (m) => m.cost),
-      projects: by([...projects.entries()].map(([project, cost]) => ({ project, cost })), (p) => p.cost),
-      accounts: by([...accounts.entries()].map(([account, a]) => ({ account, cost: a.cost, calls: a.calls, sessions: a.sessions.size })), (a) => a.cost),
+      projects: by([...projects.entries()].map(([project, usage]) => ({ project, ...usage })), (p) => p.tokens),
+      accounts: by([...accounts.entries()].map(([account, a]) => ({ account, tokens: a.tokens, cost: a.cost, calls: a.calls, sessions: a.sessions.size })), (a) => a.tokens),
       source: sources.size === 1 ? [...sources][0] : "all",
       sinceTs: sinceTs === Infinity ? 0 : sinceTs,
     };
@@ -305,7 +317,7 @@ export class Aggregator {
     if (!p) {
       const meta = this.promptText.get(key);
       if (!meta) return undefined;
-      map.set(key, (p = { key, text: meta.text, project: meta.project, cost: 0, toolCalls: 0, outTok: 0, ts: meta.ts }));
+      map.set(key, (p = { key, text: meta.text, project: meta.project, tokens: 0, cost: 0, toolCalls: 0, outTok: 0, ts: meta.ts }));
     }
     return p;
   }

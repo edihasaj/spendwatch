@@ -53,6 +53,7 @@ describe("claude aggregate from fixture", () => {
     // req1 (opus): 1000*5 + 500*25 + 10000*0.5 + 2000*6.25 = 35000 µ$
     // req2: 500*5 + 200*25 + 12000*0.5 = 13500 µ$  → total $0.0485
     expect(r.totalCost).toBeCloseTo(0.0485, 6);
+    expect(r.totalTokens).toBe(26_200);
     expect(r.apiCalls).toBe(2);
     expect(r.source).toBe("claude");
 
@@ -86,6 +87,7 @@ describe("claude aggregate from fixture", () => {
     expect(r.accounts.length).toBe(2);
     const byName = Object.fromEntries(r.accounts.map((a) => [a.account, a]));
     expect(byName["work@co.com"].cost).toBeCloseTo(0.0485, 6);
+    expect(byName["work@co.com"].tokens).toBe(26_200);
     expect(byName["personal@me.com"].cost).toBeCloseTo(0.0485, 6);
     expect(byName["work@co.com"].calls).toBe(2);
   });
@@ -138,6 +140,7 @@ describe("codex aggregate from fixture", () => {
     // call1: (10000-4000)*5 + 800*30 + 4000*0.5 = 30000+24000+2000 = 56000 µ$
     // call2: (5000-1000)*5 + 300*30 + 1000*0.5 = 20000+9000+500 = 29500 µ$
     expect(r.totalCost).toBeCloseTo((56000 + 29500) / 1e6, 6);
+    expect(r.totalTokens).toBe(16_100);
     expect(r.projects[0].project).toBe("sample-app");
     expect(r.models[0].model).toBe("gpt-5.5");
 

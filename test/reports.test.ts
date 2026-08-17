@@ -9,6 +9,7 @@ import { labelReports, loadReports, mergeReports, reportBreakdowns, sourceLabel 
 function report(source = "codex"): Report {
   return {
     source,
+    totalTokens: 100,
     totalCost: 1,
     apiCalls: 2,
     sessions: 1,
@@ -31,6 +32,25 @@ describe("portable reports", () => {
     expect(loadReports([path]).map((item) => item.source)).toEqual(["codex", "claude"]);
   });
 
+  test("hydrates token totals from legacy cost-only exports", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "spendwatch-reports-")), "legacy.json");
+    const legacy = {
+      ...report("codex"),
+      totalTokens: undefined,
+      models: [{ model: "gpt-5", calls: 1, inTok: 100, outTok: 20, cacheReadTok: 300, cacheWriteTok: 10, cost: 1 }],
+      accounts: [{ account: "edi@example.com", cost: 1, calls: 1, sessions: 1 }],
+      prompts: [{ key: "p", text: "hello", project: "demo", cost: 1, toolCalls: 0, outTok: 20, ts: 1 }],
+      projects: [{ project: "demo", cost: 1 }],
+    };
+    writeFileSync(path, JSON.stringify(legacy));
+
+    const [loaded] = loadReports([path]);
+    expect(loaded.totalTokens).toBe(430);
+    expect(loaded.accounts[0].tokens).toBe(0);
+    expect(loaded.prompts[0].tokens).toBe(20);
+    expect(loaded.projects[0].tokens).toBe(0);
+  });
+
   test("labels reports without mutating exported input", () => {
     const input = [report()];
     const output = labelReports(input, "macbook");
@@ -48,35 +68,38 @@ describe("portable reports", () => {
   test("merges machines into one report and preserves useful dimensions", () => {
     const studio = {
       ...report("studio:codex"),
-      accounts: [{ account: "edi@example.com", cost: 1, calls: 2, sessions: 1 }],
+      accounts: [{ account: "edi@example.com", tokens: 100, cost: 1, calls: 2, sessions: 1 }],
     };
     const macbook = {
       ...report("macbook:codex"),
       totalCost: 2,
+      totalTokens: 200,
       apiCalls: 3,
-      accounts: [{ account: "edi@example.com", cost: 2, calls: 3, sessions: 1 }],
+      accounts: [{ account: "edi@example.com", tokens: 200, cost: 2, calls: 3, sessions: 1 }],
     };
     const merged = mergeReports([studio, macbook]);
     expect(merged.source).toBe("all");
     expect(merged.totalCost).toBe(3);
+    expect(merged.totalTokens).toBe(300);
     expect(merged.apiCalls).toBe(5);
-    expect(merged.accounts).toEqual([{ account: "Codex · edi@example.com", cost: 3, calls: 5, sessions: 2 }]);
+    expect(merged.accounts).toEqual([{ account: "Codex · edi@example.com", tokens: 300, cost: 3, calls: 5, sessions: 2 }]);
 
     const dimensions = reportBreakdowns([studio, macbook]);
     expect(dimensions.machines.map((row) => row.label)).toEqual(["macbook", "studio"]);
-    expect(dimensions.agents).toEqual([{ label: "Codex", cost: 3, calls: 5, sessions: 2 }]);
-    expect(dimensions.accounts).toEqual([{ label: "Codex · edi@example.com", cost: 3, calls: 5, sessions: 2 }]);
+    expect(dimensions.agents).toEqual([{ label: "Codex", tokens: 300, cost: 3, calls: 5, sessions: 2 }]);
+    expect(dimensions.accounts).toEqual([{ label: "Codex · edi@example.com", tokens: 300, cost: 3, calls: 5, sessions: 2 }]);
   });
 
   test("keeps the same email separate by service unless email grouping is requested", () => {
     const codex = {
       ...report("studio:codex"),
-      accounts: [{ account: "edi@example.com", cost: 1, calls: 2, sessions: 1 }],
+      accounts: [{ account: "edi@example.com", tokens: 100, cost: 1, calls: 2, sessions: 1 }],
     };
     const claude = {
       ...report("macbook:claude"),
       totalCost: 2,
-      accounts: [{ account: "edi@example.com", cost: 2, calls: 3, sessions: 1 }],
+      totalTokens: 200,
+      accounts: [{ account: "edi@example.com", tokens: 200, cost: 2, calls: 3, sessions: 1 }],
     };
 
     expect(reportBreakdowns([codex, claude]).accounts.map((row) => row.label)).toEqual([
@@ -84,7 +107,7 @@ describe("portable reports", () => {
       "Codex · edi@example.com",
     ]);
     expect(reportBreakdowns([codex, claude], "email").accounts).toEqual([
-      { label: "edi@example.com", cost: 3, calls: 5, sessions: 2 },
+      { label: "edi@example.com", tokens: 300, cost: 3, calls: 5, sessions: 2 },
     ]);
 
     const serviceHtml = renderHtml([codex, claude], { generatedAt: 1, days: 30 });
@@ -104,15 +127,15 @@ describe("portable reports", () => {
     const studio = {
       ...report("studio:codex"),
       accounts: [
-        { account: "third@example.com", cost: 3, calls: 3, sessions: 1 },
-        { account: "first@example.com", cost: 1, calls: 1, sessions: 1 },
+        { account: "third@example.com", tokens: 300, cost: 3, calls: 3, sessions: 1 },
+        { account: "first@example.com", tokens: 100, cost: 1, calls: 1, sessions: 1 },
       ],
     };
     const macbook = {
       ...report("macbook:codex"),
       accounts: [
-        { account: "second@example.com", cost: 2, calls: 2, sessions: 1 },
-        { account: "first@example.com", cost: 1, calls: 1, sessions: 1 },
+        { account: "second@example.com", tokens: 200, cost: 2, calls: 2, sessions: 1 },
+        { account: "first@example.com", tokens: 100, cost: 1, calls: 1, sessions: 1 },
       ],
     };
 
@@ -139,6 +162,11 @@ describe("portable reports", () => {
     expect(html).toContain('href="./#setup">Add account</a>');
     expect(html).toContain("Fragment+Mono");
     expect(html).toContain('class="panels"');
+    expect(html).toContain('100 tokens');
+    expect(html).toContain('100 exact');
+    expect(html.indexOf('100 tokens')).toBeLessThan(html.indexOf('$1.00 estimated'));
+    expect(html).toContain('>100</span><span class="l">tokens');
+    expect(html).toContain('for the last 30 days');
     expect(html).toContain('role="region" aria-label="By machine"');
     expect(html).toContain("min-height:44px");
     expect(html).toContain("refreshValues");
