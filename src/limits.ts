@@ -398,7 +398,7 @@ function copilotLimits(account: CodexLimitAccount, nowMs: number): string {
     : `${esc(overflow)}`;
   return `<section class="limit copilot-usage ${tone}">
     <div class="limit-head"><span>AI credits used</span><strong>${status.creditsUsed.toLocaleString()} / ${budget.credits.toLocaleString()}</strong></div>
-    <div class="track" role="progressbar" aria-label="Monthly AI credit budget remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${left}"><i style="width:${left}%"></i>${marker}</div>
+    <div class="track" role="progressbar" aria-label="${status.over ? "Monthly AI credit budget spent" : "Monthly AI credit budget remaining"}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${status.over ? 100 : left}"><i style="width:${status.over ? 100 : left}%"></i>${marker}</div>
     <div class="limit-meta split"><span>${esc(standing)}</span>${reset}</div>
     ${window && !status.over ? paceBlock(window, nowMs) : ""}
   </section><section class="limit copilot-pool ${tone}">

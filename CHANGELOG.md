@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fill the Copilot budget track solid red once the monthly ceiling is passed instead of draining it to an empty line.
 - Report Copilot overspend past the monthly ceiling instead of clamping it, and alert on the monthly credit budget at the same 30/15/10/5/0 steps as weekly quota.
 - Pace Copilot against a manual monthly ceiling of 40,000 AI credits for $400 ($0.01 per credit, overridable) and drop the per-seat shared-pool and promotion maths.
 - Remove the private dashboard hostname from the public Chrome extension, add origin-scoped URL configuration, and enable repository security automation.
