@@ -391,6 +391,7 @@ describe("Codex limits", () => {
     expect(html).toContain("Over budget by 12,500 credits");
     expect(html).toContain("$125 over the $400 ceiling");
     expect(html).toContain("copilot-usage danger");
+    expect(html).toContain('aria-label="Monthly AI credit budget spent" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><i style="width:100%">');
     expect(html).not.toContain("% of budget left");
     const plan = buildUtilizationPlans(accounts, Date.parse("2026-08-17T12:00:00Z"))[0];
     expect(plan?.action).toBe("more");
@@ -407,6 +408,7 @@ describe("Codex limits", () => {
     const html = renderLimitsHtml(accounts, { generatedAt: Date.parse("2026-08-17T12:00:00Z") });
     expect(html).toContain("10,000 / 40,000");
     expect(html).toContain("75% of budget left");
+    expect(html).toContain('aria-valuenow="75"><i style="width:75%">');
     expect(html).toContain("Paid overflow on");
     expect(html).not.toContain("Over budget by");
   });
