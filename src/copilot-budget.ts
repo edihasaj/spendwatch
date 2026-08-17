@@ -1,7 +1,7 @@
 import type { CodexLimitAccount, LimitWindow } from "./limits";
 
-/** Manual monthly ceiling: 400,000 AI credits for $400. No seat maths, no promo windows. */
-export const COPILOT_MONTHLY_CREDIT_BUDGET = 400_000;
+/** Manual monthly ceiling: 40,000 AI credits for $400. No seat maths, no promo windows. */
+export const COPILOT_MONTHLY_CREDIT_BUDGET = 40_000;
 export const COPILOT_MONTHLY_USD_BUDGET = 400;
 
 export interface CopilotBudget {
