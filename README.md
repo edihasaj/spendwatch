@@ -139,11 +139,15 @@ spendwatch eval --sqlite ~/.local/share/spendwatch/routing.db --json
 planning page with one account card per identity. Cards show only account,
 plan, freshness, reported quota windows, reset times, and pace forecasts;
 unreported windows are omitted instead of shown as empty limits. Codex and
-Claude show rolling 5-hour and weekly capacity. Copilot Business shows AI
-credits used, their USD equivalent, the current per-seat contribution to the
-shared organization pool, paid-overflow status, and monthly reset. It never
-labels paid overflow as unlimited or invents a remaining company balance when
-the GitHub identity cannot read organization seat and budget totals. API-backed
+Claude show rolling 5-hour and weekly capacity. Copilot is paced against a manual
+monthly ceiling instead of GitHub seat maths: 400,000 AI credits for $400 per
+calendar month, which fixes the credit price at $0.001. The card shows credits
+used against that budget, percent left, the money spent against the $400 cap,
+the per-credit price, paid-overflow status, and monthly reset, and it gets the
+same pace forecast and utilization plan as the subscription providers. Override
+the ceiling with `SPENDWATCH_COPILOT_MONTHLY_CREDITS` and
+`SPENDWATCH_COPILOT_MONTHLY_USD`. When GitHub reports no monthly reset the next
+UTC month boundary is used. It never labels paid overflow as unlimited. API-backed
 Lokai routes show sanitized cash balances; route
 readiness without a reported balance is never labeled unlimited. When the input
 includes a reported pace forecast, Spendwatch shows its learned deficit/reserve
