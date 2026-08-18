@@ -4,6 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultCodexRoots, discover } from "../src/sources";
 
+// Minimal unsigned JWT: Codex reads the payload of auth.json's id_token only.
+function idToken(email: string, plan: string): string {
+  const payload = Buffer.from(
+    JSON.stringify({ email, "https://api.openai.com/auth": { chatgpt_plan_type: plan } }),
+  ).toString("base64url");
+  return `header.${payload}.signature`;
+}
+
 describe("Codex profile discovery", () => {
   test("finds default and named profiles with session directories", () => {
     const home = mkdtempSync(join(tmpdir(), "spendwatch-home-"));
@@ -72,6 +80,38 @@ describe("Codex profile discovery", () => {
     } finally {
       if (previous === undefined) delete process.env.SPENDWATCH_CONFIG;
       else process.env.SPENDWATCH_CONFIG = previous;
+    }
+  });
+
+  test("skips Codex homes on a free plan, unless SPENDWATCH_INCLUDE_FREE is set", () => {
+    const home = mkdtempSync(join(tmpdir(), "spendwatch-home-"));
+    const roots: string[] = [];
+    for (const [index, [profile, plan]] of [[".codex-paid", "pro"], [".codex-gratis", "free"]].entries()) {
+      const sessions = join(home, profile, "sessions");
+      mkdirSync(sessions, { recursive: true });
+      writeFileSync(join(sessions, `rollout-2026-08-18T10-00-0${index}-aaaaaaaa-bbbb-cccc-dddd-ffffffffff0${index}.jsonl`), "");
+      writeFileSync(join(home, profile, "auth.json"), JSON.stringify({ tokens: { id_token: idToken(`${plan}@example.com`, plan) } }));
+      roots.push(sessions);
+    }
+    const config = join(home, "config.json");
+    writeFileSync(config, JSON.stringify(roots.map((path) => ({ agent: "codex", path }))));
+
+    const previousConfig = process.env.SPENDWATCH_CONFIG;
+    const previousFree = process.env.SPENDWATCH_INCLUDE_FREE;
+    process.env.SPENDWATCH_CONFIG = config;
+    delete process.env.SPENDWATCH_INCLUDE_FREE;
+    try {
+      const paidOnly = discover({ sinceMs: 0, agents: new Set(["codex"]) }).find((s) => s.id === "codex");
+      expect(paidOnly?.files.map((f) => f.account)).toEqual(["pro@example.com (paid)"]);
+
+      process.env.SPENDWATCH_INCLUDE_FREE = "1";
+      const withFree = discover({ sinceMs: 0, agents: new Set(["codex"]) }).find((s) => s.id === "codex");
+      expect(withFree?.files.map((f) => f.account).sort()).toEqual(["free@example.com (gratis)", "pro@example.com (paid)"]);
+    } finally {
+      if (previousConfig === undefined) delete process.env.SPENDWATCH_CONFIG;
+      else process.env.SPENDWATCH_CONFIG = previousConfig;
+      if (previousFree === undefined) delete process.env.SPENDWATCH_INCLUDE_FREE;
+      else process.env.SPENDWATCH_INCLUDE_FREE = previousFree;
     }
   });
 });
