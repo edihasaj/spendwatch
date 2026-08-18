@@ -143,7 +143,10 @@ spendwatch eval --sqlite ~/.local/share/spendwatch/routing.db --json
 planning page with one account card per identity. Cards show only account,
 plan, freshness, reported quota windows, reset times, and pace forecasts;
 unreported windows are omitted instead of shown as empty limits. Codex and
-Claude show rolling 5-hour and weekly capacity. Copilot is paced against a manual
+Claude show rolling 5-hour and weekly capacity. A Codex account that has bought
+credits also shows its balance next to the plan name; those credits are what
+keeps the account working once the weekly window is spent, so they are reported
+even at 0% left. Accounts with no credits stay uncluttered. Copilot is paced against a manual
 monthly ceiling instead of GitHub seat maths: 40,000 AI credits for $400 per
 calendar month, which fixes the credit price at $0.01. The card shows credits
 used against that budget, percent left, the money spent against the $400 cap,

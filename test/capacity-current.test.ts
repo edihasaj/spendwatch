@@ -45,3 +45,19 @@ test("a reset further away than the window itself is rejected as inconsistent", 
   const now = Date.parse("2026-08-15T00:00:00Z");
   expect(paceFor({ usedPercent: 10, windowMinutes: 60, resetsAt: new Date(now + 5 * HOUR).toISOString() }, now)).toBeNull();
 });
+
+test("purchased credits ride along with the rate-limit snapshot", () => {
+  const now = Date.parse("2026-08-16T10:00:00Z");
+  const read = (credits: unknown) => capacityResultFromAppServer(
+    { type: "chatgpt", email: "edihasaj@gmail.com", planType: "pro" },
+    { rateLimitsByLimitId: { codex: { primary: { usedPercent: 12, windowDurationMins: 10080 }, credits } } },
+    now,
+  )?.usage.credits;
+
+  // The balance stays a string so a large purchase never loses precision.
+  expect(read({ hasCredits: true, unlimited: false, balance: "2000" })).toEqual({ balance: "2000", unlimited: false });
+  expect(read({ hasCredits: false, unlimited: true, balance: "0" })).toEqual({ balance: "0", unlimited: true });
+  // An empty balance is not worth a card of its own.
+  expect(read({ hasCredits: false, unlimited: false, balance: "0" })).toBeNull();
+  expect(read(undefined)).toBeNull();
+});
