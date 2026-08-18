@@ -377,7 +377,15 @@ the matching Codex profile's local authentication metadata.
 Accounts are auto-detected per agent (Claude `~/.claude.json` email, Codex auth
 JWT email). Reports **tag by account but sum per agent**. Codex automatically
 loads `~/.codex/sessions` plus every `~/.codex-*/sessions` profile, so separate
-desktop or CLI accounts such as `~/.codex-work` require no configuration.
+desktop or CLI accounts such as `~/.codex-secondary` require no configuration.
+
+Because the same email can be signed in to several homes, Codex accounts carry
+the profile home in brackets: `~/.codex` shows as `(main)` and `~/.codex-<name>`
+as `(<name>)`, e.g. `me@example.com (tertiary)`. A rollout present in more than
+one home — homes are often copy-on-write clones of each other — is billed once,
+and credited to the named profile rather than the `~/.codex` playground.
+`--account-group email` ignores the bracketed profile so one person still merges
+across agents.
 
 For custom locations or explicit labels, create
 `~/.config/spendwatch/config.json` (or `$SPENDWATCH_CONFIG`). Explicit config
@@ -387,7 +395,7 @@ roots replace automatic discovery:
 { "roots": [
   { "agent": "claude", "account": "work",     "path": "~/.claude/projects" },
   { "agent": "claude", "account": "personal", "path": "~/personal/.claude/projects" },
-  { "agent": "codex",  "account": "work",     "path": "~/.codex-work/sessions" },
+  { "agent": "codex",  "account": "work",     "path": "~/.codex-secondary/sessions" },
   { "agent": "codex",  "account": "personal", "path": "~/.codex/sessions" }
 ] }
 ```
