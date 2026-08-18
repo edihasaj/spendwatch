@@ -255,6 +255,52 @@ describe("Codex limits", () => {
     expect(html).toContain("Lasts until reset");
   });
 
+  test("leaves the run-out forecast to burn instead of showing two ETAs", () => {
+    const html = renderLimitsHtml([{
+      provider: "codex",
+      email: "secondary@example.com",
+      plan: "Pro",
+      devices: ["macbook", "studio"],
+      updatedAt: "2026-08-18T11:59:00Z",
+      weekly: {
+        usedPercent: 99,
+        resetsAt: "2026-08-20T00:00:00Z",
+        windowMinutes: 10080,
+        burn: {
+          ratePerHour: 2.2,
+          sustainableRatePerHour: 0.0278,
+          budgetMultiple: 79,
+          lookbackMinutes: 360,
+          sampleCount: 12,
+          lastsToReset: false,
+          runsOutAt: "2026-08-18T12:27:00.000Z",
+          earlyByMinutes: 2133,
+        },
+      },
+    }], { generatedAt: Date.parse("2026-08-18T12:00:00Z") });
+    // The cycle average keeps the trend it alone reports, but drops its ETA.
+    expect(html).toContain('<div class="pace"><span>20% over pace</span></div>');
+    expect(html).not.toContain("Lasts until reset");
+    expect(html.match(/class="exhaust"/g)).toHaveLength(1);
+    expect(html).toContain('data-exhaust="2026-08-18T12:27:00.000Z"');
+  });
+
+  test("keeps the cycle-average forecast when burn has no reading yet", () => {
+    const html = renderLimitsHtml([{
+      provider: "codex",
+      email: "quiet@example.com",
+      plan: "Pro",
+      devices: ["studio"],
+      updatedAt: "2026-08-18T11:59:00Z",
+      weekly: {
+        usedPercent: 10,
+        resetsAt: "2026-08-20T00:00:00Z",
+        windowMinutes: 10080,
+      },
+    }], { generatedAt: Date.parse("2026-08-18T12:00:00Z") });
+    expect(html).toContain("Lasts until reset");
+  });
+
   test("calls an exhausted limit ran out instead of running out now", () => {
     const accounts = normalizeCodexLimits({
       provider: "claude",

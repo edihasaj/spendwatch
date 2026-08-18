@@ -366,6 +366,11 @@ function paceBlock(window: LimitWindow, nowMs: number): string {
     : prediction.deltaPercent > 0
       ? `${roundedDelta}% over pace`
       : `${roundedDelta}% under pace`;
+  // The burn line forecasts from the recent slope, which is both more current
+  // and more urgent than this cycle average. Rendering both puts two different
+  // run-out ETAs side by side, so the average yields the forecast and keeps
+  // only the trend it alone reports.
+  if (window.burn) return `<div class="pace"><span>${esc(pace)}</span></div>`;
   const forecast = window.usedPercent >= 100
     ? "Ran out"
     : prediction.willLastToReset
