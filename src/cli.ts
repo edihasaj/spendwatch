@@ -69,15 +69,17 @@ Connect an account on this trusted Mac using the provider's official login.
   spendwatch account add codex --name work --device-auth
   spendwatch account add codex --name api --api-key-env OPENAI_API_KEY
   spendwatch account add claude --name work
+  spendwatch account add grok --name personal
   spendwatch account add copilot
 
 providers:
   codex      ChatGPT browser OAuth (default), device OAuth, or metered API key
   claude     Claude browser OAuth in an isolated config directory
+  grok       Grok browser OAuth in an isolated GROK_HOME
   copilot    GitHub browser OAuth; GitHub CLI manages the account list
 
 options:
-  --name NAME       isolated profile name (required for Codex and Claude)
+  --name NAME       isolated profile name (required for Codex, Claude, and Grok)
   --device-auth     use Codex device OAuth instead of local browser callback
   --api-key-env VAR read a Codex API key from VAR and pass it over stdin
 
@@ -93,8 +95,8 @@ function parseAccountArgs(argv: string[]): AccountAddOptions | undefined {
   }
   if (argv[1] !== "add") throw new Error("usage: spendwatch account add PROVIDER [options]");
   const provider = argv[2] as AccountProvider | undefined;
-  if (provider !== "codex" && provider !== "claude" && provider !== "copilot") {
-    throw new Error("provider must be codex, claude, or copilot");
+  if (provider !== "codex" && provider !== "claude" && provider !== "grok" && provider !== "copilot") {
+    throw new Error("provider must be codex, claude, grok, or copilot");
   }
   const options: AccountAddOptions = { provider };
   const rest = argv.slice(3);
@@ -196,7 +198,7 @@ usage: spendwatch [report|watch|limits|guard|route|run|eval|capacity|capacity-cu
 
 options:
   --days N          look back N days (default 30; watch default 1)
-  --agent LIST      comma list: claude,codex,copilot,gemini (default all)
+  --agent LIST      comma list: claude,codex,grok,copilot,gemini (default all)
   --account STR     filter by account substring (email/label)
   --account-group X group HTML accounts by service (default) or email
   --project STR     filter project by substring
@@ -227,11 +229,12 @@ options:
 sources:
   claude   ~/.claude/projects/**/*.jsonl        (token usage ✓)
   codex    ~/.codex/sessions/**/rollout-*.jsonl (token usage ✓)
+  grok     ~/.grok/sessions/**/updates.jsonl     (token usage ✓)
   copilot  ~/.config/github-copilot             (binary store, no usage)
   gemini   ~/.gemini                             (when present)
 
 multi-account:
-  Accounts are auto-detected (Claude email, Codex JWT). For multiple roots
+  Accounts are auto-detected (Claude email, Codex JWT, Grok auth.json). For roots
   (e.g. work + personal config dirs), create ~/.config/spendwatch/config.json:
     { "roots": [
         { "agent": "claude", "account": "work", "path": "~/.claude/projects" },
@@ -262,8 +265,8 @@ function build(a: Args): Built {
     const agg = new Aggregator();
     const reader = new IncrementalReader(agg);
     for (const f of st.files) {
-      // Claude can pre-filter by project (it's in the dir name).
-      if (st.id === "claude" && !matchesProject(f.project, a.project)) continue;
+      // Claude and Grok can pre-filter by project (it's in the dir name).
+      if ((st.id === "claude" || st.id === "grok") && !matchesProject(f.project, a.project)) continue;
       if (a.account && !f.account.toLowerCase().includes(a.account.toLowerCase())) continue;
       reader.poll(f);
       reader.flush(f);
