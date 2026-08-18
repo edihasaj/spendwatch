@@ -220,6 +220,7 @@ describe("Codex limits", () => {
       email: "steady@example.com",
       plan: "Pro",
       devices: ["studio"],
+      updatedAt: "2026-08-11T16:59:00Z",
       weekly: {
         usedPercent: 8,
         resetsAt: "2026-08-17T00:00:00Z",
@@ -242,6 +243,7 @@ describe("Codex limits", () => {
       email: "fresh@example.com",
       plan: "Max",
       devices: ["macbook"],
+      updatedAt: "2026-08-12T11:59:00Z",
       weekly: {
         usedPercent: 1,
         resetsAt: "2026-08-19T10:00:00Z",
@@ -274,8 +276,37 @@ describe("Codex limits", () => {
     expect(html).not.toContain("Running out now");
   });
 
+  test("never renders an unrefreshed sample as live capacity", () => {
+    const accounts = normalizeCodexLimits({
+      provider: "claude",
+      account: "claude@example.com",
+      usage: {
+        accountEmail: "claude@example.com",
+        loginMethod: "max",
+        primary: { usedPercent: 14, windowMinutes: 300, resetsAt: "2026-08-16T18:00:00Z" },
+        secondary: { usedPercent: 41, windowMinutes: 10080, resetsAt: "2026-08-19T10:00:00Z" },
+        updatedAt: "2026-08-16T15:00:00Z",
+      },
+      devices: ["studio"],
+    });
+    const nowMs = Date.parse("2026-08-18T15:30:00Z");
+    const html = renderLimitsHtml(accounts, { generatedAt: nowMs });
+    expect(html).not.toContain("<strong>86% left</strong>");
+    expect(html).not.toContain("<strong>59% left</strong>");
+    expect(html).toContain("Reading is not current");
+    expect(html).toContain("<strong>Cycle ended</strong>");
+    expect(html).toContain("<strong>Not current</strong>");
+    expect(html).toContain("Last read 86% left");
+    expect(html).toContain("Window already reset; awaiting a fresh read");
+    expect(html).toContain("Collector has not refreshed this account");
+    expect(html).not.toContain("under pace");
+    expect(renderLimitsText(accounts, nowMs)).toContain(
+      "Claude · claude@example.com\t5h cycle ended (last 86% left)\tweekly not current (last 59% left)",
+    );
+  });
+
   test("renders a compact terminal summary", () => {
-    const text = renderLimitsText(normalizeCodexLimits(sample));
+    const text = renderLimitsText(normalizeCodexLimits(sample), Date.parse("2026-08-09T21:00:00Z"));
     expect(text).toContain("Codex · work@example.com\t5h 77% left\tweekly 86% left");
     expect(text).toContain("Codex · personal@example.com\t5h not active\tweekly 40% left");
   });

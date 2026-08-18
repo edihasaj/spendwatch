@@ -1,3 +1,4 @@
+import { windowFreshness } from "./capacity-freshness";
 import type { CapacityProvider, CodexLimitAccount } from "./limits";
 
 export type GuardWindow = "session" | "weekly";
@@ -16,8 +17,9 @@ export interface GuardResult {
 
 export function evaluateGuard(
   accounts: CodexLimitAccount[],
-  options: { account?: string; provider?: CapacityProvider; window: GuardWindow; minimumPercent: number; failOpen?: boolean },
+  options: { account?: string; provider?: CapacityProvider; window: GuardWindow; minimumPercent: number; failOpen?: boolean; nowMs?: number },
 ): GuardResult {
+  const nowMs = options.nowMs ?? Date.now();
   const matches = accounts.filter((account) => {
     if (options.provider && account.provider !== options.provider) return false;
     return !options.account || account.email.toLowerCase().includes(options.account.toLowerCase());
@@ -34,6 +36,18 @@ export function evaluateGuard(
   const account = matches[0]!;
   const window = account[options.window];
   if (!window) return { ...unknown(`${options.window} window unavailable`), provider: account.provider, account: account.email };
+  // Deciding on an expired or unrefreshed sample would let a spent quota look
+  // healthy, which is the exact failure a guard exists to prevent.
+  const freshness = windowFreshness(window, account.updatedAt, nowMs);
+  if (freshness !== "live") {
+    return {
+      ...unknown(freshness === "expired"
+        ? `${options.window} window already reset; no current reading`
+        : `${options.window} reading is not current`),
+      provider: account.provider,
+      account: account.email,
+    };
+  }
   const remainingPercent = Math.max(0, 100 - window.usedPercent);
   const blocked = remainingPercent < options.minimumPercent;
   return {
