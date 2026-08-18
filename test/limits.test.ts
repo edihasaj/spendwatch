@@ -493,3 +493,48 @@ describe("Codex limits", () => {
     expect(html).not.toContain("Unlimited");
   });
 });
+
+describe("free codex accounts", () => {
+  const freeAccount = {
+    account: "spare@example.com",
+    provider: "codex",
+    usage: {
+      accountEmail: "spare@example.com",
+      loginMethod: "free",
+      primary: { usedPercent: 1, windowMinutes: 43200, resetsAt: "2026-09-17T00:00:00Z" },
+      updatedAt: "2026-08-18T20:00:00Z",
+    },
+  };
+  const paidAccount = {
+    account: "work@example.com",
+    provider: "codex",
+    usage: {
+      accountEmail: "work@example.com",
+      loginMethod: "pro",
+      primary: { usedPercent: 40, windowMinutes: 10080, resetsAt: "2026-08-20T00:00:00Z" },
+      updatedAt: "2026-08-18T20:00:00Z",
+    },
+  };
+
+  test("are dropped at render time, not only at collection", () => {
+    // The collector merges every account it has ever seen, so a free account can
+    // still reach the dashboard long after it stopped being collected.
+    const accounts = normalizeCodexLimits([freeAccount, paidAccount]);
+    expect(accounts.map((a) => a.email)).toEqual(["work@example.com"]);
+  });
+
+  test("come back when explicitly requested", () => {
+    process.env.SPENDWATCH_INCLUDE_FREE = "1";
+    try {
+      const accounts = normalizeCodexLimits([freeAccount, paidAccount]);
+      expect(accounts.map((a) => a.email).sort()).toEqual(["spare@example.com", "work@example.com"]);
+    } finally {
+      delete process.env.SPENDWATCH_INCLUDE_FREE;
+    }
+  });
+
+  test("a free plan on another provider is left alone", () => {
+    const accounts = normalizeCodexLimits([{ ...freeAccount, provider: "lokai" }]);
+    expect(accounts.map((a) => a.email)).toEqual(["spare@example.com"]);
+  });
+});
