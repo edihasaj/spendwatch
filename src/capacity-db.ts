@@ -257,7 +257,8 @@ function normalizeHistoricalRecord(value: unknown): {
 } | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as HistoricalRecordInput;
-  if (record.provider !== "codex" && record.provider !== "claude" && record.provider !== "copilot" && record.provider !== "lokai") return undefined;
+  if (record.provider !== "codex" && record.provider !== "claude" && record.provider !== "copilot"
+    && record.provider !== "lokai" && record.provider !== "grok") return undefined;
   if (typeof record.account !== "string" || !record.account.trim()) return undefined;
   const sampledAt = parsedTime(record.sampledAt);
   if (sampledAt === undefined || !Array.isArray(record.windows)) return undefined;
