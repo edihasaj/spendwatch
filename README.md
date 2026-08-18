@@ -163,6 +163,15 @@ includes a reported pace forecast, Spendwatch shows its learned deficit/reserve
 and run-out ETA. Other reset windows get a transparent live linear forecast.
 That fallback starts as soon as a new window begins, so newly reset Claude
 windows immediately show whether their capacity lasts until reset.
+Cycle-average pace hides a burst until the damage is done, so each quota window
+also carries a **burn** line measured from the recent slope inside the current
+cycle only: a 5-hour window looks back 30 minutes, a weekly window 6 hours.
+It reads `Burn 18%/h · safe 4.8%/h · 3.7×`, where *safe* is the rate the
+remaining allowance affords until reset and the multiple is how far past it the
+recent spend sits. When that rate cannot reach the reset, the line gives the
+run-out ETA and how long before the reset it lands. Burn needs at least three
+samples in the current cycle, and is omitted for exhausted, stale, or expired
+windows, which have no trustworthy rate to report.
 Quota tracks place a three-stripe marker at the expected remaining capacity:
 green means usage is on or slower than budget, while red means faster.
 Reset, run-out, and freshness countdowns use a compact two-unit style:

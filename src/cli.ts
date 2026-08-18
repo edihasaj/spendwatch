@@ -12,6 +12,7 @@ import { loadCapacityDashboard } from "./capacity-dashboard";
 import { exportCapacityHistory } from "./capacity-export";
 import { currentCodexCapacity } from "./capacity-current";
 import { currentClaudeCapacity } from "./claude-capacity";
+import { attachBurnForecasts } from "./capacity-burn";
 import { writeSnapshot } from "./db";
 import { renderHistoryHtml } from "./history";
 import { renderHtml } from "./html";
@@ -339,27 +340,24 @@ async function limits(a: Args) {
   if (!a.inputs.length) throw new Error("limits requires at least one --input JSON path");
   const dashboard = loadCapacityDashboard(a.inputs);
   const accounts = dashboard.accounts;
-  if (a.json) {
-    process.stdout.write(JSON.stringify(accounts, null, 2) + "\n");
-  } else {
-    process.stdout.write(renderLimitsText(accounts));
-  }
+  const notes: string[] = [];
   if (a.sqlite) {
     const out = resolve(a.sqlite);
     const live = writeCapacitySnapshot(out, accounts, { collectedAt: nowMs() });
-    process.stdout.write(`\x1b[2m→ Capacity snapshot (${live.rows} new rows) appended to ${out}\x1b[0m\n`);
+    notes.push(`\x1b[2m→ Capacity snapshot (${live.rows} new rows) appended to ${out}\x1b[0m\n`);
     if (a.historyInputs.length) {
       const imported = importCapacityHistory(out, a.historyInputs);
-      process.stdout.write(`\x1b[2m→ Capacity history (${imported.inserted} new rows from ${imported.accepted} records) imported\x1b[0m\n`);
+      notes.push(`\x1b[2m→ Capacity history (${imported.inserted} new rows from ${imported.accepted} records) imported\x1b[0m\n`);
     }
     attachSessionEquivalentForecasts(out, accounts, nowMs());
+    attachBurnForecasts(out, accounts, nowMs());
     if (a.historyHtml) {
       const historyOut = resolve(a.historyHtml);
       writeFileSync(historyOut, renderHistoryHtml(loadCapacityHistory(out), {
         capacityHref: a.html ? relative(dirname(historyOut), resolve(a.html)) || "./" : "./",
         spendHref: a.spendHref,
       }));
-      process.stdout.write(`\x1b[2m→ History HTML written to ${historyOut}\x1b[0m\n`);
+      notes.push(`\x1b[2m→ History HTML written to ${historyOut}\x1b[0m\n`);
     }
   } else if (a.historyInputs.length || a.historyHtml) {
     throw new Error("--history-input and --history-html require --sqlite");
@@ -367,8 +365,12 @@ async function limits(a: Args) {
   if (a.html) {
     const out = resolve(a.html);
     writeFileSync(out, renderLimitsHtml(accounts, { generatedAt: nowMs(), spendHref: a.spendHref, historyHref: a.historyHref, sources: dashboard.sources, authentication: dashboard.authentication }));
-    process.stdout.write(`\x1b[2m→ Limits HTML written to ${out}\x1b[0m\n`);
+    notes.push(`\x1b[2m→ Limits HTML written to ${out}\x1b[0m\n`);
   }
+  // Forecasts are attached from the snapshot database, so the summary is written
+  // only after that pass; otherwise the terminal output lags the dashboard.
+  process.stdout.write(a.json ? JSON.stringify(accounts, null, 2) + "\n" : renderLimitsText(accounts, nowMs()));
+  for (const note of notes) process.stdout.write(note);
 }
 
 function guard(a: Args): number {

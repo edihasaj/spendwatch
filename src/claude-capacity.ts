@@ -51,10 +51,14 @@ interface RawClaudeUsage {
   seven_day_opus?: RawUsageWindow | null;
 }
 
+// The endpoint recomputes reset times per call, so the sub-second part drifts
+// between reads. Rounding to the minute keeps one cycle identifiable across
+// samples, which cycle-aware history and burn analysis depend on.
 function isoFrom(value: unknown): string | undefined {
   if (typeof value !== "string" || !value) return undefined;
   const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
+  if (!Number.isFinite(parsed)) return undefined;
+  return new Date(Math.round(parsed / 60_000) * 60_000).toISOString();
 }
 
 function windowFrom(value: RawUsageWindow | null | undefined, windowMinutes: number): CapacityWindow | null {
