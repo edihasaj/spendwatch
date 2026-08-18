@@ -64,6 +64,8 @@ export interface CodexLimitAccount {
   weekly?: LimitWindow;
   copilot?: CopilotCapacity;
   route?: CloudRouteCapacity;
+  /** Purchased credits that cover usage past the included window. */
+  credits?: { balance: string; unlimited: boolean };
   devices: string[];
   sessionEquivalent?: SessionEquivalentForecast;
 }
@@ -88,6 +90,7 @@ interface RawCodexUsage {
   primary?: RawWindow | null;
   secondary?: RawWindow | null;
   tertiary?: RawWindow | null;
+  credits?: { balance?: unknown; unlimited?: unknown } | null;
   updatedAt?: unknown;
 }
 
@@ -238,6 +241,17 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
       weekly,
       devices: sourceDevices(result),
     };
+    const rawCredits = usage.credits;
+    if (rawCredits) {
+      const unlimited = rawCredits.unlimited === true;
+      const balance = typeof rawCredits.balance === "string"
+        ? rawCredits.balance
+        : Number.isFinite(Number(rawCredits.balance))
+          ? String(rawCredits.balance)
+          : undefined;
+      if (unlimited) account.credits = { balance: balance ?? "0", unlimited: true };
+      else if (balance !== undefined && Number(balance) > 0) account.credits = { balance, unlimited: false };
+    }
     if (provider === "copilot" && result.copilot) {
       account.copilot = {
         chatUnlimited: Boolean(result.copilot.chatUnlimited),
@@ -406,6 +420,15 @@ function formatUsd(value: number, maximumFractionDigits = 2): string {
   }).format(value);
 }
 
+function formatCredits(balance: string): string {
+  const value = Number(balance);
+  if (!Number.isFinite(value)) return balance;
+  return new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: Number.isInteger(value) ? 0 : 2,
+  }).format(value);
+}
+
 function copilotLimits(account: CodexLimitAccount, nowMs: number): string {
   const capacity = account.copilot!;
   const status = copilotBudgetStatus(account);
@@ -503,10 +526,13 @@ function accountCard(account: CodexLimitAccount, index: number, nowMs: number): 
   const deviceLabel = account.devices.length ? ` · ${account.devices.join(" + ")}` : "";
   const accountKey = `${account.provider}:${account.email.toLowerCase()}`;
   const name = account.name ?? (account.provider === "lokai" ? account.email : providerLabel(account.provider));
+  const credits = account.credits
+    ? `<span class="credits" title="Purchased credits, used once the included window runs out">${account.credits.unlimited ? "Unlimited credits" : `${esc(formatCredits(account.credits.balance))} credits`}</span>`
+    : "";
   return `<article class="account-card provider-${account.provider}" data-account-key="${esc(accountKey)}" style="--delay:${index * 60}ms;--accent:${providerAccent(account.provider)}">
     <header class="account-head">
       <div class="identity"><h2>${esc(name)}</h2>${name === account.email ? "" : `<span class="account-email">${esc(account.email)}</span>`}</div>
-      <div class="account-meta"><strong>${esc(account.plan)}</strong><span class="updated" data-updated="${esc(account.updatedAt ?? "")}" data-devices="${esc(deviceLabel)}">${account.updatedAt ? "Updated recently" : "Update time unavailable"}${esc(deviceLabel)}</span></div>
+      <div class="account-meta"><strong>${esc(account.plan)}</strong>${credits}<span class="updated" data-updated="${esc(account.updatedAt ?? "")}" data-devices="${esc(deviceLabel)}">${account.updatedAt ? "Updated recently" : "Update time unavailable"}${esc(deviceLabel)}</span></div>
     </header>
     <div class="limits">${providerLimits(account, nowMs)}</div>
   </article>`;
@@ -569,7 +595,7 @@ export function renderLimitsText(accounts: CodexLimitAccount[], nowMs = Date.now
       if (burn.lastsToReset) return `${left}% left (${pace})`;
       return `${left}% left (${pace}, out in ${compactDuration(Date.parse(burn.runsOutAt!) - nowMs)})`;
     };
-    return `${providerLabel(account.provider)} · ${account.email}\t5h ${describe(account.session, "not active")}\tweekly ${describe(account.weekly, "unavailable")}`;
+    return `${providerLabel(account.provider)} · ${account.email}\t5h ${describe(account.session, "not active")}\tweekly ${describe(account.weekly, "unavailable")}${account.credits ? `\t${account.credits.unlimited ? "unlimited credits" : `${formatCredits(account.credits.balance)} credits`}` : ""}`;
   }).join("\n") + "\n";
 }
 
@@ -614,7 +640,7 @@ ${BRAND_HEAD_HTML}
 .utilization{margin:18px 0;padding:17px;background:linear-gradient(145deg,rgba(20,27,31,.96),rgba(12,16,20,.98));border:1px solid rgba(104,213,220,.26);border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.18)}.util-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:12px}.util-head h2{margin:0;font-size:18px;letter-spacing:-.035em}.util-head p{margin:4px 0 0;color:var(--muted);font-size:11px}.target-chip{flex:none;padding:6px 8px;border:1px solid rgba(104,213,220,.38);border-radius:99px;color:#bdf5f7;background:rgba(104,213,220,.07);font:10px "Fragment Mono",monospace}.pace-policy{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;margin-bottom:12px;overflow:hidden;border:1px solid #252e36;border-radius:8px;background:#252e36}.pace-policy span{padding:7px 8px;background:#0c1014;color:#87929b;font:9px/1.35 "Fragment Mono",monospace}.pace-policy b{display:block;margin-bottom:2px;color:#cbd3d8;font-weight:400}.util-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.util-card{min-width:0;padding:12px 13px;background:#0c1014;border:1px solid #252e36;border-left:2px solid var(--accent);border-radius:9px;animation:enter .38s both;animation-delay:var(--delay)}.util-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.util-card header span{color:var(--accent);font:9px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.util-card h3{margin:3px 0 0;font-size:12px;line-height:1.25;overflow-wrap:anywhere}.util-card header strong{flex:none;padding:4px 6px;border-radius:5px;background:rgba(117,213,152,.1);color:var(--good);font:9px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.06em}.util-card.action-more header strong{background:rgba(242,123,112,.1);color:var(--danger)}.util-card.action-less header strong,.util-card.action-rebalance header strong{background:rgba(242,189,100,.1);color:var(--warn)}.util-card.action-measure header strong{background:rgba(142,169,255,.1);color:#aebfff}.util-projection{margin-top:12px;color:var(--ink);font:18px "Fragment Mono",monospace;letter-spacing:-.04em}.util-track{position:relative;height:5px;margin:8px 0;background:#050709;border-radius:99px}.util-track i{display:block;height:100%;border-radius:99px;background:var(--accent)}.util-track b{position:absolute;top:-3px;width:2px;height:11px;border-radius:2px;background:#fff;box-shadow:0 0 0 1px #050709;transform:translateX(-50%)}.util-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px;color:#c3cbd1;font:10px/1.3 "Fragment Mono",monospace}.util-metrics span{min-width:0}.util-metrics b{display:block;margin-bottom:2px;color:#6f7a83;font-size:8px;font-weight:400;text-transform:uppercase;letter-spacing:.08em}.util-card p{margin:10px 0 0;padding-top:9px;border-top:1px solid #202830;color:#8f9aa3;font-size:10px;line-height:1.45}
 .accounts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.account-card{display:flex;flex-direction:column;background:linear-gradient(145deg,rgba(21,26,32,.98),rgba(15,19,24,.98));border:1px solid var(--line);border-top-color:color-mix(in srgb,var(--accent) 36%,var(--line));border-radius:13px;padding:15px 16px;box-shadow:0 14px 40px rgba(0,0,0,.16);animation:enter .45s cubic-bezier(.2,.8,.2,1) both;animation-delay:var(--delay)}
 .auth-required{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px;padding:12px 14px;border:1px solid rgba(242,189,100,.42);border-radius:10px;background:rgba(242,189,100,.07)}.auth-required div{display:flex;flex-direction:column;gap:2px}.auth-required strong{color:var(--warn);font:11px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.auth-required span{color:#cbd2d7;font-size:12px}.auth-required a{flex:none;color:#101317;background:var(--warn);border-radius:7px;padding:8px 10px;font:700 11px "Manrope",sans-serif;text-decoration:none}
-.account-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.identity{min-width:0}.identity h2{font-size:16px;line-height:1.16;letter-spacing:-.025em;margin:0;overflow-wrap:anywhere}.account-email{display:block;margin-top:4px;color:var(--muted);font:10px/1.3 "Fragment Mono",monospace;overflow-wrap:anywhere}.account-meta{flex:none;text-align:right}.account-meta strong{display:block;font:12px "Fragment Mono",monospace;color:#dce2e6}.updated{display:block;color:var(--muted);font:11px/1.3 "Fragment Mono",monospace;margin-top:4px;white-space:nowrap}
+.account-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.identity{min-width:0}.identity h2{font-size:16px;line-height:1.16;letter-spacing:-.025em;margin:0;overflow-wrap:anywhere}.account-email{display:block;margin-top:4px;color:var(--muted);font:10px/1.3 "Fragment Mono",monospace;overflow-wrap:anywhere}.account-meta{flex:none;text-align:right}.account-meta strong{display:block;font:12px "Fragment Mono",monospace;color:#dce2e6}.credits{display:block;margin-top:4px;font:11px/1.3 "Fragment Mono",monospace;color:var(--accent);white-space:nowrap}.updated{display:block;color:var(--muted);font:11px/1.3 "Fragment Mono",monospace;margin-top:4px;white-space:nowrap}
 .limits{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(41,49,58,.75)}.limit-head,.limit-meta,.pace,.equivalent{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.limit-head span{color:#b9c1c8;font-size:11px;font-weight:600}.limit-head strong{font:14px "Fragment Mono",monospace;white-space:nowrap}.track{position:relative;height:6px;margin:8px 0 7px;background:#080a0d;border:1px solid #1b2229;border-radius:99px;overflow:visible}.track>i{display:block;max-width:100%;height:100%;background:var(--accent,var(--cyan));border-radius:99px;box-shadow:0 0 18px color-mix(in srgb,var(--accent,var(--cyan)) 30%,transparent);animation:fill .8s cubic-bezier(.2,.8,.2,1) both}.limit.warn .track>i{background:var(--warn)}.limit.danger .track>i{background:var(--danger)}.pace-marker{--marker-color:#a8ffb9;position:absolute;z-index:2;top:50%;left:var(--pace-left);display:flex;height:12px;gap:3px;transform:translate(-50%,-50%);pointer-events:none}.pace-marker b{display:block;width:2px;height:100%;border-radius:2px;background:var(--marker-color);box-shadow:0 0 0 1px #020304,0 0 7px var(--marker-color)}.pace-marker.deficit{--marker-color:#ff776d}.limit-meta{justify-content:flex-end;color:var(--muted);font:12px/1.35 "Fragment Mono",monospace}.limit-meta.split{justify-content:space-between}.pace{margin-top:6px;color:#aab3ba;font:12px/1.35 "Fragment Mono",monospace}.pace strong{color:var(--accent);font-weight:400;white-space:nowrap}.burn{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:5px;color:#8f9aa3;font:11px/1.35 "Fragment Mono",monospace}.burn strong{color:#cbd3d8;font-weight:400;white-space:nowrap}.burn em{flex-basis:100%;text-align:right;font-style:normal;color:#6f7a83}.burn.over{color:#e0b98a}.burn.over strong{color:var(--warn)}.equivalent{margin-top:6px;color:#aab3ba;font:12px/1.35 "Fragment Mono",monospace;padding-top:5px;border-top:1px solid rgba(41,49,58,.55)}.equivalent strong{color:var(--muted);font-weight:400;white-space:nowrap}.limit.balance{justify-content:center;min-height:45px}.limit.unreadable .limit-head strong{color:var(--warn)}.limit.unreadable .limit-meta,.limit.unreadable .pace{color:#7d868e}.track.stale>i{background:#3a444d;box-shadow:none;opacity:.65}.limit.balance .limit-meta{margin-top:7px}.copilot-usage,.copilot-pool{display:flex;flex-direction:column;justify-content:center;min-height:50px}.copilot-usage .limit-meta,.copilot-pool .limit-meta{margin-top:7px}
 .setup{display:none;margin-top:14px;padding:20px;background:#0d1115;border:1px solid #34414c;border-radius:12px}.setup.open{display:block;animation:enter .25s both}.setup-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:15px}.setup h2{font-size:18px;margin:0 0 5px}.setup-head p{color:var(--muted);font-size:12px;margin:0}.profile-field{display:flex;flex-direction:column;gap:5px;flex:0 0 210px}.profile-field span{color:#aab3ba;font:10px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.profile-field input{width:100%;padding:9px 10px;color:var(--ink);background:#07090b;border:1px solid #34414c;border-radius:7px;font:12px "Fragment Mono",monospace;outline:none}.profile-field input:focus{border-color:var(--cyan)}.provider-setup{display:grid;grid-template-columns:1fr 1fr;gap:10px;min-width:0}.setup-item{min-width:0;padding:13px;border:1px solid #242c34;border-radius:9px}.setup-label{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}.setup-label b{color:var(--item-accent);font:11px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.1em}.auth-kind{padding:3px 6px;border:1px solid color-mix(in srgb,var(--item-accent) 45%,#242c34);border-radius:99px;color:#cbd3d8;font:9px "Fragment Mono",monospace;text-transform:uppercase}.setup-item p{font-size:12px;line-height:1.45;color:#aab3ba;margin:0 0 10px}.command{display:flex;align-items:center;gap:10px;min-width:0;padding:10px 11px;background:#07090b;border:1px solid #202830;border-radius:8px}.command+.command{margin-top:7px}.command code{flex:1;min-width:0;font:11px "Fragment Mono",monospace;color:#d5dce0;overflow:auto;white-space:nowrap}.copy{margin-left:auto;flex:none;background:none;border:0;color:var(--item-accent,var(--cyan));font:10px "Fragment Mono",monospace;cursor:pointer}.alternatives{margin-top:8px;color:var(--muted);font-size:11px}.alternatives summary{cursor:pointer}.alternatives .command{margin-top:7px}.page-meta{text-align:right;margin-top:14px;color:#6e7881;font:11px "Fragment Mono",monospace}
 @keyframes enter{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes fill{from{width:0}}
