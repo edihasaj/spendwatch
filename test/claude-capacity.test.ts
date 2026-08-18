@@ -19,10 +19,17 @@ describe("Claude capacity", () => {
     expect(result?.usage.primary).toEqual({
       usedPercent: 100,
       windowMinutes: 300,
-      resetsAt: "2026-08-18T16:09:59.773Z",
+      resetsAt: "2026-08-18T16:10:00.000Z",
     });
     expect(result?.usage.secondary?.windowMinutes).toBe(10080);
     expect(result?.usage.secondary?.usedPercent).toBe(85);
+    // Sub-second drift between reads must not look like a new cycle.
+    const later = claudeCapacityFromUsage(
+      { ...usage, five_hour: { utilization: 100, resets_at: "2026-08-18T16:10:00.412773+00:00" } },
+      { email: "user@example.com" },
+      now,
+    );
+    expect(later?.usage.primary?.resetsAt).toBe(result?.usage.primary?.resetsAt);
     expect(result?.usage.tertiary).toBeNull();
     expect(result?.usage.updatedAt).toBe("2026-08-18T15:30:00.000Z");
     expect(result?.pace?.primary?.willLastToReset).toBe(false);
