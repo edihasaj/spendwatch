@@ -36,7 +36,7 @@ install -m 0755 spendwatch /opt/homebrew/bin/spendwatch
 
 ```sh
 bun src/cli.ts report                      # all agents, past 30 days
-bun src/cli.ts report --agent codex        # one agent (claude,codex,copilot,gemini)
+bun src/cli.ts report --agent codex        # one agent (claude,codex,grok,copilot,gemini)
 bun src/cli.ts report --project chat-sql   # filter by project substring
 bun src/cli.ts report --days 7 --json
 bun src/cli.ts report --html               # also write a standalone HTML report
@@ -223,6 +223,7 @@ the secret in argv or shell history:
 ```bash
 export OPENAI_API_KEY=... # preferably injected by your secret manager
 spendwatch account add codex --name api --api-key-env OPENAI_API_KEY
+spendwatch account add grok --name personal     # Grok browser OAuth
 ```
 
 Claude uses an isolated `CLAUDE_CONFIG_DIR`; GitHub CLI owns Copilot's
@@ -375,17 +376,23 @@ the matching Codex profile's local authentication metadata.
 ## Multi-account
 
 Accounts are auto-detected per agent (Claude `~/.claude.json` email, Codex auth
-JWT email). Reports **tag by account but sum per agent**. Codex automatically
-loads `~/.codex/sessions` plus every `~/.codex-*/sessions` profile, so separate
-desktop or CLI accounts such as `~/.codex-secondary` require no configuration.
+JWT email, Grok `auth.json` email). Reports **tag by account but sum per agent**.
+Codex and Grok automatically load `~/.codex/sessions` and `~/.grok/sessions`
+plus every `~/.codex-*` / `~/.grok-*` profile, so separate desktop or CLI
+accounts such as `~/.codex-secondary` require no configuration.
 
-Because the same email can be signed in to several homes, Codex accounts carry
-the profile home in brackets: `~/.codex` shows as `(main)` and `~/.codex-<name>`
-as `(<name>)`, e.g. `me@example.com (tertiary)`. A rollout present in more than
+Because the same email can be signed in to several homes, Codex and Grok
+accounts carry the profile home in brackets: `~/.codex` shows as `(main)` and
+`~/.codex-<name>` as `(<name>)`, e.g. `me@example.com (tertiary)`. A rollout present in more than
 one home — homes are often copy-on-write clones of each other — is billed once,
 and credited to the named profile rather than the `~/.codex` playground.
 `--account-group email` ignores the bracketed profile so one person still merges
 across agents.
+
+Codex homes signed into a **free** ChatGPT plan are skipped: they carry no
+subscription spend, so they only add noise to a $ leaderboard. This applies to
+`report`/`watch` and to `capacity-current`/`limits`. Set
+`SPENDWATCH_INCLUDE_FREE=1` to include them.
 
 For custom locations or explicit labels, create
 `~/.config/spendwatch/config.json` (or `$SPENDWATCH_CONFIG`). Explicit config
@@ -396,7 +403,8 @@ roots replace automatic discovery:
   { "agent": "claude", "account": "work",     "path": "~/.claude/projects" },
   { "agent": "claude", "account": "personal", "path": "~/personal/.claude/projects" },
   { "agent": "codex",  "account": "work",     "path": "~/.codex-secondary/sessions" },
-  { "agent": "codex",  "account": "personal", "path": "~/.codex/sessions" }
+  { "agent": "codex",  "account": "personal", "path": "~/.codex/sessions" },
+  { "agent": "grok",   "account": "personal", "path": "~/.grok/sessions" }
 ] }
 ```
 
@@ -411,10 +419,18 @@ service account across machines. Filter with `--account <substr>`.
 |---------|------|-------------|
 | Claude Code | `~/.claude/projects/**/*.jsonl` | ✓ |
 | Codex CLI   | `~/.codex/sessions/**/rollout-*.jsonl` | ✓ |
+| Grok CLI    | `~/.grok/sessions/**/updates.jsonl` | ✓ |
 | Copilot CLI | `~/.config/github-copilot` | ✗ (binary Xodus store, no usage) |
 | Gemini CLI  | `~/.gemini` | ✓ when present |
 
 Copilot/Gemini are detected and reported as footnotes until parseable logs exist. Adding a new agent = one parser emitting the shared `Event` model + a `sources.ts` entry.
+
+Grok reports token usage once per prompt-turn, covering every model call its
+agentic loop made for that prompt, so its **API calls** count turns rather than
+individual requests. Cost uses xAI's published per-model rates including the
+200k-token long-context tier; on captured turns that agrees exactly with the
+cost Grok itself reports. Grok exposes no quota endpoint, so it appears in the
+spend report but not in `capacity` or `guard`.
 
 ## What to automate
 
@@ -444,6 +460,7 @@ The **AUTOMATE — top targets** list (top of the report, and `--brief`) ranks s
 - `src/routing-db.ts` / `src/eval-cli.ts` — outcome telemetry and policy replay
 - `src/parse.ts` — Claude JSONL → events; `commandPath()` deep shell breakdown
 - `src/codex.ts` — Codex rollout JSONL → same events
+- `src/grok.ts` — Grok ACP session updates → same events
 - `src/sources.ts` — agent registry: log locations, discovery, account detection, config roots
 - `src/aggregate.ts` — per-session fold → leaderboards + per-account + drill-down samples
 - `src/db.ts` — SQLite snapshot writer (`bun:sqlite`)
@@ -461,7 +478,7 @@ The **AUTOMATE — top targets** list (top of the report, and `--brief`) ranks s
 ## Test
 
 ```sh
-bun test   # claude + codex fixtures with hand-computed costs, deep-command,
+bun test   # claude + codex + grok fixtures with hand-computed costs, deep-command,
            # incremental append, multi-account sum/breakout, sqlite round-trip
 ```
 
