@@ -7,8 +7,11 @@ Token/$ leaderboards **across coding agents** (Claude Code, Codex, …): which *
 Parses each agent's local transcripts. Zero runtime deps, Bun. Agents are split out, with a cross-agent overview on top.
 
 > **Privacy:** report and capacity rendering read local files and make no network
-> calls. Optional background alerts send only the displayed account label and
-> crossed percentage through the browser's encrypted Web Push service.
+> calls. `capacity-current` is the one exception: it asks your own provider
+> account for its current quota (Codex through the official app-server, Claude
+> through Anthropic's OAuth usage endpoint) using credentials those tools already
+> store locally. Optional background alerts send only the displayed account label
+> and crossed percentage through the browser's encrypted Web Push service.
 
 ## Install
 
@@ -53,6 +56,7 @@ bin/spendwatch limits --input limits.json --html capacity.html
 bin/spendwatch limits --input limits.json --sqlite spendwatch.db --history-html history.html
 bin/spendwatch guard --input limits.json --account work --window weekly --min-remaining 15
 bin/spendwatch server --input limits.json --sqlite spendwatch.db --public-dir public
+bin/spendwatch capacity-current --provider claude   # live Claude 5h/weekly windows
 bin/spendwatch capacity-history-export --label studio > capacity-history.jsonl
 bin/spendwatch report                       # compiled binary (bun run build)
 ```

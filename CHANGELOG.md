@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Read live Claude capacity through the account's own OAuth usage endpoint (`capacity-current --provider claude`), removing the third-party menu-bar dependency that could silently freeze Claude windows on an old snapshot.
+- Never present an expired or unrefreshed quota sample as current capacity: the dashboard labels it "Cycle ended" or "Not current" with the last reading and its age, the terminal summary matches, the utilization planner stops pacing it, and `guard` returns `unknown` instead of `ok`.
+
 - Fill the Copilot budget track solid red once the monthly ceiling is passed instead of draining it to an empty line.
 - Report Copilot overspend past the monthly ceiling instead of clamping it, and alert on the monthly credit budget at the same 30/15/10/5/0 steps as weekly quota.
 - Pace Copilot against a manual monthly ceiling of 40,000 AI credits for $400 ($0.01 per credit, overridable) and drop the per-seat shared-pool and promotion maths.
