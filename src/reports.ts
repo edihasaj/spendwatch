@@ -83,7 +83,9 @@ function sourceParts(source: string): { machine: string; agent: string } {
 }
 
 function accountLabel(source: string, account: string, grouping: AccountGrouping): string {
-  if (grouping === "email") return account;
+  // Codex accounts carry a profile tag, e.g. "me@example.com (secondary)". Email
+  // grouping is meant to merge one person across agents, so drop the tag there.
+  if (grouping === "email") return account.replace(/\s+\([^()]*\)$/, "");
   return `${sourceLabel(sourceParts(source).agent)} · ${account}`;
 }
 

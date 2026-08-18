@@ -77,11 +77,21 @@ function claudeAccount(projectsDir: string): string {
   return "default";
 }
 
-// Codex account: <root>/../auth.json → tokens.id_token JWT → email
+// Codex profile label: ~/.codex → "main", ~/.codex-tertiary → "tertiary".
+// Two homes can hold the same account, so the profile is what disambiguates them.
+function codexProfile(sessionsDir: string): string {
+  const home = basename(dirname(sessionsDir));
+  if (home === ".codex") return "main";
+  return home.startsWith(".codex-") ? home.slice(".codex-".length) : home;
+}
+
+// Codex account: <root>/../auth.json → tokens.id_token JWT → email, tagged with
+// the profile home it was read from, e.g. "edihasaj@gmail.com (secondary)".
 function codexAccount(sessionsDir: string): string {
+  const profile = codexProfile(sessionsDir);
   const auth = join(dirname(sessionsDir), "auth.json");
   try {
-    if (!existsSync(auth)) return "default";
+    if (!existsSync(auth)) return profile;
     const j = JSON.parse(readFileSync(auth, "utf8"));
     const tok = j?.tokens?.id_token;
     if (typeof tok === "string") {
@@ -89,11 +99,11 @@ function codexAccount(sessionsDir: string): string {
       if (part) {
         const json = JSON.parse(Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
         const e = shortEmail(json?.email);
-        if (e) return e;
+        if (e) return `${e} (${profile})`;
       }
     }
   } catch {}
-  return "default";
+  return profile;
 }
 
 function mtimeOk(path: string, sinceMs: number): boolean {
@@ -178,9 +188,13 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   if (want("codex")) {
     // A profile home can be a copy-on-write clone of another (e.g. ~/.codex cloned
     // from ~/.codex-primary): same rollout under two real paths, so realpath dedupe
-    // in defaultCodexRoots cannot catch it. Bill each rollout id only once.
+    // in defaultCodexRoots cannot catch it. Bill each rollout id only once, and
+    // collect named profiles first so a shared rollout is credited to the real
+    // account (primary/secondary/tertiary) rather than the ~/.codex playground.
     const seenRollouts = new Set<string>();
-    const files = codexRoots
+    const isPlayground = (root: RootCfg) => basename(dirname(root.path)) === ".codex";
+    const ordered = [...codexRoots].sort((a, b) => Number(isPlayground(a)) - Number(isPlayground(b)));
+    const files = ordered
       .flatMap((r) => collectCodex(r.path, r.account ?? "", opts.sinceMs))
       .filter((file) => {
         const rollout = basename(file.path);
