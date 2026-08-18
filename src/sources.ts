@@ -7,7 +7,7 @@
 // $SPENDWATCH_CONFIG); otherwise the default per-agent dir is auto-detected and
 // its account label resolved from local credentials (email).
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Event } from "./parse";
 import { parseLine } from "./parse";
@@ -176,7 +176,18 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   }
 
   if (want("codex")) {
-    const files = codexRoots.flatMap((r) => collectCodex(r.path, r.account ?? "", opts.sinceMs));
+    // A profile home can be a copy-on-write clone of another (e.g. ~/.codex cloned
+    // from ~/.codex-primary): same rollout under two real paths, so realpath dedupe
+    // in defaultCodexRoots cannot catch it. Bill each rollout id only once.
+    const seenRollouts = new Set<string>();
+    const files = codexRoots
+      .flatMap((r) => collectCodex(r.path, r.account ?? "", opts.sinceMs))
+      .filter((file) => {
+        const rollout = basename(file.path);
+        if (seenRollouts.has(rollout)) return false;
+        seenRollouts.add(rollout);
+        return true;
+      });
     out.push({ id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, files });
   }
 
