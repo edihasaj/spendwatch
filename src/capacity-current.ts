@@ -218,7 +218,10 @@ export async function currentCodexCapacity(now = Date.now()): Promise<CapacityRe
   );
   const byAccount = new Map<string, CapacityResult>();
   for (const item of settled) {
-    if (item.status === "fulfilled" && item.value) byAccount.set(item.value.account.toLowerCase(), item.value);
+    if (item.status !== "fulfilled" || !item.value) continue;
+    // A free plan carries no subscription capacity worth planning against.
+    if (item.value.usage?.loginMethod === "free" && process.env.SPENDWATCH_INCLUDE_FREE !== "1") continue;
+    byAccount.set(item.value.account.toLowerCase(), item.value);
   }
   return [...byAccount.values()].sort((a, b) => a.account.localeCompare(b.account));
 }

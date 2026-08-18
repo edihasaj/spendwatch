@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import type { Event } from "./parse";
 import { parseLine } from "./parse";
 import { newCodexCtx, parseCodexLine } from "./codex";
+import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
 import { humanProject, walkJsonl } from "./scan";
 
 export interface SourceFile {
@@ -85,25 +86,69 @@ function codexProfile(sessionsDir: string): string {
   return home.startsWith(".codex-") ? home.slice(".codex-".length) : home;
 }
 
-// Codex account: <root>/../auth.json → tokens.id_token JWT → email, tagged with
-// the profile home it was read from, e.g. "edihasaj@gmail.com (secondary)".
+// Codex auth claims: <root>/../auth.json → tokens.id_token JWT.
+function codexClaims(sessionsDir: string): { email?: string; plan?: string } {
+  const auth = join(dirname(sessionsDir), "auth.json");
+  try {
+    if (!existsSync(auth)) return {};
+    const j = JSON.parse(readFileSync(auth, "utf8"));
+    const tok = j?.tokens?.id_token;
+    if (typeof tok !== "string") return {};
+    const part = tok.split(".")[1];
+    if (!part) return {};
+    const json = JSON.parse(Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+    const plan = json?.["https://api.openai.com/auth"]?.chatgpt_plan_type;
+    return { email: shortEmail(json?.email), plan: typeof plan === "string" ? plan : undefined };
+  } catch {
+    return {};
+  }
+}
+
+// A free ChatGPT plan has no subscription spend to report, so its sessions are
+// noise in a $ leaderboard. Set SPENDWATCH_INCLUDE_FREE=1 to keep them.
+function isFreeCodexHome(sessionsDir: string): boolean {
+  if (process.env.SPENDWATCH_INCLUDE_FREE === "1") return false;
+  return codexClaims(sessionsDir).plan === "free";
+}
+
+// Codex account: email tagged with the profile home it was read from, e.g.
+// "edihasaj@gmail.com (secondary)".
 function codexAccount(sessionsDir: string): string {
   const profile = codexProfile(sessionsDir);
+  const { email } = codexClaims(sessionsDir);
+  return email ? `${email} (${profile})` : profile;
+}
+
+// Grok profile label: ~/.grok → "main", ~/.grok-work → "work". Mirrors Codex so
+// two homes holding the same account stay distinguishable.
+function grokProfile(sessionsDir: string): string {
+  const home = basename(dirname(sessionsDir));
+  if (home === ".grok") return "main";
+  return home.startsWith(".grok-") ? home.slice(".grok-".length) : home;
+}
+
+// Grok account: <root>/../auth.json is keyed by auth scope; each entry carries a
+// plain email. Tagged with the profile home, e.g. "me@example.com (main)".
+function grokAccount(sessionsDir: string): string {
+  const profile = grokProfile(sessionsDir);
   const auth = join(dirname(sessionsDir), "auth.json");
   try {
     if (!existsSync(auth)) return profile;
     const j = JSON.parse(readFileSync(auth, "utf8"));
-    const tok = j?.tokens?.id_token;
-    if (typeof tok === "string") {
-      const part = tok.split(".")[1];
-      if (part) {
-        const json = JSON.parse(Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
-        const e = shortEmail(json?.email);
-        if (e) return `${e} (${profile})`;
-      }
+    for (const entry of Object.values(j ?? {})) {
+      const e = shortEmail((entry as any)?.email);
+      if (e) return `${e} (${profile})`;
     }
   } catch {}
   return profile;
+}
+
+function statSafe(path: string) {
+  try {
+    return statSync(path);
+  } catch {
+    return undefined;
+  }
 }
 
 function mtimeOk(path: string, sinceMs: number): boolean {
@@ -121,10 +166,12 @@ function safeReaddir(d: string): string[] {
   }
 }
 
-export function defaultCodexRoots(home = homedir()): RootCfg[] {
+// Every "<home>/<dot><suffix>/sessions" profile directory, default home first,
+// with symlinked duplicates collapsed to one root.
+function profileRoots(home: string, agent: string, dot: string): RootCfg[] {
   const names = safeReaddir(home)
-    .filter((name) => name === ".codex" || name.startsWith(".codex-"))
-    .sort((a, b) => (a === ".codex" ? -1 : b === ".codex" ? 1 : a.localeCompare(b)));
+    .filter((name) => name === dot || name.startsWith(`${dot}-`))
+    .sort((a, b) => (a === dot ? -1 : b === dot ? 1 : a.localeCompare(b)));
   const seen = new Set<string>();
   const roots: RootCfg[] = [];
   for (const name of names) {
@@ -138,9 +185,17 @@ export function defaultCodexRoots(home = homedir()): RootCfg[] {
     }
     if (seen.has(canonical)) continue;
     seen.add(canonical);
-    roots.push({ agent: "codex", path });
+    roots.push({ agent, path });
   }
   return roots;
+}
+
+export function defaultCodexRoots(home = homedir()): RootCfg[] {
+  return profileRoots(home, "codex", ".codex");
+}
+
+export function defaultGrokRoots(home = homedir()): RootCfg[] {
+  return profileRoots(home, "grok", ".grok");
 }
 
 // ---- per-agent collectors ---------------------------------------------------
@@ -171,6 +226,26 @@ function collectCodex(dir: string, account: string, sinceMs: number): SourceFile
   return files;
 }
 
+// Grok lays sessions out as <root>/<percent-encoded cwd>/<session id>/updates.jsonl.
+// The cwd is in the directory name, so the project is known before parsing.
+function collectGrok(dir: string, account: string, sinceMs: number, project?: string): SourceFile[] {
+  const files: SourceFile[] = [];
+  if (!existsSync(dir)) return files;
+  const acct = account || grokAccount(dir);
+  for (const encoded of safeReaddir(dir)) {
+    const cwdDir = join(dir, encoded);
+    if (!statSafe(cwdDir)?.isDirectory()) continue;
+    const projectName = grokProjectFromDir(encoded);
+    if (project && !projectName.toLowerCase().includes(project.toLowerCase())) continue;
+    for (const session of safeReaddir(cwdDir)) {
+      const path = join(cwdDir, session, "updates.jsonl");
+      if (!existsSync(path) || !mtimeOk(path, sinceMs)) continue;
+      files.push({ path, project: projectName, source: "grok", account: acct, parse: parseGrokLine, ctx: newGrokCtx() });
+    }
+  }
+  return files;
+}
+
 export function discover(opts: { sinceMs: number; project?: string; agents?: Set<string> }): SourceStatus[] {
   const out: SourceStatus[] = [];
   const want = (id: string) => !opts.agents || opts.agents.has(id);
@@ -179,6 +254,7 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   // Resolve roots per agent: config overrides defaults.
   const claudeRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "claude") : [{ agent: "claude", path: join(homedir(), ".claude", "projects") }];
   const codexRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "codex") : defaultCodexRoots();
+  const grokRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "grok") : defaultGrokRoots();
 
   if (want("claude")) {
     const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project));
@@ -190,10 +266,11 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
     // from ~/.codex-primary): same rollout under two real paths, so realpath dedupe
     // in defaultCodexRoots cannot catch it. Bill each rollout id only once, and
     // collect named profiles first so a shared rollout is credited to the real
-    // account (primary/secondary/tertiary) rather than the ~/.codex playground.
+    // account (primary/secondary) rather than the ~/.codex playground.
     const seenRollouts = new Set<string>();
     const isPlayground = (root: RootCfg) => basename(dirname(root.path)) === ".codex";
-    const ordered = [...codexRoots].sort((a, b) => Number(isPlayground(a)) - Number(isPlayground(b)));
+    const billable = codexRoots.filter((r) => !isFreeCodexHome(r.path));
+    const ordered = [...billable].sort((a, b) => Number(isPlayground(a)) - Number(isPlayground(b)));
     const files = ordered
       .flatMap((r) => collectCodex(r.path, r.account ?? "", opts.sinceMs))
       .filter((file) => {
@@ -203,6 +280,11 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
         return true;
       });
     out.push({ id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, files });
+  }
+
+  if (want("grok")) {
+    const files = grokRoots.flatMap((r) => collectGrok(r.path, r.account ?? "", opts.sinceMs, opts.project));
+    out.push({ id: "grok", present: grokRoots.some((r) => existsSync(r.path)), parseable: true, files });
   }
 
   // Copilot CLI — chat sessions are stored in a binary Xodus DB (.xd), not JSONL.
