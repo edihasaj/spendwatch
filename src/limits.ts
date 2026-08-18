@@ -211,6 +211,11 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
     if (provider !== "codex" && provider !== "claude" && provider !== "copilot" && provider !== "lokai") continue;
     const usage = result.usage;
     if (!usage || typeof usage !== "object") continue;
+    // A free Codex plan carries no capacity worth planning against. Filtering at
+    // render time as well as at collection keeps stale free accounts out of the
+    // dashboard: a collector merge carries every account it has ever seen
+    // forward, so an account that was dropped upstream would otherwise linger.
+    if (provider === "codex" && usage.loginMethod === "free" && process.env.SPENDWATCH_INCLUDE_FREE !== "1") continue;
     const emailValue = usage.accountEmail ?? result.account;
     if (typeof emailValue !== "string" || !emailValue.trim()) continue;
 
