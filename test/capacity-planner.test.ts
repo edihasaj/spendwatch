@@ -49,16 +49,26 @@ describe("90% capacity utilization planning", () => {
 
   test("treats an exhausted allowance as a capacity shortage", () => {
     const accounts: CodexLimitAccount[] = [
-      { provider: "claude", email: "maxed@example.com", plan: "Max", weekly: window(100), devices: [] },
+      { provider: "claude", email: "maxed@example.com", plan: "Max", updatedAt: "2026-08-14T23:59:00Z", weekly: window(100), devices: [] },
     ];
     const [plan] = buildUtilizationPlans(accounts, Date.parse("2026-08-15T00:00:00Z"));
     expect(plan?.action).toBe("more");
     expect(plan?.detail).toContain("Allowance exhausted before reset");
   });
 
+  test("stops pacing an account whose reading is no longer current", () => {
+    const accounts: CodexLimitAccount[] = [
+      { provider: "claude", email: "stale@example.com", plan: "Max", updatedAt: "2026-08-14T00:00:00Z", weekly: window(40), devices: [] },
+    ];
+    const [plan] = buildUtilizationPlans(accounts, Date.parse("2026-08-15T00:00:00Z"));
+    expect(plan?.action).toBe("measure");
+    expect(plan?.currentValue).toBe("Reading is not current");
+    expect(plan?.detail).toContain("older than its cycle");
+  });
+
   test("plans only subscription-backed capacity", () => {
     const accounts: CodexLimitAccount[] = [
-      { provider: "codex", email: "codex@example.com", plan: "Pro", weekly: window(30), devices: [] },
+      { provider: "codex", email: "codex@example.com", plan: "Pro", updatedAt: "2026-08-14T23:59:00Z", weekly: window(30), devices: [] },
       {
         provider: "copilot",
         email: "org (Business)",
@@ -87,6 +97,7 @@ describe("90% capacity utilization planning", () => {
     ];
     const plans = buildUtilizationPlans(accounts, Date.parse("2026-08-15T00:00:00Z"));
     expect(plans).toHaveLength(2);
+    expect(plans[0]?.resource).toBe("Weekly allowance");
     expect(plans[1]?.resource).toBe("Monthly AI credit budget");
     expect(plans[1]?.currentValue).toBe("4,200 of 40,000 credits used");
     expect(plans[1]?.window?.currentUsedPercent).toBeCloseTo(10.5, 1);

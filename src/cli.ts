@@ -11,6 +11,7 @@ import { runCapacityCommand } from "./capacity-cli";
 import { loadCapacityDashboard } from "./capacity-dashboard";
 import { exportCapacityHistory } from "./capacity-export";
 import { currentCodexCapacity } from "./capacity-current";
+import { currentClaudeCapacity } from "./claude-capacity";
 import { writeSnapshot } from "./db";
 import { renderHistoryHtml } from "./history";
 import { renderHtml } from "./html";
@@ -185,7 +186,7 @@ usage: spendwatch [report|watch|limits|guard|route|run|eval|capacity|capacity-cu
   run TASK          execute, verify, record, and escalate a routed task
   eval [JSONL]      replay tasks through the routing policy without model calls
   capacity          archive or restore old capacity history safely
-  capacity-current  read live Codex capacity through the official app-server
+  capacity-current  read live Codex or Claude capacity from the official account API
   server            serve the dashboard and deliver background Web Push alerts
   push-test         send a background test to every enrolled browser
   capacity-history-export
@@ -215,7 +216,7 @@ options:
   --history-html P  render the SQLite capacity archive to this HTML path
   --window W        guard session or weekly capacity (default weekly)
   --min-remaining N guard minimum remaining percentage (default 10)
-  --provider P      guard a specific provider
+  --provider P      guard a specific provider; also picks the capacity-current source
   --fail-open       guard exits 0 when capacity is unavailable
   --host HOST       server bind address (default 127.0.0.1)
   --port N          server port (default 8899)
@@ -410,6 +411,12 @@ async function pushTest(a: Args): Promise<void> {
   if (result.sent === 0) process.exitCode = 69;
 }
 
+async function currentCapacity(provider: CapacityProvider | undefined): Promise<unknown[]> {
+  if (provider === "claude") return currentClaudeCapacity();
+  if (provider && provider !== "codex") throw new Error("capacity-current supports codex or claude");
+  return currentCodexCapacity();
+}
+
 async function capacityHistoryExport(a: Args) {
   const stats = await exportCapacityHistory(a.label ?? "local");
   process.stderr.write(`exported ${stats.records.toLocaleString()} records${stats.firstAt ? ` from ${stats.firstAt} to ${stats.lastAt}` : ""}\n`);
@@ -476,7 +483,7 @@ if (routeExit !== undefined) {
         }
         const args = parseArgs(argv);
         if (args.cmd === "watch") watch(args);
-        else if (args.cmd === "capacity-current") process.stdout.write(JSON.stringify(await currentCodexCapacity(), null, 2) + "\n");
+        else if (args.cmd === "capacity-current") process.stdout.write(JSON.stringify(await currentCapacity(args.provider), null, 2) + "\n");
         else if (args.cmd === "limits") await limits(args);
         else if (args.cmd === "guard") process.exitCode = guard(args);
         else if (args.cmd === "server") await server(args);

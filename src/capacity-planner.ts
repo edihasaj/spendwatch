@@ -1,6 +1,7 @@
 import type { CapacitySourceHealth } from "./capacity-dashboard";
 import { copilotBudgetStatus, copilotCreditWindow } from "./copilot-budget";
 import { predictWindow } from "./capacity-prediction";
+import { isWindowLive } from "./capacity-freshness";
 import type { CapacityProvider, CodexLimitAccount, LimitWindow } from "./limits";
 
 export const UTILIZATION_TARGET_PERCENT = 90;
@@ -115,7 +116,8 @@ export function buildUtilizationPlans(
 ): AccountUtilizationPlan[] {
   const plans: AccountUtilizationPlan[] = [];
   for (const account of accounts) {
-    if ((account.provider === "codex" || account.provider === "claude") && account.weekly) {
+    if ((account.provider === "codex" || account.provider === "claude") && account.weekly
+      && isWindowLive(account.weekly, account.updatedAt, nowMs)) {
       const window = planWindowUtilization(account.weekly, nowMs, targetPercent);
       if (window) {
         plans.push({
@@ -153,13 +155,17 @@ export function buildUtilizationPlans(
       continue;
     }
     if (account.provider === "codex" || account.provider === "claude") {
+      const notCurrent = Boolean(account.weekly) && !isWindowLive(account.weekly!, account.updatedAt, nowMs);
       plans.push({
         provider: account.provider,
         account: account.email,
         resource: "Capacity",
         action: "measure",
         confidence: "unavailable",
-        detail: "A reset window or allowance total is required to calculate a 90% target.",
+        currentValue: notCurrent ? "Reading is not current" : undefined,
+        detail: notCurrent
+          ? "The last reading is older than its cycle. Restore collection for this account before pacing it."
+          : "A reset window or allowance total is required to calculate a 90% target.",
       });
     }
   }

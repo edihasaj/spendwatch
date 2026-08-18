@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { BRAND_HEAD_HTML } from "./branding";
 import type { CapacityAuthenticationRequirement, CapacitySourceHealth } from "./capacity-dashboard";
 import { predictWindow } from "./capacity-prediction";
+import { windowFreshness, type WindowFreshness } from "./capacity-freshness";
 import { buildUtilizationPlans, recommendAccount, UTILIZATION_TARGET_PERCENT, type AccountUtilizationPlan } from "./capacity-planner";
 import { copilotBudgetStatus, copilotCreditWindow } from "./copilot-budget";
 import { compactDuration } from "./duration";
@@ -416,13 +417,23 @@ function providerLimits(account: CodexLimitAccount, nowMs: number): string {
     return copilotLimits(account, nowMs);
   }
   return [
-    account.session ? limitBlock(account.provider === "lokai" ? "5-hour session" : "5-hour window", account.session, nowMs) : "",
-    account.weekly ? limitBlock("Weekly window", account.weekly, nowMs, account.sessionEquivalent) : "",
+    account.session
+      ? limitBlock(account.provider === "lokai" ? "5-hour session" : "5-hour window", account.session, nowMs, account.updatedAt)
+      : "",
+    account.weekly ? limitBlock("Weekly window", account.weekly, nowMs, account.updatedAt, account.sessionEquivalent) : "",
   ].join("");
 }
 
-function limitBlock(label: string, window: LimitWindow, nowMs: number, equivalent?: SessionEquivalentForecast): string {
+function limitBlock(
+  label: string,
+  window: LimitWindow,
+  nowMs: number,
+  updatedAt?: string,
+  equivalent?: SessionEquivalentForecast,
+): string {
   const left = Math.round(100 - window.usedPercent);
+  const freshness = windowFreshness(window, updatedAt, nowMs);
+  if (freshness !== "live") return unreadableLimitBlock(label, window, left, freshness, updatedAt);
   const tone = left <= 15 ? "danger" : left <= 35 ? "warn" : "good";
   const marker = paceMarker(window, nowMs);
   return `<section class="limit ${tone}">
@@ -433,6 +444,31 @@ function limitBlock(label: string, window: LimitWindow, nowMs: number, equivalen
     ${equivalent ? `<div class="equivalent"><span>Est. ${equivalent.estimatedQuotasLeft} session quota${equivalent.estimatedQuotasLeft === 1 ? "" : "s"} left</span><strong>${equivalent.sampleCount} learned</strong></div>` : ""}
   </section>`;
 }
+
+// An expired or stale sample is shown as the history it is: the last reading and
+// its age, never a live percentage, and never a pace forecast built on it.
+function unreadableLimitBlock(
+  label: string,
+  window: LimitWindow,
+  left: number,
+  freshness: WindowFreshness,
+  updatedAt?: string,
+): string {
+  const headline = freshness === "expired" ? "Cycle ended" : "Not current";
+  const detail = freshness === "expired"
+    ? "Window already reset; awaiting a fresh read"
+    : "Collector has not refreshed this account";
+  const age = updatedAt
+    ? `<span data-updated="${esc(updatedAt)}">Update time loading</span>`
+    : "<span>Sample age unknown</span>";
+  return `<section class="limit unreadable ${freshness}">
+    <div class="limit-head"><span>${esc(label)}</span><strong>${esc(headline)}</strong></div>
+    <div class="track stale" role="img" aria-label="${esc(label)} is not current"><i style="width:${Math.min(100, Math.max(0, left))}%"></i></div>
+    <div class="limit-meta split"><span>Last read ${left}% left</span>${age}</div>
+    <div class="pace"><span>${detail}</span></div>
+  </section>`;
+}
+
 
 function accountCard(account: CodexLimitAccount, index: number, nowMs: number): string {
   const deviceLabel = account.devices.length ? ` · ${account.devices.join(" + ")}` : "";
@@ -478,7 +514,7 @@ function utilizationPlanCard(plan: AccountUtilizationPlan, index: number): strin
   </article>`;
 }
 
-export function renderLimitsText(accounts: CodexLimitAccount[]): string {
+export function renderLimitsText(accounts: CodexLimitAccount[], nowMs = Date.now()): string {
   return accounts.map((account) => {
     if (account.copilot) {
       const status = copilotBudgetStatus(account);
@@ -491,9 +527,15 @@ export function renderLimitsText(accounts: CodexLimitAccount[]): string {
       const balance = account.route.balances.map(formatBalance).join(" + ");
       return `${providerLabel(account.provider)} · ${account.email}\t${balance ? `${balance} left` : "balance unavailable"}\t${account.route.detail}`;
     }
-    const session = leftPercent(account.session);
-    const weekly = leftPercent(account.weekly);
-    return `${providerLabel(account.provider)} · ${account.email}\t5h ${session === undefined ? "not active" : `${session}% left`}\tweekly ${weekly === undefined ? "unavailable" : `${weekly}% left`}`;
+    const describe = (window: LimitWindow | undefined, missing: string): string => {
+      if (!window) return missing;
+      const freshness = windowFreshness(window, account.updatedAt, nowMs);
+      const left = leftPercent(window)!;
+      if (freshness === "expired") return `cycle ended (last ${left}% left)`;
+      if (freshness === "stale") return `not current (last ${left}% left)`;
+      return `${left}% left`;
+    };
+    return `${providerLabel(account.provider)} · ${account.email}\t5h ${describe(account.session, "not active")}\tweekly ${describe(account.weekly, "unavailable")}`;
   }).join("\n") + "\n";
 }
 
@@ -539,7 +581,7 @@ ${BRAND_HEAD_HTML}
 .accounts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.account-card{display:flex;flex-direction:column;background:linear-gradient(145deg,rgba(21,26,32,.98),rgba(15,19,24,.98));border:1px solid var(--line);border-top-color:color-mix(in srgb,var(--accent) 36%,var(--line));border-radius:13px;padding:15px 16px;box-shadow:0 14px 40px rgba(0,0,0,.16);animation:enter .45s cubic-bezier(.2,.8,.2,1) both;animation-delay:var(--delay)}
 .auth-required{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px;padding:12px 14px;border:1px solid rgba(242,189,100,.42);border-radius:10px;background:rgba(242,189,100,.07)}.auth-required div{display:flex;flex-direction:column;gap:2px}.auth-required strong{color:var(--warn);font:11px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.auth-required span{color:#cbd2d7;font-size:12px}.auth-required a{flex:none;color:#101317;background:var(--warn);border-radius:7px;padding:8px 10px;font:700 11px "Manrope",sans-serif;text-decoration:none}
 .account-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.identity{min-width:0}.identity h2{font-size:16px;line-height:1.16;letter-spacing:-.025em;margin:0;overflow-wrap:anywhere}.account-email{display:block;margin-top:4px;color:var(--muted);font:10px/1.3 "Fragment Mono",monospace;overflow-wrap:anywhere}.account-meta{flex:none;text-align:right}.account-meta strong{display:block;font:12px "Fragment Mono",monospace;color:#dce2e6}.updated{display:block;color:var(--muted);font:11px/1.3 "Fragment Mono",monospace;margin-top:4px;white-space:nowrap}
-.limits{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(41,49,58,.75)}.limit-head,.limit-meta,.pace,.equivalent{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.limit-head span{color:#b9c1c8;font-size:11px;font-weight:600}.limit-head strong{font:14px "Fragment Mono",monospace;white-space:nowrap}.track{position:relative;height:6px;margin:8px 0 7px;background:#080a0d;border:1px solid #1b2229;border-radius:99px;overflow:visible}.track>i{display:block;max-width:100%;height:100%;background:var(--accent,var(--cyan));border-radius:99px;box-shadow:0 0 18px color-mix(in srgb,var(--accent,var(--cyan)) 30%,transparent);animation:fill .8s cubic-bezier(.2,.8,.2,1) both}.limit.warn .track>i{background:var(--warn)}.limit.danger .track>i{background:var(--danger)}.pace-marker{--marker-color:#a8ffb9;position:absolute;z-index:2;top:50%;left:var(--pace-left);display:flex;height:12px;gap:3px;transform:translate(-50%,-50%);pointer-events:none}.pace-marker b{display:block;width:2px;height:100%;border-radius:2px;background:var(--marker-color);box-shadow:0 0 0 1px #020304,0 0 7px var(--marker-color)}.pace-marker.deficit{--marker-color:#ff776d}.limit-meta{justify-content:flex-end;color:var(--muted);font:12px/1.35 "Fragment Mono",monospace}.limit-meta.split{justify-content:space-between}.pace{margin-top:6px;color:#aab3ba;font:12px/1.35 "Fragment Mono",monospace}.pace strong{color:var(--accent);font-weight:400;white-space:nowrap}.equivalent{margin-top:6px;color:#aab3ba;font:12px/1.35 "Fragment Mono",monospace;padding-top:5px;border-top:1px solid rgba(41,49,58,.55)}.equivalent strong{color:var(--muted);font-weight:400;white-space:nowrap}.limit.balance{justify-content:center;min-height:45px}.limit.balance .limit-meta{margin-top:7px}.copilot-usage,.copilot-pool{display:flex;flex-direction:column;justify-content:center;min-height:50px}.copilot-usage .limit-meta,.copilot-pool .limit-meta{margin-top:7px}
+.limits{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(41,49,58,.75)}.limit-head,.limit-meta,.pace,.equivalent{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.limit-head span{color:#b9c1c8;font-size:11px;font-weight:600}.limit-head strong{font:14px "Fragment Mono",monospace;white-space:nowrap}.track{position:relative;height:6px;margin:8px 0 7px;background:#080a0d;border:1px solid #1b2229;border-radius:99px;overflow:visible}.track>i{display:block;max-width:100%;height:100%;background:var(--accent,var(--cyan));border-radius:99px;box-shadow:0 0 18px color-mix(in srgb,var(--accent,var(--cyan)) 30%,transparent);animation:fill .8s cubic-bezier(.2,.8,.2,1) both}.limit.warn .track>i{background:var(--warn)}.limit.danger .track>i{background:var(--danger)}.pace-marker{--marker-color:#a8ffb9;position:absolute;z-index:2;top:50%;left:var(--pace-left);display:flex;height:12px;gap:3px;transform:translate(-50%,-50%);pointer-events:none}.pace-marker b{display:block;width:2px;height:100%;border-radius:2px;background:var(--marker-color);box-shadow:0 0 0 1px #020304,0 0 7px var(--marker-color)}.pace-marker.deficit{--marker-color:#ff776d}.limit-meta{justify-content:flex-end;color:var(--muted);font:12px/1.35 "Fragment Mono",monospace}.limit-meta.split{justify-content:space-between}.pace{margin-top:6px;color:#aab3ba;font:12px/1.35 "Fragment Mono",monospace}.pace strong{color:var(--accent);font-weight:400;white-space:nowrap}.equivalent{margin-top:6px;color:#aab3ba;font:12px/1.35 "Fragment Mono",monospace;padding-top:5px;border-top:1px solid rgba(41,49,58,.55)}.equivalent strong{color:var(--muted);font-weight:400;white-space:nowrap}.limit.balance{justify-content:center;min-height:45px}.limit.unreadable .limit-head strong{color:var(--warn)}.limit.unreadable .limit-meta,.limit.unreadable .pace{color:#7d868e}.track.stale>i{background:#3a444d;box-shadow:none;opacity:.65}.limit.balance .limit-meta{margin-top:7px}.copilot-usage,.copilot-pool{display:flex;flex-direction:column;justify-content:center;min-height:50px}.copilot-usage .limit-meta,.copilot-pool .limit-meta{margin-top:7px}
 .setup{display:none;margin-top:14px;padding:20px;background:#0d1115;border:1px solid #34414c;border-radius:12px}.setup.open{display:block;animation:enter .25s both}.setup-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:15px}.setup h2{font-size:18px;margin:0 0 5px}.setup-head p{color:var(--muted);font-size:12px;margin:0}.profile-field{display:flex;flex-direction:column;gap:5px;flex:0 0 210px}.profile-field span{color:#aab3ba;font:10px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.profile-field input{width:100%;padding:9px 10px;color:var(--ink);background:#07090b;border:1px solid #34414c;border-radius:7px;font:12px "Fragment Mono",monospace;outline:none}.profile-field input:focus{border-color:var(--cyan)}.provider-setup{display:grid;grid-template-columns:1fr 1fr;gap:10px;min-width:0}.setup-item{min-width:0;padding:13px;border:1px solid #242c34;border-radius:9px}.setup-label{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}.setup-label b{color:var(--item-accent);font:11px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.1em}.auth-kind{padding:3px 6px;border:1px solid color-mix(in srgb,var(--item-accent) 45%,#242c34);border-radius:99px;color:#cbd3d8;font:9px "Fragment Mono",monospace;text-transform:uppercase}.setup-item p{font-size:12px;line-height:1.45;color:#aab3ba;margin:0 0 10px}.command{display:flex;align-items:center;gap:10px;min-width:0;padding:10px 11px;background:#07090b;border:1px solid #202830;border-radius:8px}.command+.command{margin-top:7px}.command code{flex:1;min-width:0;font:11px "Fragment Mono",monospace;color:#d5dce0;overflow:auto;white-space:nowrap}.copy{margin-left:auto;flex:none;background:none;border:0;color:var(--item-accent,var(--cyan));font:10px "Fragment Mono",monospace;cursor:pointer}.alternatives{margin-top:8px;color:var(--muted);font-size:11px}.alternatives summary{cursor:pointer}.alternatives .command{margin-top:7px}.page-meta{text-align:right;margin-top:14px;color:#6e7881;font:11px "Fragment Mono",monospace}
 @keyframes enter{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes fill{from{width:0}}
 @media(max-width:900px){.accounts,.util-grid{grid-template-columns:1fr}.pace-policy{grid-template-columns:repeat(3,1fr)}}

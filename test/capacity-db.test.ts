@@ -154,6 +154,7 @@ describe("capacity history", () => {
       email: "learned@example.com",
       plan: "Pro",
       devices: ["studio"],
+      updatedAt: "2026-08-10T14:59:00Z",
       weekly: { usedPercent: 40, windowMinutes: 10080, resetsAt: weeklyReset },
     };
     attachSessionEquivalentForecasts(db, [current], Date.parse("2026-08-10T15:00:00Z"));
