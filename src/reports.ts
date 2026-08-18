@@ -58,6 +58,7 @@ export function sourceLabel(source: string): string {
     all: "All machines",
     claude: "Claude Code",
     codex: "Codex",
+    grok: "Grok",
     copilot: "Copilot",
     gemini: "Gemini",
   };
