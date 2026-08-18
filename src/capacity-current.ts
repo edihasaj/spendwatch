@@ -21,6 +21,12 @@ export interface CapacityPaceWindow {
   willLastToReset: boolean;
 }
 
+export interface CapacityCredits {
+  /** Decimal string as returned by the API; kept verbatim to avoid float drift. */
+  balance: string;
+  unlimited: boolean;
+}
+
 export interface CapacityResult {
   provider: "codex";
   account: string;
@@ -30,6 +36,7 @@ export interface CapacityResult {
     primary: CapacityWindow | null;
     secondary: CapacityWindow | null;
     tertiary: CapacityWindow | null;
+    credits?: CapacityCredits | null;
     updatedAt: string;
   };
   pace: {
@@ -51,9 +58,16 @@ interface AppServerWindow {
   resetsAt?: unknown;
 }
 
+interface AppServerCredits {
+  hasCredits?: unknown;
+  unlimited?: unknown;
+  balance?: unknown;
+}
+
 interface AppServerRateLimits {
   primary?: AppServerWindow | null;
   secondary?: AppServerWindow | null;
+  credits?: AppServerCredits | null;
 }
 
 interface AppServerRateLimitResponse {
@@ -82,6 +96,20 @@ function windowFrom(value: AppServerWindow | null | undefined): CapacityWindow |
     windowMinutes,
     resetsAt: isoFromEpoch(value?.resetsAt),
   };
+}
+
+// Purchased credits cover usage beyond the plan's included window. The API
+// reports the balance as a decimal string; keep it verbatim so a large balance
+// never loses precision to a float. `hasCredits` false with a "0" balance means
+// the account simply has none, which is not worth rendering.
+function creditsFrom(value: AppServerCredits | null | undefined): CapacityCredits | null {
+  if (!value) return null;
+  const unlimited = value.unlimited === true;
+  const balance = typeof value.balance === "string" ? value.balance : Number.isFinite(Number(value.balance)) ? String(value.balance) : undefined;
+  if (unlimited) return { balance: balance ?? "0", unlimited: true };
+  if (balance === undefined) return null;
+  if (value.hasCredits !== true && Number(balance) <= 0) return null;
+  return { balance, unlimited: false };
 }
 
 export function paceFor(window: CapacityWindow | null, now = Date.now()): CapacityPaceWindow | null {
@@ -127,6 +155,7 @@ export function capacityResultFromAppServer(
       primary,
       secondary,
       tertiary: null,
+      credits: creditsFrom(snapshot.credits ?? response?.rateLimits?.credits),
       updatedAt: new Date(now).toISOString(),
     },
     pace: {
