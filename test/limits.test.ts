@@ -301,6 +301,55 @@ describe("Codex limits", () => {
     expect(html).toContain("Lasts until reset");
   });
 
+  test("renders Grok as a plan-covered spend card ordered after Lokai", () => {
+    const accounts = normalizeCodexLimits([
+      {
+        account: "grok@example.com",
+        provider: "grok",
+        usage: { accountEmail: "grok@example.com", loginMethod: "SuperGrok", updatedAt: "2026-08-18T21:00:00Z" },
+        devices: ["studio"],
+        spend: { recentUsd: 1.23, recentTokens: 456_789, recentHours: 24, monthUsd: 45.6, monthTokens: 12_345_678, monthDays: 30 },
+      },
+      {
+        account: "kimi k3 cloud",
+        provider: "lokai",
+        usage: { accountEmail: "kimi k3 cloud", updatedAt: "2026-08-18T21:00:00Z" },
+        route: { ready: true, detail: "Cloud API route", balances: [{ currency: "USD", total: 12, granted: 12, toppedUp: 0 }] },
+      },
+    ]);
+    expect(accounts.map((a) => a.provider)).toEqual(["lokai", "grok"]);
+    expect(accounts[1]!.name).toBe("Grok");
+
+    const html = renderLimitsHtml(accounts, { generatedAt: Date.parse("2026-08-18T21:01:00Z") });
+    expect(html.indexOf('data-account-key="grok:')).toBeGreaterThan(html.indexOf('data-account-key="lokai:'));
+    expect(html).toContain("Sent · last 24h");
+    expect(html).toContain("Sent · last 30 days");
+    expect(html).toContain("$1.23");
+    expect(html).toContain("$45.60");
+    expect(html).toContain("456.8K tokens");
+    expect(html).toContain("12.3M tokens");
+    // No quota exists, so the card itself may not imply an allowance to pace.
+    const card = html.slice(html.indexOf('data-account-key="grok:'));
+    const grokCard = card.slice(0, card.indexOf("</article>"));
+    expect(grokCard).not.toContain("% left");
+    expect(grokCard).not.toContain("pace-marker");
+    expect(grokCard).not.toContain("progressbar");
+  });
+
+  test("reports Grok spend as plan-covered in the text renderer", () => {
+    const accounts = normalizeCodexLimits([{
+      account: "grok@example.com",
+      provider: "grok",
+      usage: { accountEmail: "grok@example.com", updatedAt: "2026-08-18T21:00:00Z" },
+      spend: { recentUsd: 1.23, recentTokens: 456_789, recentHours: 24, monthUsd: 45.6, monthTokens: 12_345_678, monthDays: 30 },
+    }]);
+    const text = renderLimitsText(accounts, Date.parse("2026-08-18T21:01:00Z"));
+    expect(text).toContain("Grok · grok@example.com");
+    expect(text).toContain("24h $1.23 (456.8K tokens)");
+    expect(text).toContain("30d $45.60 (12.3M tokens)");
+    expect(text).toContain("plan-covered, API-equivalent");
+  });
+
   test("calls an exhausted limit ran out instead of running out now", () => {
     const accounts = normalizeCodexLimits({
       provider: "claude",

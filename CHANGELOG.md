@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Show Grok on the capacity dashboard after the Lokai routes. Grok Build reports no quota and no balance, so the card reports what was sent over a rolling 24 hours and 30 days, priced at published list rates as an API-equivalent estimate rather than billed money, and stays out of the utilization planner.
 - Track Grok CLI spend alongside Claude Code and Codex: read `~/.grok/sessions/**/updates.jsonl`, attribute tokens to the prompt that caused them, and break the run down by tool, shell command, project, and model. `~/.grok-*` profiles and the account email are picked up automatically, and `spendwatch account add grok --name <profile>` connects another one.
 - Read live Claude capacity through the account's own OAuth usage endpoint (`capacity-current --provider claude`), removing the third-party menu-bar dependency that could silently freeze Claude windows on an old snapshot.
 - Measure the recent burn rate inside the current quota cycle and compare it with the rate the remaining allowance affords, so a burst is visible while there is still time to slow down. Each window now shows its pace, its budget multiple, and how long before the reset it runs out at that rate.

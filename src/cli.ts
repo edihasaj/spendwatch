@@ -167,7 +167,8 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--min-remaining") a.minimumRemaining = Number(rest.shift());
     else if (x === "--provider") {
       const provider = rest.shift();
-      if (provider !== "codex" && provider !== "claude" && provider !== "copilot" && provider !== "lokai") throw new Error("--provider must be codex, claude, copilot, or lokai");
+      if (provider !== "codex" && provider !== "claude" && provider !== "copilot" && provider !== "lokai"
+        && provider !== "grok") throw new Error("--provider must be codex, claude, copilot, lokai, or grok");
       a.provider = provider;
     }
     else if (x === "--fail-open") a.failOpen = true;
