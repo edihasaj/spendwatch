@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Read live Claude capacity through the account's own OAuth usage endpoint (`capacity-current --provider claude`), removing the third-party menu-bar dependency that could silently freeze Claude windows on an old snapshot.
+- Measure the recent burn rate inside the current quota cycle and compare it with the rate the remaining allowance affords, so a burst is visible while there is still time to slow down. Each window now shows its pace, its budget multiple, and how long before the reset it runs out at that rate.
 - Never present an expired or unrefreshed quota sample as current capacity: the dashboard labels it "Cycle ended" or "Not current" with the last reading and its age, the terminal summary matches, the utilization planner stops pacing it, and `guard` returns `unknown` instead of `ok`.
 
 - Fill the Copilot budget track solid red once the monthly ceiling is passed instead of draining it to an empty line.
