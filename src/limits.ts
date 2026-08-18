@@ -26,7 +26,11 @@ export interface CapacityPrediction {
   source: "reported" | "linear";
 }
 
-export type CapacityProvider = "codex" | "claude" | "copilot" | "lokai";
+export type CapacityProvider = "codex" | "claude" | "copilot" | "lokai" | "grok";
+
+// Cards render in this order, so a provider without an allowance sits after
+// the metered ones instead of interleaving by name.
+const PROVIDER_ORDER: CapacityProvider[] = ["claude", "codex", "copilot", "lokai", "grok"];
 
 export interface CopilotCapacity {
   chatUnlimited: boolean;
@@ -66,8 +70,25 @@ export interface CodexLimitAccount {
   route?: CloudRouteCapacity;
   /** Purchased credits that cover usage past the included window. */
   credits?: { balance: string; unlimited: boolean };
+  /** Spend for a plan-covered agent with no quota to report. */
+  spend?: AgentSpendSummary;
   devices: string[];
   sessionEquivalent?: SessionEquivalentForecast;
+}
+
+/**
+ * Spend for a plan-covered agent that publishes no quota. The figures are
+ * API-equivalent estimates, not billed money: the subscription covers the
+ * usage, so there is no allowance to pace and no balance to draw down.
+ */
+export interface AgentSpendSummary {
+  recentUsd: number;
+  recentTokens: number;
+  /** Rolling, not calendar: the report window is now minus this many hours. */
+  recentHours: number;
+  monthUsd: number;
+  monthTokens: number;
+  monthDays: number;
 }
 
 export interface SessionEquivalentForecast {
@@ -117,6 +138,14 @@ interface RawCodexResult {
     detail?: unknown;
     available?: unknown;
     balances?: unknown;
+  };
+  spend?: {
+    recentUsd?: unknown;
+    recentTokens?: unknown;
+    recentHours?: unknown;
+    monthUsd?: unknown;
+    monthTokens?: unknown;
+    monthDays?: unknown;
   };
   pace?: RawProviderPace | null;
   devices?: unknown;
@@ -208,7 +237,8 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
     if (!item || typeof item !== "object") continue;
     const result = item as RawCodexResult;
     const provider = result.provider;
-    if (provider !== "codex" && provider !== "claude" && provider !== "copilot" && provider !== "lokai") continue;
+    if (provider !== "codex" && provider !== "claude" && provider !== "copilot" && provider !== "lokai"
+      && provider !== "grok") continue;
     const usage = result.usage;
     if (!usage || typeof usage !== "object") continue;
     // A free Codex plan carries no capacity worth planning against. Filtering at
@@ -271,6 +301,17 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
         seatAssignedAt: typeof result.copilot.seatAssignedAt === "string" ? result.copilot.seatAssignedAt : undefined,
       };
     }
+    if (provider === "grok" && result.spend) {
+      const spend = result.spend;
+      account.spend = {
+        recentUsd: finiteNumber(spend.recentUsd) ?? 0,
+        recentTokens: finiteNumber(spend.recentTokens) ?? 0,
+        recentHours: finiteNumber(spend.recentHours) ?? 24,
+        monthUsd: finiteNumber(spend.monthUsd) ?? 0,
+        monthTokens: finiteNumber(spend.monthTokens) ?? 0,
+        monthDays: finiteNumber(spend.monthDays) ?? 30,
+      };
+    }
     if (provider === "lokai" && result.route) {
       account.route = {
         ready: Boolean(result.route.ready),
@@ -295,7 +336,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
   }
 
   const normalized = [...accounts.values()];
-  for (const provider of ["codex", "claude", "copilot"] as const) {
+  for (const provider of ["codex", "claude", "copilot", "grok"] as const) {
     const group = normalized
       .filter((account) => account.provider === provider)
       .sort((a, b) => a.email.localeCompare(b.email));
@@ -307,7 +348,10 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
   for (const account of normalized) {
     if (account.provider === "lokai") account.name = account.email;
   }
-  return normalized.sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email) || a.email.localeCompare(b.email));
+  return normalized.sort((a, b) =>
+    PROVIDER_ORDER.indexOf(a.provider) - PROVIDER_ORDER.indexOf(b.provider)
+    || (a.name ?? a.email).localeCompare(b.name ?? b.email)
+    || a.email.localeCompare(b.email));
 }
 
 export function loadCodexLimits(paths: string[]): CodexLimitAccount[] {
@@ -327,11 +371,11 @@ function leftPercent(window?: LimitWindow): number | undefined {
 }
 
 function providerLabel(provider: CapacityProvider): string {
-  return ({ codex: "Codex", claude: "Claude", copilot: "Copilot", lokai: "Lokai" })[provider];
+  return ({ codex: "Codex", claude: "Claude", copilot: "Copilot", lokai: "Lokai", grok: "Grok" })[provider];
 }
 
 function providerAccent(provider: CapacityProvider): string {
-  return ({ codex: "#68d5dc", claude: "#e69a73", copilot: "#8ea9ff", lokai: "#b8d96b" })[provider];
+  return ({ codex: "#68d5dc", claude: "#e69a73", copilot: "#8ea9ff", lokai: "#b8d96b", grok: "#c58af9" })[provider];
 }
 
 function formatBalance(balance: ApiCreditBalance): string {
@@ -470,12 +514,35 @@ function copilotLimits(account: CodexLimitAccount, nowMs: number): string {
   </section>`;
 }
 
+function formatTokens(total: number): string {
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(total);
+}
+
+function spendLimits(account: CodexLimitAccount): string {
+  const spend = account.spend!;
+  const block = (label: string, usd: number, tokens: number, meta: string) => `<section class="limit spend good">
+    <div class="limit-head"><span>${esc(label)}</span><strong>${esc(formatUsd(usd))}</strong></div>
+    <div class="limit-meta split"><span>${esc(formatTokens(tokens))} tokens</span><span>${esc(meta)}</span></div>
+  </section>`;
+  const days = Math.round(spend.monthDays);
+  const hours = Math.round(spend.recentHours);
+  return [
+    block(`Sent · last ${hours}h`, spend.recentUsd, spend.recentTokens, "API-equivalent"),
+    block(`Sent · last ${days} days`, spend.monthUsd, spend.monthTokens, "Plan covers it"),
+  ].join("");
+}
+
 function providerLimits(account: CodexLimitAccount, nowMs: number): string {
   if (account.provider === "lokai" && account.route) {
     return routeBalanceBlock(account.route);
   }
   if (account.provider === "copilot" && account.copilot) {
     return copilotLimits(account, nowMs);
+  }
+  // No quota and no balance: the plan absorbs the usage, so the card reports
+  // what was sent rather than inventing an allowance to pace against.
+  if (account.provider === "grok" && account.spend) {
+    return spendLimits(account);
   }
   return [
     account.session
@@ -588,6 +655,11 @@ export function renderLimitsText(accounts: CodexLimitAccount[], nowMs = Date.now
         : `${status.creditsLeft} credits left`;
       return `${account.email}\t${account.plan}\t${status.creditsUsed} of ${status.budget.credits} AI credits used (${formatUsd(status.usdSpent)} of ${formatUsd(status.budget.usd)})\t${standing}`;
     }
+    if (account.spend) {
+      const days = Math.round(account.spend.monthDays);
+      const hours = Math.round(account.spend.recentHours);
+      return `${providerLabel(account.provider)} · ${account.email}\t${hours}h ${formatUsd(account.spend.recentUsd)} (${formatTokens(account.spend.recentTokens)} tokens)\t${days}d ${formatUsd(account.spend.monthUsd)} (${formatTokens(account.spend.monthTokens)} tokens)\tplan-covered, API-equivalent`;
+    }
     if (account.route) {
       const balance = account.route.balances.map(formatBalance).join(" + ");
       return `${providerLabel(account.provider)} · ${account.email}\t${balance ? `${balance} left` : "balance unavailable"}\t${account.route.detail}`;
@@ -651,7 +723,7 @@ ${BRAND_HEAD_HTML}
 .accounts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.account-card{display:flex;flex-direction:column;background:linear-gradient(145deg,rgba(21,26,32,.98),rgba(15,19,24,.98));border:1px solid var(--line);border-top-color:color-mix(in srgb,var(--accent) 36%,var(--line));border-radius:13px;padding:15px 16px;box-shadow:0 14px 40px rgba(0,0,0,.16);animation:enter .45s cubic-bezier(.2,.8,.2,1) both;animation-delay:var(--delay)}
 .auth-required{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px;padding:12px 14px;border:1px solid rgba(242,189,100,.42);border-radius:10px;background:rgba(242,189,100,.07)}.auth-required div{display:flex;flex-direction:column;gap:2px}.auth-required strong{color:var(--warn);font:11px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.auth-required span{color:#cbd2d7;font-size:12px}.auth-required a{flex:none;color:#101317;background:var(--warn);border-radius:7px;padding:8px 10px;font:700 11px "Manrope",sans-serif;text-decoration:none}
 .account-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.identity{min-width:0}.identity h2{font-size:16px;line-height:1.16;letter-spacing:-.025em;margin:0;overflow-wrap:anywhere}.account-email{display:block;margin-top:4px;color:var(--muted);font:10px/1.3 "Fragment Mono",monospace;overflow-wrap:anywhere}.account-meta{flex:none;text-align:right}.account-meta strong{display:block;font:12px "Fragment Mono",monospace;color:#dce2e6}.credits{display:block;margin-top:4px;font:11px/1.3 "Fragment Mono",monospace;color:var(--accent);white-space:nowrap}.updated{display:block;color:var(--muted);font:11px/1.3 "Fragment Mono",monospace;margin-top:4px;white-space:nowrap}
-.limits{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(41,49,58,.75)}.limit-head,.limit-meta,.pace,.equivalent{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.limit-head span{color:#b9c1c8;font-size:11px;font-weight:600}.limit-head strong{font:14px "Fragment Mono",monospace;white-space:nowrap}.track{position:relative;height:6px;margin:8px 0 7px;background:#080a0d;border:1px solid #1b2229;border-radius:99px;overflow:visible}.track>i{display:block;max-width:100%;height:100%;background:var(--accent,var(--cyan));border-radius:99px;box-shadow:0 0 18px color-mix(in srgb,var(--accent,var(--cyan)) 30%,transparent);animation:fill .8s cubic-bezier(.2,.8,.2,1) both}.limit.warn .track>i{background:var(--warn)}.limit.danger .track>i{background:var(--danger)}.pace-marker{--marker-color:#a8ffb9;position:absolute;z-index:2;top:50%;left:var(--pace-left);display:flex;height:12px;gap:3px;transform:translate(-50%,-50%);pointer-events:none}.pace-marker b{display:block;width:2px;height:100%;border-radius:2px;background:var(--marker-color);box-shadow:0 0 0 1px #020304,0 0 7px var(--marker-color)}.pace-marker.deficit{--marker-color:#ff776d}.limit-meta{justify-content:flex-end;color:var(--muted);font:12px/1.35 "Fragment Mono",monospace}.limit-meta.split{justify-content:space-between}.pace{margin-top:6px;color:#aab3ba;font:12px/1.35 "Fragment Mono",monospace}.pace strong{color:var(--accent);font-weight:400;white-space:nowrap}.burn{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:5px;color:#8f9aa3;font:11px/1.35 "Fragment Mono",monospace}.burn strong{color:#cbd3d8;font-weight:400;white-space:nowrap}.burn em{flex-basis:100%;text-align:right;font-style:normal;color:#6f7a83}.burn.over{color:#e0b98a}.burn.over strong{color:var(--warn)}.equivalent{margin-top:6px;color:#aab3ba;font:12px/1.35 "Fragment Mono",monospace;padding-top:5px;border-top:1px solid rgba(41,49,58,.55)}.equivalent strong{color:var(--muted);font-weight:400;white-space:nowrap}.limit.balance{justify-content:center;min-height:45px}.limit.unreadable .limit-head strong{color:var(--warn)}.limit.unreadable .limit-meta,.limit.unreadable .pace{color:#7d868e}.track.stale>i{background:#3a444d;box-shadow:none;opacity:.65}.limit.balance .limit-meta{margin-top:7px}.copilot-usage,.copilot-pool{display:flex;flex-direction:column;justify-content:center;min-height:50px}.copilot-usage .limit-meta,.copilot-pool .limit-meta{margin-top:7px}
+.limits{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(41,49,58,.75)}.limit-head,.limit-meta,.pace,.equivalent{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.limit-head span{color:#b9c1c8;font-size:11px;font-weight:600}.limit-head strong{font:14px "Fragment Mono",monospace;white-space:nowrap}.track{position:relative;height:6px;margin:8px 0 7px;background:#080a0d;border:1px solid #1b2229;border-radius:99px;overflow:visible}.track>i{display:block;max-width:100%;height:100%;background:var(--accent,var(--cyan));border-radius:99px;box-shadow:0 0 18px color-mix(in srgb,var(--accent,var(--cyan)) 30%,transparent);animation:fill .8s cubic-bezier(.2,.8,.2,1) both}.limit.warn .track>i{background:var(--warn)}.limit.danger .track>i{background:var(--danger)}.pace-marker{--marker-color:#a8ffb9;position:absolute;z-index:2;top:50%;left:var(--pace-left);display:flex;height:12px;gap:3px;transform:translate(-50%,-50%);pointer-events:none}.pace-marker b{display:block;width:2px;height:100%;border-radius:2px;background:var(--marker-color);box-shadow:0 0 0 1px #020304,0 0 7px var(--marker-color)}.pace-marker.deficit{--marker-color:#ff776d}.limit-meta{justify-content:flex-end;color:var(--muted);font:12px/1.35 "Fragment Mono",monospace}.limit-meta.split{justify-content:space-between}.pace{margin-top:6px;color:#aab3ba;font:12px/1.35 "Fragment Mono",monospace}.pace strong{color:var(--accent);font-weight:400;white-space:nowrap}.burn{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:5px;color:#8f9aa3;font:11px/1.35 "Fragment Mono",monospace}.burn strong{color:#cbd3d8;font-weight:400;white-space:nowrap}.burn em{flex-basis:100%;text-align:right;font-style:normal;color:#6f7a83}.burn.over{color:#e0b98a}.burn.over strong{color:var(--warn)}.equivalent{margin-top:6px;color:#aab3ba;font:12px/1.35 "Fragment Mono",monospace;padding-top:5px;border-top:1px solid rgba(41,49,58,.55)}.equivalent strong{color:var(--muted);font-weight:400;white-space:nowrap}.limit.balance{justify-content:center;min-height:45px}.limit.unreadable .limit-head strong{color:var(--warn)}.limit.unreadable .limit-meta,.limit.unreadable .pace{color:#7d868e}.track.stale>i{background:#3a444d;box-shadow:none;opacity:.65}.limit.balance .limit-meta{margin-top:7px}.copilot-usage,.copilot-pool,.limit.spend{display:flex;flex-direction:column;justify-content:center;min-height:50px}.copilot-usage .limit-meta,.copilot-pool .limit-meta,.limit.spend .limit-meta{margin-top:7px}
 .setup{display:none;margin-top:14px;padding:20px;background:#0d1115;border:1px solid #34414c;border-radius:12px}.setup.open{display:block;animation:enter .25s both}.setup-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:15px}.setup h2{font-size:18px;margin:0 0 5px}.setup-head p{color:var(--muted);font-size:12px;margin:0}.profile-field{display:flex;flex-direction:column;gap:5px;flex:0 0 210px}.profile-field span{color:#aab3ba;font:10px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.profile-field input{width:100%;padding:9px 10px;color:var(--ink);background:#07090b;border:1px solid #34414c;border-radius:7px;font:12px "Fragment Mono",monospace;outline:none}.profile-field input:focus{border-color:var(--cyan)}.provider-setup{display:grid;grid-template-columns:1fr 1fr;gap:10px;min-width:0}.setup-item{min-width:0;padding:13px;border:1px solid #242c34;border-radius:9px}.setup-label{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}.setup-label b{color:var(--item-accent);font:11px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.1em}.auth-kind{padding:3px 6px;border:1px solid color-mix(in srgb,var(--item-accent) 45%,#242c34);border-radius:99px;color:#cbd3d8;font:9px "Fragment Mono",monospace;text-transform:uppercase}.setup-item p{font-size:12px;line-height:1.45;color:#aab3ba;margin:0 0 10px}.command{display:flex;align-items:center;gap:10px;min-width:0;padding:10px 11px;background:#07090b;border:1px solid #202830;border-radius:8px}.command+.command{margin-top:7px}.command code{flex:1;min-width:0;font:11px "Fragment Mono",monospace;color:#d5dce0;overflow:auto;white-space:nowrap}.copy{margin-left:auto;flex:none;background:none;border:0;color:var(--item-accent,var(--cyan));font:10px "Fragment Mono",monospace;cursor:pointer}.alternatives{margin-top:8px;color:var(--muted);font-size:11px}.alternatives summary{cursor:pointer}.alternatives .command{margin-top:7px}.page-meta{text-align:right;margin-top:14px;color:#6e7881;font:11px "Fragment Mono",monospace}
 @keyframes enter{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes fill{from{width:0}}
 @media(max-width:900px){.accounts,.util-grid{grid-template-columns:1fr}.pace-policy{grid-template-columns:repeat(3,1fr)}}

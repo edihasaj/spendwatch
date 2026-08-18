@@ -161,7 +161,13 @@ the ceiling with `SPENDWATCH_COPILOT_MONTHLY_CREDITS` and
 `SPENDWATCH_COPILOT_MONTHLY_USD`. When GitHub reports no monthly reset the next
 UTC month boundary is used. It never labels paid overflow as unlimited. API-backed
 Lokai routes show sanitized cash balances; route
-readiness without a reported balance is never labeled unlimited. When the input
+readiness without a reported balance is never labeled unlimited. Grok Build
+publishes neither a quota nor a balance: the xAI plan absorbs the usage and the
+CLI holds no API key, so its card reports what was *sent* over a rolling 24 hours
+and 30 days rather than an allowance to pace. Those dollars are API-equivalent
+estimates at published list rates, not billed money, so the card is excluded from
+the utilization planner and from `guard`. Cards render Claude, Codex, Copilot,
+Lokai, then Grok, keeping the providers without an allowance last. When the input
 includes a reported pace forecast, Spendwatch shows its learned deficit/reserve
 and run-out ETA. Other reset windows get a transparent live linear forecast.
 That fallback starts as soon as a new window begins, so newly reset Claude
