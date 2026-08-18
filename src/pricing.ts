@@ -15,6 +15,15 @@ const PRICES: Array<[RegExp, ModelPrice]> = [
   [/opus/, { input: 5, output: 25 }],
   [/sonnet/, { input: 3, output: 15 }],
   [/haiku/, { input: 1, output: 5 }],
+  // xAI (Grok CLI). Published list prices; the CLI's own reported per-turn cost
+  // matches these ratios exactly. A request at or above the threshold is billed
+  // at the higher rate for every token in it. xAI publishes no separate
+  // cache-write price, so cache creation is billed at the input rate.
+  [/grok-4\.6/, { input: 2, output: 6, cachedInput: 0.5, cacheWrite5m: 2, longContextThreshold: 200_000, longContext: { input: 4, output: 12, cachedInput: 1, cacheWrite5m: 4 } }],
+  [/grok-4\.5/, { input: 2, output: 6, cachedInput: 0.3, cacheWrite5m: 2, longContextThreshold: 200_000, longContext: { input: 4, output: 12, cachedInput: 0.6, cacheWrite5m: 4 } }],
+  [/grok-4\.3/, { input: 1.25, output: 2.5, cachedInput: 0.2, cacheWrite5m: 1.25, longContextThreshold: 200_000, longContext: { input: 2.5, output: 5, cachedInput: 0.4, cacheWrite5m: 2.5 } }],
+  [/grok-build/, { input: 1, output: 2, cachedInput: 0.2, cacheWrite5m: 1, longContextThreshold: 200_000, longContext: { input: 2, output: 4, cachedInput: 0.4, cacheWrite5m: 2 } }],
+  [/grok/, { input: 2, output: 6, cachedInput: 0.5, cacheWrite5m: 2, longContextThreshold: 200_000, longContext: { input: 4, output: 12, cachedInput: 1, cacheWrite5m: 4 } }],
   // OpenAI direct API standard pricing. Codex subscription usage remains an
   // estimate, but preserving the model ratios makes comparisons meaningful.
   [/gpt-5\.6-luna/, { input: 0.2, output: 1.2, cachedInput: 0.02, cacheWrite5m: 0.25, longContextThreshold: 272_000, longContext: { input: 0.4, output: 1.8, cachedInput: 0.04, cacheWrite5m: 0.5 } }],

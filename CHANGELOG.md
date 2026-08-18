@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Track Grok CLI spend alongside Claude Code and Codex: read `~/.grok/sessions/**/updates.jsonl`, attribute tokens to the prompt that caused them, and break the run down by tool, shell command, project, and model. `~/.grok-*` profiles and the account email are picked up automatically, and `spendwatch account add grok --name <profile>` connects another one.
 - Read live Claude capacity through the account's own OAuth usage endpoint (`capacity-current --provider claude`), removing the third-party menu-bar dependency that could silently freeze Claude windows on an old snapshot.
 - Measure the recent burn rate inside the current quota cycle and compare it with the rate the remaining allowance affords, so a burst is visible while there is still time to slow down. Each window now shows its pace, its budget multiple, and how long before the reset it runs out at that rate.
 - Never present an expired or unrefreshed quota sample as current capacity: the dashboard labels it "Cycle ended" or "Not current" with the last reading and its age, the terminal summary matches, the utilization planner stops pacing it, and `guard` returns `unknown` instead of `ok`.
