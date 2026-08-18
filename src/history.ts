@@ -44,7 +44,7 @@ ${BRAND_HEAD_HTML}
 <div class="page-meta"><span>Recent history stays live in SQLite. Older verified archives remain restorable.</span><span id="generated" data-generated="${esc(generated)}">Generated ${esc(generated)}</span></div>
 </main><script id="history-data" type="application/json">${safeJson(dataset)}</script><script>
 const compactDuration=${compactDuration.toString()};
-let data=JSON.parse(document.querySelector('#history-data').textContent);const tones={codex:'#68d5dc',claude:'#e69a73',copilot:'#8ea9ff',lokai:'#b8d96b'};let range='7',month='',refreshing=false;
+let data=JSON.parse(document.querySelector('#history-data').textContent);const tones={codex:'#68d5dc',claude:'#e69a73',copilot:'#8ea9ff',lokai:'#b8d96b',grok:'#c58af9'};let range='7',month='',refreshing=false;
 const fmtDate=t=>new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(new Date(t));const fmtCompact=n=>new Intl.NumberFormat(undefined,{notation:'compact',maximumFractionDigits:1}).format(n);
 const bounds=()=>{if(month){const [y,m]=month.split('-').map(Number),start=new Date(y,m-1,1).getTime(),end=new Date(y,m,1).getTime();return[start,end]}const end=Date.now();return[range==='all'?(data.firstSampleAt||0):end-Number(range)*86400000,end]};
 const pathFor=(points,start,end,credits)=>{if(!points.length)return'';const values=points.map(p=>credits?p.value:100-p.value),max=credits?Math.max(1,...values)*1.08:100;return points.map((p,i)=>{const x=Math.max(0,Math.min(100,(p.at-start)/(end-start)*100)),y=95-Math.max(0,Math.min(1,(credits?p.value/max:(100-p.value)/100)))*90;return(i?'L':'M')+x.toFixed(2)+' '+y.toFixed(2)}).join(' ')};

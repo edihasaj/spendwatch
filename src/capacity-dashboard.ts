@@ -18,7 +18,7 @@ export interface CapacityDashboard {
 }
 
 export interface CapacityAuthenticationRequirement {
-  provider: Exclude<CapacityProvider, "lokai">;
+  provider: Exclude<CapacityProvider, "lokai" | "grok">;
   device: string;
   account?: string;
   profile?: string;
