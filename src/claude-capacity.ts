@@ -197,6 +197,31 @@ export function discoverClaudeProfiles(base = homedir()): ClaudeProfile[] {
   });
 }
 
+/** A read that failed, with enough detail to tell "sign in again" from "slow down". */
+export interface ClaudeReadFailure {
+  email?: string;
+  status?: number;
+  reason: "unauthenticated" | "rate-limited" | "unavailable";
+  message: string;
+}
+
+class ClaudeReadError extends Error {
+  constructor(readonly status: number, readonly email?: string) {
+    super(`Claude usage read failed with HTTP ${status}`);
+  }
+}
+
+/**
+ * A 401 needs a human to re-authenticate, a 429 needs patience, and anything
+ * else is a transient fault. Collapsing all three into "no data" is what let an
+ * expired token look identical to a rate limit for nine hours.
+ */
+export function classifyReadFailure(status: number): ClaudeReadFailure["reason"] {
+  if (status === 401 || status === 403) return "unauthenticated";
+  if (status === 429) return "rate-limited";
+  return "unavailable";
+}
+
 async function profileCapacity(profile: ClaudeProfile, now: number): Promise<ClaudeCapacityResult | undefined> {
   const response = await fetch(CLAUDE_USAGE_URL, {
     headers: {
@@ -206,17 +231,34 @@ async function profileCapacity(profile: ClaudeProfile, now: number): Promise<Cla
     },
     signal: AbortSignal.timeout(12_000),
   });
-  if (!response.ok) throw new Error(`Claude usage read failed with HTTP ${response.status}`);
+  if (!response.ok) throw new ClaudeReadError(response.status, profile.identity.email);
   return claudeCapacityFromUsage(await response.json(), profile.identity, now);
 }
 
-export async function currentClaudeCapacity(now = Date.now()): Promise<ClaudeCapacityResult[]> {
+export async function currentClaudeCapacity(
+  now = Date.now(),
+  onFailure?: (failure: ClaudeReadFailure) => void,
+): Promise<ClaudeCapacityResult[]> {
   const settled = await Promise.allSettled(
     discoverClaudeProfiles().map((profile) => profileCapacity(profile, now)),
   );
   const byAccount = new Map<string, ClaudeCapacityResult>();
   for (const item of settled) {
-    if (item.status === "fulfilled" && item.value) byAccount.set(item.value.account.toLowerCase(), item.value);
+    if (item.status === "fulfilled" && item.value) {
+      byAccount.set(item.value.account.toLowerCase(), item.value);
+      continue;
+    }
+    // Dropping the rejection silently is what made an expired token
+    // indistinguishable from having no Claude account at all.
+    if (item.status !== "rejected" || !onFailure) continue;
+    const error = item.reason;
+    const status = error instanceof ClaudeReadError ? error.status : undefined;
+    onFailure({
+      email: error instanceof ClaudeReadError ? error.email : undefined,
+      status,
+      reason: status === undefined ? "unavailable" : classifyReadFailure(status),
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
   return [...byAccount.values()].sort((a, b) => a.account.localeCompare(b.account));
 }

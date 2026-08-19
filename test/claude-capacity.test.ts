@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeCapacityFromUsage, discoverClaudeProfiles, preferUsableCredentials } from "../src/claude-capacity";
+import { classifyReadFailure, claudeCapacityFromUsage, discoverClaudeProfiles, preferUsableCredentials } from "../src/claude-capacity";
 import { staleAfterMs, windowFreshness } from "../src/capacity-freshness";
 
 const usage = {
@@ -58,6 +58,18 @@ describe("Claude capacity", () => {
     expect(profiles.map((profile) => profile.identity.email)).toEqual(["default@example.com", "work@example.com"]);
     expect(profiles[1].token).toBe("token-work@example.com");
     expect(profiles[1].identity.plan).toBe("pro");
+  });
+});
+
+describe("Claude read failures", () => {
+  test("separates re-authentication from backing off", () => {
+    // These three were indistinguishable as an empty array, which is how an
+    // expired token spent nine hours looking exactly like a rate limit.
+    expect(classifyReadFailure(401)).toBe("unauthenticated");
+    expect(classifyReadFailure(403)).toBe("unauthenticated");
+    expect(classifyReadFailure(429)).toBe("rate-limited");
+    expect(classifyReadFailure(500)).toBe("unavailable");
+    expect(classifyReadFailure(503)).toBe("unavailable");
   });
 });
 
