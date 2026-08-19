@@ -125,7 +125,8 @@ function stringField(source: unknown, key: string): string | undefined {
 }
 
 // Claude Code keeps the default profile's credentials in the login Keychain on
-// macOS when the on-disk file is absent.
+// macOS. It can also leave the on-disk file behind as a husk with blank tokens
+// after that migration, so presence of the file says nothing about usability.
 function keychainCredentials(): unknown {
   if (platform() !== "darwin") return undefined;
   const result = spawnSync("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], {
@@ -140,9 +141,22 @@ function keychainCredentials(): unknown {
   }
 }
 
+/**
+ * Prefer whichever source actually carries a token. Falling back only on a
+ * missing file lets a husk left by the Keychain migration — present, but with
+ * blank tokens — shadow the credentials that still work.
+ */
+export function preferUsableCredentials(fileCredentials: unknown, fromKeychain: () => unknown): unknown {
+  if (stringField(fileCredentials, "accessToken")) return fileCredentials;
+  return fromKeychain() ?? fileCredentials;
+}
+
 export function claudeProfileFrom(home: string, metadataPath: string, allowKeychain = false): ClaudeProfile | undefined {
-  const credentials = readJson(join(home, ".credentials.json"))?.claudeAiOauth
-    ?? (allowKeychain ? keychainCredentials() : undefined);
+  const fileCredentials = readJson(join(home, ".credentials.json"))?.claudeAiOauth;
+  const credentials = preferUsableCredentials(
+    fileCredentials,
+    () => (allowKeychain ? keychainCredentials() : undefined),
+  );
   const token = stringField(credentials, "accessToken");
   if (!token) return undefined;
   const oauthAccount = readJson(metadataPath)?.oauthAccount;

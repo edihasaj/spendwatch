@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeCapacityFromUsage, discoverClaudeProfiles } from "../src/claude-capacity";
+import { claudeCapacityFromUsage, discoverClaudeProfiles, preferUsableCredentials } from "../src/claude-capacity";
 import { staleAfterMs, windowFreshness } from "../src/capacity-freshness";
 
 const usage = {
@@ -58,6 +58,29 @@ describe("Claude capacity", () => {
     expect(profiles.map((profile) => profile.identity.email)).toEqual(["default@example.com", "work@example.com"]);
     expect(profiles[1].token).toBe("token-work@example.com");
     expect(profiles[1].identity.plan).toBe("pro");
+  });
+});
+
+describe("Claude credential source", () => {
+  const keychain = { accessToken: "from-keychain", subscriptionType: "max" };
+
+  test("falls back to the Keychain when the file is a blank husk", () => {
+    // Claude Code leaves this behind after moving the secret to the Keychain.
+    const husk = { accessToken: "", refreshToken: "", expiresAt: 0, subscriptionType: "max" };
+    expect(preferUsableCredentials(husk, () => keychain)).toBe(keychain);
+    expect(preferUsableCredentials(undefined, () => keychain)).toBe(keychain);
+  });
+
+  test("keeps a usable file token instead of touching the Keychain", () => {
+    const file = { accessToken: "from-file" };
+    let consulted = false;
+    expect(preferUsableCredentials(file, () => { consulted = true; return keychain; })).toBe(file);
+    expect(consulted).toBe(false);
+  });
+
+  test("keeps the husk when the Keychain yields nothing, so the caller still rejects it", () => {
+    const husk = { accessToken: "" };
+    expect(preferUsableCredentials(husk, () => undefined)).toBe(husk);
   });
 });
 
