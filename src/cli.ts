@@ -418,7 +418,15 @@ async function pushTest(a: Args): Promise<void> {
 }
 
 async function currentCapacity(provider: CapacityProvider | undefined): Promise<unknown[]> {
-  if (provider === "claude") return currentClaudeCapacity();
+  // Report why a read failed on stderr, keeping stdout the JSON contract. A
+  // caller that only sees an empty array cannot tell "sign in again" from
+  // "no Claude account here", which is how an expired token stayed hidden.
+  if (provider === "claude") {
+    return currentClaudeCapacity(Date.now(), (failure) => {
+      const who = failure.email ? ` for ${failure.email}` : "";
+      process.stderr.write(`claude capacity ${failure.reason}${who}: ${failure.message}\n`);
+    });
+  }
   if (provider && provider !== "codex") throw new Error("capacity-current supports codex or claude");
   return currentCodexCapacity();
 }
