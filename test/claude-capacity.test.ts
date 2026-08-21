@@ -1,8 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyReadFailure, claudeCapacityFromUsage, discoverClaudeProfiles, preferUsableCredentials } from "../src/claude-capacity";
+import {
+  classifyReadFailure,
+  claudeCapacityFromUsage,
+  discoverClaudeProfiles,
+  needsRefresh,
+  persistClaudeCredentials,
+  preferUsableCredentials,
+  refreshedCredentialsFrom,
+} from "../src/claude-capacity";
 import { staleAfterMs, windowFreshness } from "../src/capacity-freshness";
 
 const usage = {
@@ -58,6 +66,66 @@ describe("Claude capacity", () => {
     expect(profiles.map((profile) => profile.identity.email)).toEqual(["default@example.com", "work@example.com"]);
     expect(profiles[1].token).toBe("token-work@example.com");
     expect(profiles[1].identity.plan).toBe("pro");
+  });
+});
+
+describe("Claude token refresh", () => {
+  const now = Date.parse("2026-08-21T07:00:00Z");
+
+  test("refreshes before expiry rather than spending a 401 to find out", () => {
+    const eightHours = now + 8 * 3_600_000;
+    expect(needsRefresh(eightHours, now)).toBe(false);
+    // Inside the skew window, so a slow collect cannot race the deadline.
+    expect(needsRefresh(now + 4 * 60_000, now)).toBe(true);
+    expect(needsRefresh(now - 1, now)).toBe(true);
+    // An absent deadline is the exact shape that went stale unnoticed, so treat
+    // unknown as due: one refresh writes a real deadline and settles it.
+    expect(needsRefresh(undefined, now)).toBe(true);
+    expect(needsRefresh(0, now)).toBe(true);
+  });
+
+  test("maps the token response, converting lifetimes to absolute deadlines", () => {
+    const refreshed = refreshedCredentialsFrom({
+      access_token: "new-access",
+      refresh_token: "rotated-refresh",
+      expires_in: 28_800,
+      refresh_token_expires_in: 2_294_040,
+      scope: "user:inference user:profile",
+    }, now);
+    expect(refreshed?.accessToken).toBe("new-access");
+    expect(refreshed?.refreshToken).toBe("rotated-refresh");
+    expect(refreshed?.expiresAt).toBe(now + 28_800_000);
+    expect(refreshed?.scopes).toEqual(["user:inference", "user:profile"]);
+  });
+
+  test("refuses a response missing the rotated refresh token", () => {
+    // Persisting an access token without its refresh token would strand the
+    // account at the next expiry with no way back except a human login.
+    expect(refreshedCredentialsFrom({ access_token: "a", expires_in: 100 }, now)).toBeUndefined();
+    expect(refreshedCredentialsFrom({ refresh_token: "r", expires_in: 100 }, now)).toBeUndefined();
+    expect(refreshedCredentialsFrom({ access_token: "a", refresh_token: "r" }, now)).toBeUndefined();
+    expect(refreshedCredentialsFrom(undefined, now)).toBeUndefined();
+  });
+
+  test("writes credentials back without discarding unrelated fields", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-creds-"));
+    const path = join(home, ".credentials.json");
+    writeFileSync(path, JSON.stringify({
+      claudeAiOauth: { accessToken: "old", refreshToken: "old-r", expiresAt: 1, subscriptionType: "max", rateLimitTier: "tier-x" },
+      somethingElse: { keep: true },
+    }));
+    persistClaudeCredentials(path, {
+      accessToken: "new", refreshToken: "new-r", expiresAt: 42, refreshTokenExpiresAt: 99, scopes: ["a"],
+    });
+    const written = JSON.parse(readFileSync(path, "utf8"));
+    expect(written.claudeAiOauth.accessToken).toBe("new");
+    expect(written.claudeAiOauth.refreshToken).toBe("new-r");
+    expect(written.claudeAiOauth.expiresAt).toBe(42);
+    expect(written.claudeAiOauth.refreshTokenExpiresAt).toBe(99);
+    // Claude Code owns these; clobbering them would break its own session.
+    expect(written.claudeAiOauth.subscriptionType).toBe("max");
+    expect(written.claudeAiOauth.rateLimitTier).toBe("tier-x");
+    expect(written.somethingElse).toEqual({ keep: true });
   });
 });
 
