@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Refresh the Claude OAuth token instead of waiting for a human. The access token lives eight hours and no collector host runs Claude Code, so the capacity card reliably died within a working day and only a manual `claude login` brought it back. Reads now refresh ahead of expiry, retry once after a 401, and persist the rotated credentials atomically. Credentials written without an `expiresAt` are treated as due, which is the shape that used to go stale unnoticed.
 - Report why a Claude capacity read failed instead of returning an empty array. An expired token, a rate limit, and a transient fault were indistinguishable, so an account that needed re-authentication looked exactly like an account that was never configured. `capacity-current --provider claude` now names the reason on stderr, and an expired token raises the existing sign-in banner rather than letting the card drift into "Not current".
 - Fall back to the macOS Keychain when `~/.claude/.credentials.json` is present but blank. Claude Code leaves that husk behind after moving the secret to the Keychain, and preferring the file whenever it merely existed dropped the account with no usable token and no explanation.
 - Show Grok on the capacity dashboard after the Lokai routes. Grok Build reports no quota and no balance, so the card reports what was sent over a rolling 24 hours and 30 days, priced at published list rates as an API-equivalent estimate rather than billed money, and stays out of the utilization planner.
