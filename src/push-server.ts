@@ -16,6 +16,27 @@ export interface DashboardServerOptions {
   pollMs?: number;
 }
 
+const SQLITE_BUSY_ESCALATION_THRESHOLD = 4;
+
+export function monitorFailureDecision(
+  error: unknown,
+  consecutiveSqliteBusy: number,
+): { report: boolean; consecutiveSqliteBusy: number } {
+  const sqliteBusy =
+    error instanceof Error &&
+    error.name === "SQLiteError" &&
+    /(?:database is locked|database is busy)/iu.test(error.message);
+  if (!sqliteBusy) return { report: true, consecutiveSqliteBusy: 0 };
+  const next = Math.min(
+    consecutiveSqliteBusy + 1,
+    SQLITE_BUSY_ESCALATION_THRESHOLD,
+  );
+  return {
+    report: next === SQLITE_BUSY_ESCALATION_THRESHOLD && next > consecutiveSqliteBusy,
+    consecutiveSqliteBusy: next,
+  };
+}
+
 function validSubscription(value: unknown): value is StoredPushSubscription {
   if (!value || typeof value !== "object") return false;
   const subscription = value as Record<string, unknown>;
@@ -110,6 +131,7 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
   const store = new PushStore(options.databasePath);
   const { publicKey } = configureVapid(store, options.vapidSubject);
   let monitoring = false;
+  let consecutiveSqliteBusy = 0;
 
   const send = async (delivery: PendingPushDelivery): Promise<void> => {
     try {
@@ -137,11 +159,19 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
     try {
       store.observe(loadCapacityDashboard([options.capacityPath]).accounts, Date.now());
       await Promise.allSettled(store.pendingDeliveries().map(send));
+      consecutiveSqliteBusy = 0;
     } catch (error) {
-      void reportOperationalError("spendwatch.monitor.failure", error, {
-        component: "capacity",
-      });
-      process.stderr.write(`push monitor: ${String(error)}\n`);
+      const decision = monitorFailureDecision(error, consecutiveSqliteBusy);
+      consecutiveSqliteBusy = decision.consecutiveSqliteBusy;
+      if (decision.report) {
+        void reportOperationalError("spendwatch.monitor.failure", error, {
+          component: "capacity",
+        });
+      }
+      const contention = consecutiveSqliteBusy > 0
+        ? ` (contention ${String(consecutiveSqliteBusy)}/${String(SQLITE_BUSY_ESCALATION_THRESHOLD)}; retrying next poll)`
+        : "";
+      process.stderr.write(`push monitor: ${String(error)}${contention}\n`);
     } finally {
       monitoring = false;
     }
