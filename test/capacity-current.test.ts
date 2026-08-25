@@ -22,6 +22,27 @@ test("maps the official Codex rate-limit response to dashboard capacity", () => 
   expect(result?.usage.updatedAt).toBe("2026-08-16T10:00:00.000Z");
 });
 
+test("keeps a returned five-hour Codex window alongside the weekly window", () => {
+  const now = Date.parse("2026-08-16T10:00:00Z");
+  const result = capacityResultFromAppServer(
+    { type: "chatgpt", email: "edi@example.com", planType: "pro" },
+    {
+      rateLimitsByLimitId: {
+        codex: {
+          // Codex currently returns the weekly window as primary. If the
+          // five-hour window is enabled, it arrives as secondary.
+          primary: { usedPercent: 12, windowDurationMins: 10080 },
+          secondary: { usedPercent: 24, windowDurationMins: 300 },
+        },
+      },
+    },
+    now,
+  );
+  expect(result?.usage.primary?.windowMinutes).toBe(10080);
+  expect(result?.usage.secondary?.windowMinutes).toBe(300);
+  expect(result?.usage.secondary?.usedPercent).toBe(24);
+});
+
 test("does not treat API-key auth or missing windows as subscription capacity", () => {
   expect(capacityResultFromAppServer({ type: "apiKey" }, { rateLimits: {} })).toBeUndefined();
   expect(capacityResultFromAppServer(
