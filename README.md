@@ -142,8 +142,10 @@ spendwatch eval --sqlite ~/.local/share/spendwatch/routing.db --json
 `spendwatch limits` turns sanitized provider capacity JSON into a focused
 planning page with one account card per identity. Cards show only account,
 plan, freshness, reported quota windows, reset times, and pace forecasts;
-unreported windows are omitted instead of shown as empty limits. Codex and
-Claude show rolling 5-hour and weekly capacity. A Codex account that has bought
+unreported windows are omitted instead of shown as empty limits. Claude shows
+rolling 5-hour and weekly capacity; Codex shows whichever windows its live
+account response currently reports (including the five-hour window when
+available). A Codex account that has bought
 credits also shows its balance next to the plan name; those credits are what
 keeps the account working once the weekly window is spent, so they are reported
 even at 0% left. Accounts with no credits stay uncluttered. Copilot is paced against a manual
