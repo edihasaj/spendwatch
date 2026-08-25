@@ -8,10 +8,13 @@ test("maps the official Codex rate-limit response to dashboard capacity", () => 
   const result = capacityResultFromAppServer(
     { type: "chatgpt", email: "edihasaj@gmail.com", planType: "pro" },
     {
-      rateLimits: { primary: { usedPercent: 99, windowDurationMins: 300 } },
+      rateLimits: { primary: { usedPercent: 12, windowDurationMins: 10080 } },
       rateLimitsByLimitId: {
         codex: { primary: { usedPercent: 12, windowDurationMins: 10080, resetsAt: now / 1000 + 4 * 24 * 3600 } },
-        codex_bengalfox: { primary: { usedPercent: 0, windowDurationMins: 10080 } },
+        codex_bengalfox: {
+          primary: { usedPercent: 99, windowDurationMins: 300 },
+          secondary: { usedPercent: 0, windowDurationMins: 10080 },
+        },
       },
     },
     now,
@@ -19,6 +22,8 @@ test("maps the official Codex rate-limit response to dashboard capacity", () => 
   expect(result?.account).toBe("edihasaj@gmail.com");
   expect(result?.usage.primary?.usedPercent).toBe(12);
   expect(result?.usage.primary?.windowMinutes).toBe(10080);
+  expect(result?.usage.secondary?.usedPercent).toBe(99);
+  expect(result?.usage.secondary?.windowMinutes).toBe(300);
   expect(result?.usage.updatedAt).toBe("2026-08-16T10:00:00.000Z");
 });
 

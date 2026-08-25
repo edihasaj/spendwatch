@@ -67,12 +67,13 @@ interface AppServerCredits {
 interface AppServerRateLimits {
   primary?: AppServerWindow | null;
   secondary?: AppServerWindow | null;
+  tertiary?: AppServerWindow | null;
   credits?: AppServerCredits | null;
 }
 
 interface AppServerRateLimitResponse {
   rateLimits?: AppServerRateLimits;
-  rateLimitsByLimitId?: Record<string, AppServerRateLimits> | null;
+  rateLimitsByLimitId?: Record<string, AppServerRateLimits | null> | null;
 }
 
 interface RpcResponse {
@@ -141,11 +142,20 @@ export function capacityResultFromAppServer(
   const account = accountValue as AppServerAccount | undefined;
   const response = rateLimitValue as AppServerRateLimitResponse | undefined;
   if (account?.type !== "chatgpt" || typeof account.email !== "string" || !account.email.includes("@")) return undefined;
-  const snapshot = response?.rateLimitsByLimitId?.codex ?? response?.rateLimits;
-  if (!snapshot) return undefined;
-  const primary = windowFrom(snapshot.primary);
-  const secondary = windowFrom(snapshot.secondary);
-  if (!primary && !secondary) return undefined;
+  const snapshot = response?.rateLimitsByLimitId?.codex;
+  const relatedSnapshots = Object.entries(response?.rateLimitsByLimitId ?? {})
+    .filter(([limitId, value]) => limitId.startsWith("codex_") && Boolean(value))
+    .map(([, value]) => value!);
+  const windows = [snapshot, ...relatedSnapshots, response?.rateLimits]
+    .flatMap((limits) => [limits?.primary, limits?.secondary, limits?.tertiary])
+    .map(windowFrom)
+    .filter((window): window is CapacityWindow => Boolean(window))
+    // Model-specific and generic snapshots repeat the base Codex windows. A
+    // duration is one quota window, so retain the base reading first while
+    // still picking up a short window reported only under a Codex-family ID.
+    .filter((window, index, all) => all.findIndex((candidate) => candidate.windowMinutes === window.windowMinutes) === index);
+  const [primary = null, secondary = null, tertiary = null] = windows;
+  if (!primary) return undefined;
   return {
     provider: "codex",
     account: account.email,
@@ -154,14 +164,14 @@ export function capacityResultFromAppServer(
       loginMethod: typeof account.planType === "string" ? account.planType : undefined,
       primary,
       secondary,
-      tertiary: null,
-      credits: creditsFrom(snapshot.credits ?? response?.rateLimits?.credits),
+      tertiary,
+      credits: creditsFrom(snapshot?.credits ?? response?.rateLimits?.credits),
       updatedAt: new Date(now).toISOString(),
     },
     pace: {
       primary: paceFor(primary, now),
       secondary: paceFor(secondary, now),
-      tertiary: null,
+      tertiary: paceFor(tertiary, now),
     },
   };
 }
