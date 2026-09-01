@@ -38,7 +38,9 @@ install -m 0755 spendwatch /opt/homebrew/bin/spendwatch
 bun src/cli.ts report                      # all agents, past 30 days
 bun src/cli.ts report --agent codex        # one agent (claude,codex,grok,copilot,gemini)
 bun src/cli.ts report --project chat-sql   # filter by project substring
-bun src/cli.ts report --days 7 --json
+bun src/cli.ts report --month 2026-08      # one calendar month
+bun src/cli.ts report --months 3           # this month plus the two before it
+bun src/cli.ts report --days 7 --json      # rolling window instead of a month
 bun src/cli.ts report --html               # also write a standalone HTML report
 bun src/cli.ts report --open               # write HTML + open it in the browser
 bun src/cli.ts report --brief              # TL;DR: total, biggest hog, top automate targets
@@ -63,7 +65,25 @@ bin/spendwatch report                       # compiled binary (bun run build)
 
 `--html [path]` writes a self-contained, shareable `index.html` (default `spendwatch-report.html`): cross-agent overview, per-agent tabs, every table with heat bars, and **click any tool/command row to drill into the actual invocations** (which files, which commands, with counts + token cost) — the "what to automate" view. `--open` writes it and opens it.
 
-`--sqlite [path]` appends a normalized snapshot (one run per call) so you can build spend history and query with SQL — tables: `runs`, `agent_account`, `tools`, `commands`, `prompts`, `models`, `projects`, `samples`.
+`--sqlite [path]` appends a normalized snapshot (one run per call) so you can build spend history and query with SQL — tables: `runs`, `agent_account`, `tools`, `commands`, `prompts`, `models`, `projects`, `samples`, `spend_month`.
+
+### Months
+
+A report covers the **current calendar month** by default, so spend resets when
+the month does. `--month YYYY-MM` reports a single past month and `--days N`
+restores a rolling window (`watch` always uses one).
+
+Turns are windowed by their own timestamp, not by the mtime of the file holding
+them: a session you resume today no longer drags every earlier turn in the same
+file into today's total.
+
+`--months N` folds the last N months out of one pass over the transcripts.
+Each report carries the month it belongs to, so `--json` from several machines
+can be merged with `--input` and still land in the right month. With `--sqlite`
+those totals are recorded in `spend_month` (one row per month and source) and
+shown on the History tab, one collapsed card per month. Closed months are never
+deleted and never shrink: a re-read that finds less than the archive already
+holds — because session files rotate — is ignored.
 
 `--label` and `--input` support private multi-machine dashboards without copying
 transcript files. Export JSON on each machine, move those reports through your
@@ -474,6 +494,9 @@ The **AUTOMATE — top targets** list (top of the report, and `--brief`) ranks s
 - `src/grok.ts` — Grok ACP session updates → same events
 - `src/sources.ts` — agent registry: log locations, discovery, account detection, config roots
 - `src/aggregate.ts` — per-session fold → leaderboards + per-account + drill-down samples
+- `src/periods.ts` / `src/report-window.ts` — calendar-month windows and imported-month filing
+- `src/monthly.ts` — one pass over the transcripts, split per month
+- `src/spend-history.ts` — per-month spend archive read/write
 - `src/db.ts` — SQLite snapshot writer (`bun:sqlite`)
 - `src/capacity-db.ts` — live quota history and adaptive chart queries
 - `src/capacity-archive.ts` / `src/capacity-cli.ts` — verified retention and restore
@@ -490,7 +513,8 @@ The **AUTOMATE — top targets** list (top of the report, and `--brief`) ranks s
 
 ```sh
 bun test   # claude + codex + grok fixtures with hand-computed costs, deep-command,
-           # incremental append, multi-account sum/breakout, sqlite round-trip
+           # incremental append, multi-account sum/breakout, sqlite round-trip,
+           # month-boundary splitting and the monthly spend archive
 ```
 
 ## Contributing

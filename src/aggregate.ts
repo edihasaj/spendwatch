@@ -1,5 +1,6 @@
 // Folds parse events into per-tool / per-prompt / per-model / per-project spend.
 import type { Event } from "./parse";
+import type { Period } from "./periods";
 import { contextCost, estTokens, usageCost, type Usage } from "./pricing";
 
 interface StreamState {
@@ -68,7 +69,16 @@ export interface ModelRow {
   cacheWriteTok: number;
   cost: number;
 }
+export interface ReportPeriod {
+  key: string;
+  label: string;
+  from: number;
+  to: number;
+  month: boolean;
+}
 export interface Report {
+  /** Window this report covers. Absent on reports written before periods existed. */
+  period?: ReportPeriod;
   totalTokens: number;
   totalCost: number;
   apiCalls: number;
@@ -88,6 +98,21 @@ export interface Report {
 export class Aggregator {
   private streams = new Map<string, StreamState>();
   private promptText = new Map<string, { text: string; project: string; ts: number }>();
+
+  // Session files are found by mtime, so a file touched today can still contain
+  // months of older turns. Without an event-level window a "last 30 days" total
+  // silently swallowed everything those files ever recorded.
+  //
+  // `enforceWindow` is off when something upstream already routed the events —
+  // MonthlyAggregator keeps a tool result with the call it answers, even when
+  // the answer arrived after midnight on the first, and the timestamp filter
+  // would otherwise throw that result away.
+  constructor(private period?: Period, private enforceWindow = true) {}
+
+  private outOfWindow(ts: number): boolean {
+    if (!this.period || !this.enforceWindow || !ts) return false;
+    return ts < this.period.from || ts >= this.period.to;
+  }
 
   stream(fileKey: string, project: string, source = "claude", account = "default"): (e: Event) => void {
     let s = this.streams.get(fileKey);
@@ -111,6 +136,9 @@ export class Aggregator {
 
   private fold(s: StreamState, e: Event) {
     s.sessionId = e.sessionId;
+    // `meta` carries the project and model for the whole file, so it is applied
+    // whatever its timestamp; dropping it would strand in-window turns under "?".
+    if (e.t !== "meta" && this.outOfWindow(e.ts)) return;
     switch (e.t) {
       case "meta": {
         if (e.project) s.project = e.project;
@@ -295,6 +323,7 @@ export class Aggregator {
 
     const by = <T>(arr: T[], f: (x: T) => number) => arr.sort((a, b) => f(b) - f(a));
     return {
+      ...(this.period ? { period: { ...this.period } } : {}),
       totalTokens,
       totalCost,
       apiCalls,
