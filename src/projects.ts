@@ -46,6 +46,13 @@ const TEMP_ROOT = /^\/(?:private\/)?(?:tmp(?:\/|$)|var\/folders\/[^/]+\/[^/]+\/T
 // 2026-08-04/<prompt slug>. The parent is the tool; the date below it is not.
 const DATE_SEGMENT = /^\d{4}-\d{2}-\d{2}$/;
 
+// A directory stamped with an epoch — "oktapod-goal-polish-1779439202" — is one
+// run of a tool, not a project. Each run invents a name, so they land in one
+// bucket the way temporary directories do, rather than a row apiece that
+// outlives the run by months.
+const GENERATED_RUN = /-\d{9,}$/;
+const SCRATCH = "~/scratch";
+
 // Repositories sit one or two deep under the workspace root ("spendwatch",
 // "tg/payroll-backend"). Anything below that is a directory inside a repo.
 const WORKSPACE_DEPTH = 2;
@@ -95,6 +102,8 @@ function label(cwd: string, home: string): string {
     segments = segments.slice(1);
   }
   if (!segments.length) return inHome ? "~" : "/";
+
+  if (segments.some((segment) => GENERATED_RUN.test(segment))) return SCRATCH;
 
   const dated = segments.findIndex((segment, index) => index > 0 && DATE_SEGMENT.test(segment));
   if (dated > 0) segments = segments.slice(0, dated);

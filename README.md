@@ -110,7 +110,9 @@ agent agrees on one name for one directory:
 - Scratch under a hidden directory is credited to the repository around it, and
   a dated directory (`Codex/2026-08-04/<slug>`) to the tool that made it.
 - Everything under `/tmp`, `/private/tmp`, or the macOS `$TMPDIR` becomes one
-  `/tmp` entry rather than one project per run.
+  `/tmp` entry rather than one project per run, and a directory stamped with an
+  epoch (`oktapod-goal-polish-1779439202`) becomes one `~/scratch` entry for the
+  same reason.
 - Spellings that differ only in case are folded together — macOS is
   case-insensitive, so they were always the same directory.
 
