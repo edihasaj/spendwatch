@@ -2,6 +2,7 @@
 import type { Event } from "./parse";
 import type { Period } from "./periods";
 import { contextCost, estTokens, usageCost, type Usage } from "./pricing";
+import { mergeProjectRows } from "./projects";
 
 interface StreamState {
   project: string;
@@ -334,7 +335,7 @@ export class Aggregator {
       targets: top,
       prompts: by([...prompts.values()], (p) => p.cost).slice(0, topN),
       models: by([...models.values()], (m) => m.cost),
-      projects: by([...projects.entries()].map(([project, usage]) => ({ project, ...usage })), (p) => p.tokens),
+      projects: mergeProjectRows([...projects.entries()].map(([project, usage]) => ({ project, ...usage }))),
       accounts: by([...accounts.entries()].map(([account, a]) => ({ account, tokens: a.tokens, cost: a.cost, calls: a.calls, sessions: a.sessions.size })), (a) => a.tokens),
       source: sources.size === 1 ? [...sources][0] : "all",
       sinceTs: sinceTs === Infinity ? 0 : sinceTs,

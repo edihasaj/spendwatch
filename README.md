@@ -98,6 +98,12 @@ A month holds the agents whose transcripts still existed when it was first
 recorded, which is not the same as the agents you used. Claude Code rotates its
 transcripts after about a month; Codex rollouts persist far longer.
 
+Projects are named from the working directory each session recorded, so every
+agent agrees on one name for one directory. Worktrees collapse into the
+directory holding them, tool scratch under a hidden directory is credited to the
+repository around it, and spellings that differ only in case are folded together
+— macOS is case-insensitive, so they were always the same directory.
+
 `--label` and `--input` support private multi-machine dashboards without copying
 transcript files. Export JSON on each machine, move those reports through your
 own trusted channel, then render them together. The HTML opens on an **All
@@ -502,6 +508,7 @@ The **AUTOMATE — top targets** list (top of the report, and `--brief`) ranks s
 - `src/run-engine.ts` / `src/run-cli.ts` — execution, verification, and escalation
 - `src/model-executors.ts` — Codex and read-only DeepSeek adapters
 - `src/routing-db.ts` / `src/eval-cli.ts` — outcome telemetry and policy replay
+- `src/projects.ts` — one project name per working directory, shared by every parser
 - `src/parse.ts` — Claude JSONL → events; `commandPath()` deep shell breakdown
 - `src/codex.ts` — Codex rollout JSONL → same events
 - `src/grok.ts` — Grok ACP session updates → same events

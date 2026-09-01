@@ -13,7 +13,8 @@ import type { Event } from "./parse";
 import { parseLine } from "./parse";
 import { newCodexCtx, parseCodexLine } from "./codex";
 import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
-import { humanProject, walkJsonl } from "./scan";
+import { humanProject } from "./projects";
+import { walkJsonl } from "./scan";
 
 export interface SourceFile {
   path: string;
