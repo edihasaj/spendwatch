@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, sep } from "node:path";
+import { realpathSync } from "node:fs";
 import { Aggregator } from "../src/aggregate";
 import { parseLine } from "../src/parse";
 import { humanProject, mergeProjectRows, projectFromCwd } from "../src/projects";
@@ -19,6 +22,49 @@ describe("project naming", () => {
     expect(projectFromCwd("/Users/developer/.paseo/worktrees/1itd0hyi/naive-cougar", HOME)).toBe(".paseo/worktrees");
     expect(projectFromCwd("/Users/developer/.paseo/worktrees/0qnz81m7/festive-kiwi", HOME)).toBe(".paseo/worktrees");
     expect(projectFromCwd("/Users/developer/Projects/dayshape/worktrees/feature", HOME)).toBe("dayshape/worktrees");
+    // A worktree root inside a hidden directory: the repo wins over both cuts.
+    expect(projectFromCwd("/Users/developer/Projects/dayshape/dayshape/.claude/worktrees/wt", HOME))
+      .toBe("dayshape/dayshape");
+  });
+
+  test("stops at the checkout, wherever the checkout actually is", () => {
+    // "owner/repo" and "repo/subdir" look identical as paths, so the presence
+    // of a .git is what separates them.
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "spendwatch-home-")));
+    mkdirSync(join(home, "Projects", "spendwatch", "src"), { recursive: true });
+    writeFileSync(join(home, "Projects", "spendwatch", ".git"), "gitdir: elsewhere");
+    mkdirSync(join(home, "Projects", "oss", "paseo-baseline", "src"), { recursive: true });
+    mkdirSync(join(home, "Projects", "oss", "paseo-baseline", ".git"), { recursive: true });
+
+    const at = (...parts: string[]) => projectFromCwd(join(home, "Projects", ...parts), home);
+    expect(at("spendwatch")).toBe("spendwatch");
+    expect(at("spendwatch", "src")).toBe("spendwatch");
+    expect(at("oss", "paseo-baseline")).toBe("oss/paseo-baseline");
+    expect(at("oss", "paseo-baseline", "src")).toBe("oss/paseo-baseline");
+  });
+
+  test("assumes a two-deep checkout when the directory is gone", () => {
+    // Nothing left to inspect, so the common "owner/repo" shape is the guess.
+    expect(projectFromCwd("/Users/developer/Projects/tg/payroll-backend/src/accounts", HOME))
+      .toBe("tg/payroll-backend");
+    // Outside the workspace root there is no repository depth to assume.
+    expect(projectFromCwd("/Users/developer/.local/share/oktapod/repo", HOME))
+      .toBe(".local/share/oktapod/repo");
+  });
+
+  test("buckets every temporary directory together", () => {
+    // macOS $TMPDIR, resolved through /private, with a fresh name per run.
+    expect(projectFromCwd("/private/var/folders/vb/j5c/T/probeport-20260807T081414173Z-scout", HOME)).toBe("/tmp");
+    expect(projectFromCwd("/private/tmp/autoreview-safety-final.JQpWCP", HOME)).toBe("/tmp");
+    expect(projectFromCwd("/tmp/oktapod-live-x/task-001/oktapod-work", HOME)).toBe("/tmp");
+    expect(projectFromCwd("/tmp", HOME)).toBe("/tmp");
+    // Not temporary, despite the name.
+    expect(projectFromCwd("/Users/developer/Projects/tmpl", HOME)).toBe("tmpl");
+  });
+
+  test("credits a dated scratch directory to the tool that made it", () => {
+    expect(projectFromCwd("/Users/developer/Documents/Codex/2026-08-04/moonshot-reports", HOME)).toBe("Codex");
+    expect(projectFromCwd("/Users/developer/Documents/Codex/2026-07-26/whe", HOME)).toBe("Codex");
   });
 
   test("attributes tool scratch to the repository holding it", () => {
@@ -40,7 +86,8 @@ describe("project naming", () => {
     // Reports are rendered on a collector that is neither Mac.
     expect(projectFromCwd("/Users/someone-else/Projects/spendwatch", HOME)).toBe("spendwatch");
     expect(projectFromCwd("/home/baseadmin/Projects/spendwatch", HOME)).toBe("spendwatch");
-    expect(projectFromCwd("/private/tmp/tmp.abc123", HOME)).toBe("/private/tmp/tmp.abc123");
+    // Outside any home and not temporary: kept whole.
+    expect(projectFromCwd("/opt/homebrew/src/tool", HOME)).toBe("/opt/homebrew/src/tool");
   });
 
   test("folds spellings of one case-insensitive directory into the busiest", () => {

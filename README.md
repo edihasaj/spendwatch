@@ -99,10 +99,20 @@ recorded, which is not the same as the agents you used. Claude Code rotates its
 transcripts after about a month; Codex rollouts persist far longer.
 
 Projects are named from the working directory each session recorded, so every
-agent agrees on one name for one directory. Worktrees collapse into the
-directory holding them, tool scratch under a hidden directory is credited to the
-repository around it, and spellings that differ only in case are folded together
-— macOS is case-insensitive, so they were always the same directory.
+agent agrees on one name for one directory:
+
+- A path stops at the checkout that contains it, found by looking for the `.git`
+  — `Projects/spendwatch/src` is `spendwatch`, while `Projects/oss/paseo-baseline`
+  keeps both segments. Where the directory is gone, a two-deep `owner/repo` is
+  assumed.
+- Worktrees collapse into the directory holding them, so an afternoon of agent
+  work does not invent a project per generated name.
+- Scratch under a hidden directory is credited to the repository around it, and
+  a dated directory (`Codex/2026-08-04/<slug>`) to the tool that made it.
+- Everything under `/tmp`, `/private/tmp`, or the macOS `$TMPDIR` becomes one
+  `/tmp` entry rather than one project per run.
+- Spellings that differ only in case are folded together — macOS is
+  case-insensitive, so they were always the same directory.
 
 `--label` and `--input` support private multi-machine dashboards without copying
 transcript files. Export JSON on each machine, move those reports through your

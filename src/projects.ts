@@ -4,7 +4,7 @@
 // "-", so "tg/payroll-backend" and "tg-payroll-backend" are indistinguishable
 // there. The transcript itself carries the real `cwd`, so that is what we read;
 // the flattened name stays only as a fallback.
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 
 const canonical = new Map<string, string>();
@@ -37,28 +37,82 @@ function stripHome(abs: string, home: string): { rest: string; inHome: boolean }
   return { rest: abs, inHome: false };
 }
 
+// Scratch outside the workspace: /tmp, /private/tmp, and the per-boot macOS
+// $TMPDIR under /var/folders. Every run there invents a fresh directory name,
+// so they are one bucket rather than a project each.
+const TEMP_ROOT = /^\/(?:private\/)?(?:tmp(?:\/|$)|var\/folders\/[^/]+\/[^/]+\/T(?:\/|$))/;
+
+// A dated directory is a session's own scratch, e.g. ~/Documents/Codex/
+// 2026-08-04/<prompt slug>. The parent is the tool; the date below it is not.
+const DATE_SEGMENT = /^\d{4}-\d{2}-\d{2}$/;
+
+// Repositories sit one or two deep under the workspace root ("spendwatch",
+// "tg/payroll-backend"). Anything below that is a directory inside a repo.
+const WORKSPACE_DEPTH = 2;
+
+const repos = new Map<string, boolean>();
+
+function isRepo(path: string): boolean {
+  const hit = repos.get(path);
+  if (hit !== undefined) return hit;
+  let found = false;
+  try {
+    // A worktree's ".git" is a file, not a directory, so only existence matters.
+    found = existsSync(`${path}/.git`);
+  } catch {
+    // Unreadable directory: treat as "not a repository" and fall back to depth.
+  }
+  repos.set(path, found);
+  return found;
+}
+
+/**
+ * How deep the repository sits under the workspace root. "~/Projects/spendwatch"
+ * is one, "~/Projects/oss/paseo-baseline" is two, and a path alone cannot tell
+ * those apart from "~/Projects/spendwatch/src" — but the checkout can.
+ */
+function repoDepth(root: string, segments: string[]): number | undefined {
+  let path = root;
+  for (let depth = 0; depth < Math.min(WORKSPACE_DEPTH, segments.length); depth++) {
+    path += `/${segments[depth]}`;
+    if (isRepo(path)) return depth + 1;
+  }
+  return undefined;
+}
+
 function label(cwd: string, home: string): string {
   const abs = realCase(cwd);
   const { rest, inHome } = stripHome(abs, home);
+  // Checked after the home test, because a home that itself sits under a temp
+  // root — a container, a test fixture — still holds real projects.
+  if (!inHome && TEMP_ROOT.test(abs)) return "/tmp";
   let segments = rest.split("/").filter(Boolean);
 
+  let workspaceRoot: string | undefined;
   if (inHome && (segments[0] === "Projects" || segments[0] === "Documents")) {
     if (segments.length === 1) return `~/${segments[0]}`;
+    if (segments[0] === "Projects") workspaceRoot = abs.slice(0, abs.length - rest.length) + "/Projects";
     segments = segments.slice(1);
   }
   if (!segments.length) return inHome ? "~" : "/";
 
+  const dated = segments.findIndex((segment, index) => index > 0 && DATE_SEGMENT.test(segment));
+  if (dated > 0) segments = segments.slice(0, dated);
+
+  // Both cuts can apply — a worktree under a hidden directory, say — so take
+  // whichever lands first and leaves the outermost real project.
+  const cuts: number[] = [];
   const worktree = segments.indexOf("worktrees");
-  if (worktree >= 0) {
-    // A worktree is a disposable copy of a repo under a generated name. Kept
-    // apart, one afternoon of agent work invents a dozen one-off projects.
-    segments = segments.slice(0, worktree + 1);
-  } else {
-    // Tool scratch lives in a hidden directory inside the repo, so the repo is
-    // the project — not the report folder something wrote into it.
-    const hidden = segments.findIndex((segment, index) => index > 0 && segment.startsWith("."));
-    if (hidden > 0) segments = segments.slice(0, hidden);
-  }
+  // A worktree is a disposable copy of a repo under a generated name. Kept
+  // apart, one afternoon of agent work invents a dozen one-off projects.
+  if (worktree >= 0) cuts.push(worktree + 1);
+  // Tool scratch lives in a hidden directory inside the repo, so the repo is
+  // the project — not the report folder something wrote into it.
+  const hidden = segments.findIndex((segment, index) => index > 0 && segment.startsWith("."));
+  if (hidden > 0) cuts.push(hidden);
+  if (workspaceRoot) cuts.push(repoDepth(workspaceRoot, segments) ?? WORKSPACE_DEPTH);
+  if (cuts.length) segments = segments.slice(0, Math.min(...cuts));
+
   return (inHome ? "" : "/") + segments.join("/");
 }
 
