@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { AccountRow, ModelRow, PromptRow, Report, SampleRow, TargetRow, ToolRow } from "./aggregate";
+import { mergeProjectRows } from "./projects";
 
 function isReport(value: unknown): value is Report {
   if (!value || typeof value !== "object") return false;
@@ -228,12 +229,9 @@ export function mergeReports(
     },
     (row) => row.inTok + row.outTok + row.cacheReadTok + row.cacheWriteTok,
   );
-  const projects = mergeNamed(
-    reports.flatMap((report) => report.projects),
-    (row) => row.project,
-    (current, row) => { current.tokens += row.tokens; current.cost += row.cost; },
-    (row) => row.tokens,
-  );
+  // Case-folded, because one machine may hold the directory under the spelling
+  // it was created with and another under the spelling it was typed with.
+  const projects = mergeProjectRows(reports.flatMap((report) => report.projects));
   const accounts = mergeNamed<AccountRow>(
     reports.flatMap((report) =>
       report.accounts.map((account) => ({

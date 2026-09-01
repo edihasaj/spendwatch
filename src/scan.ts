@@ -4,23 +4,6 @@ import { join } from "node:path";
 import type { EventSink } from "./monthly";
 import type { SourceFile } from "./sources";
 
-export function humanProject(dirName: string): string {
-  // "-Users-developer-Projects-foo-bar" -> "foo-bar"; bare workspace -> "~/Projects"
-  const m = dirName.match(/-Users-[^-]+-(.+)/);
-  if (!m) return dirName;
-  const rest = m[1];
-  if (rest === "Projects") return "~/Projects";
-  return rest.replace(/^(Projects|Documents)-/, "");
-}
-
-export function humanCodexProject(cwd: string): string {
-  // "/Users/developer/Projects/foo" -> "foo"; home -> "~"
-  const m = cwd.match(/\/(?:Projects|Documents)\/(.+)$/);
-  if (m) return m[1];
-  const parts = cwd.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? cwd;
-}
-
 // Recursively yield every *.jsonl under a directory.
 export function* walkJsonl(dir: string): Generator<string> {
   let entries: string[];

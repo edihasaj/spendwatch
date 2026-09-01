@@ -1,7 +1,7 @@
 // Parses Codex CLI rollout JSONL (~/.codex/sessions/**/rollout-*.jsonl).
 // Emits the same Event model as the Claude parser so both feed one Aggregator.
 import { cmdParts, type Event } from "./parse";
-import { humanCodexProject } from "./scan";
+import { projectFromCwd } from "./projects";
 
 export interface CodexCtx {
   model?: string;
@@ -32,7 +32,7 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
   
   switch (d.type) {
     case "session_meta": {
-      if (p.cwd) ctx.project = humanCodexProject(p.cwd);
+      if (p.cwd) ctx.project = projectFromCwd(p.cwd);
       if (p.model || p.model_provider) ctx.model = p.model;
       if (p.id) ctx.sid = p.id;
       yield { t: "meta", sessionId: ctx.sid, project: ctx.project, model: ctx.model, ts };
@@ -40,7 +40,7 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
     }
     case "turn_context": {
       const before = ctx.project;
-      if (p.cwd) ctx.project = humanCodexProject(p.cwd);
+      if (p.cwd) ctx.project = projectFromCwd(p.cwd);
       if (p.model) ctx.model = p.model;
       yield { t: "meta", sessionId: ctx.sid, project: ctx.project ?? before, model: ctx.model, ts };
       return;

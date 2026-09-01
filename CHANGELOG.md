@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Name a project from the working directory the session recorded instead of the folder Claude stored it under. That folder name has every `/` flattened to `-`, so one project arrived under several names — `tg/payroll-backend` and `tg-payroll-backend`, `dayshape/dayshape` and `dayshape-Dayshape` — and its spend was split between them. Every parser now shares one naming pass: worktrees collapse into the directory holding them rather than inventing a project per generated name, scratch under a hidden directory is credited to the repository around it, and spellings differing only in case are folded together since the filesystem never distinguished them.
+
 - Keep an all-time spend archive rather than only the months still on disk. Each recorded month now also stores where its tokens went, so a month card shows who spent it and which projects it went to, and the History tab leads with the all-time token and cost total. `--months N` backfills as far back as the transcripts reach; a month holds the agents whose transcripts still existed when it was first recorded, which is stated on the page rather than implied.
 
 - Reset spend with the calendar month and keep every closed month. A report covers the current month by default, `--month YYYY-MM` reads a past one, and `--days N` still gives a rolling window. The History tab lists one collapsed card per month with its tokens, estimated cost, calls, sessions, and per-machine breakdown, so an expensive August stops inflating a quiet September.
