@@ -34,8 +34,8 @@ describe("capacity history", () => {
       { generatedAt: Date.parse("2026-09-01T06:00:00Z"), sampleCount: 0, series: [] },
       {
         months: [
-          { month: "2026-09", label: "September 2026", tokens: 241_000_000, cost: 209, calls: 817, sessions: 12, updatedAt: Date.parse("2026-09-01T06:00:00Z"), sources: [{ source: "studio:claude", tokens: 241_000_000, cost: 209, calls: 817, sessions: 12 }] },
-          { month: "2026-08", label: "August 2026", tokens: 79_920_000_000, cost: 67_369, calls: 300_015, sessions: 900, updatedAt: Date.parse("2026-08-31T23:00:00Z"), sources: [{ source: "mbp:codex", tokens: 79_920_000_000, cost: 67_369, calls: 300_015, sessions: 900 }] },
+          { month: "2026-09", label: "September 2026", tokens: 241_000_000, cost: 209, calls: 817, sessions: 12, updatedAt: Date.parse("2026-09-01T06:00:00Z"), sources: [{ source: "studio:claude", tokens: 241_000_000, cost: 209, calls: 817, sessions: 12 }], projects: [{ project: "spendwatch", tokens: 241_000_000, cost: 209 }] },
+          { month: "2026-08", label: "August 2026", tokens: 79_920_000_000, cost: 67_369, calls: 300_015, sessions: 900, updatedAt: Date.parse("2026-08-31T23:00:00Z"), sources: [{ source: "mbp:codex", tokens: 79_920_000_000, cost: 67_369, calls: 300_015, sessions: 900 }], projects: [] },
         ],
       },
     );
@@ -48,6 +48,14 @@ describe("capacity history", () => {
     // The caret is a literal glyph: a CSS unicode escape does not survive the
     // template literal this page is built from.
     expect(html).toContain('content:"▸"');
+    // All time is the point of keeping closed months, so it leads the section.
+    expect(html).toContain("80.2B tokens · $67578");
+    expect(html).toContain("2 months since August 2026");
+    // Usage shape, not just the bill.
+    expect(html).toContain("Where it went");
+    expect(html).toContain("spendwatch");
+    // A month recorded before projects were tracked simply omits that pane.
+    expect(html.match(/Where it went/g)).toHaveLength(1);
   });
 
   test("omits the monthly section entirely when nothing has been recorded", () => {

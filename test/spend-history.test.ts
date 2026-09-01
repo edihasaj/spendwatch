@@ -10,14 +10,21 @@ function dbPath(): string {
   return join(mkdtempSync(join(tmpdir(), "spendwatch-months-")), "spendwatch.db");
 }
 
-function report(month: string, source: string, tokens: number, calls = 10): Report {
+function report(
+  month: string,
+  source: string,
+  tokens: number,
+  calls = 10,
+  projects: Array<{ project: string; tokens: number; cost: number }> = [],
+): Report {
   return {
     period: monthPeriod(month),
     totalTokens: tokens,
     totalCost: tokens / 1_000_000,
     apiCalls: calls,
     sessions: 3,
-    tools: [], bash: [], deep: [], targets: [], prompts: [], models: [], projects: [], accounts: [],
+    tools: [], bash: [], deep: [], targets: [], prompts: [], models: [], accounts: [],
+    projects,
     source,
     sinceTs: monthPeriod(month).from,
   };
@@ -70,6 +77,49 @@ describe("monthly spend archive", () => {
     expect(written.rows).toBe(0);
     expect(written.months).toEqual([]);
     expect(loadMonthlySpend(path)[0]!.tokens).toBe(20_000);
+  });
+
+  test("keeps per-project usage, summed across the machines that reported it", () => {
+    const path = dbPath();
+    writeMonthlySpend(path, [
+      report("2026-08", "studio:codex", 8_000, 10, [
+        { project: "spendwatch", tokens: 5_000, cost: 5 },
+        { project: "manager", tokens: 3_000, cost: 3 },
+      ]),
+      report("2026-08", "mbp:codex", 2_000, 10, [{ project: "spendwatch", tokens: 2_000, cost: 2 }]),
+    ], { generatedAt: 1 });
+
+    const [august] = loadMonthlySpend(path);
+    expect(august!.projects).toEqual([
+      { project: "spendwatch", tokens: 7_000, cost: 7 },
+      { project: "manager", tokens: 3_000, cost: 3 },
+    ]);
+  });
+
+  test("a re-read replaces a source's projects rather than stacking them", () => {
+    const path = dbPath();
+    writeMonthlySpend(path, [report("2026-08", "studio:codex", 8_000, 10, [
+      { project: "spendwatch", tokens: 5_000, cost: 5 },
+      { project: "retired", tokens: 3_000, cost: 3 },
+    ])], { generatedAt: 1 });
+    // The later read no longer sees "retired", so it must not linger.
+    writeMonthlySpend(path, [report("2026-08", "studio:codex", 9_000, 12, [
+      { project: "spendwatch", tokens: 9_000, cost: 9 },
+    ])], { generatedAt: 2 });
+
+    expect(loadMonthlySpend(path)[0]!.projects).toEqual([{ project: "spendwatch", tokens: 9_000, cost: 9 }]);
+  });
+
+  test("a rejected month keeps the projects it was recorded with", () => {
+    const path = dbPath();
+    writeMonthlySpend(path, [report("2026-07", "studio:codex", 20_000, 900, [
+      { project: "spendwatch", tokens: 20_000, cost: 20 },
+    ])], { generatedAt: 1 });
+    writeMonthlySpend(path, [report("2026-07", "studio:codex", 500, 20, [
+      { project: "spendwatch", tokens: 500, cost: 0.5 },
+    ])], { generatedAt: 2 });
+
+    expect(loadMonthlySpend(path)[0]!.projects).toEqual([{ project: "spendwatch", tokens: 20_000, cost: 20 }]);
   });
 
   test("rolling-window reports are not filed as a month", () => {
