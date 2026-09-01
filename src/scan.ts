@@ -1,7 +1,7 @@
 // File discovery helpers + incremental JSONL reading (shared by report and watch).
 import { readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
-import { Aggregator } from "./aggregate";
+import type { EventSink } from "./monthly";
 import type { SourceFile } from "./sources";
 
 export function humanProject(dirName: string): string {
@@ -48,7 +48,7 @@ export class IncrementalReader {
   private offsets = new Map<string, number>();
   private partial = new Map<string, string>();
 
-  constructor(private agg: Aggregator) {}
+  constructor(private agg: EventSink) {}
 
   /** Read new bytes from a file into the aggregator. Returns bytes consumed. */
   poll(file: SourceFile): number {
