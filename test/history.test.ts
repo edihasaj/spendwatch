@@ -28,4 +28,30 @@ describe("capacity history", () => {
     expect(html).not.toContain('http-equiv="refresh"');
     expect(html).not.toContain("location.reload()");
   });
+
+  test("lists each closed month collapsed, with the live month open", () => {
+    const html = renderHistoryHtml(
+      { generatedAt: Date.parse("2026-09-01T06:00:00Z"), sampleCount: 0, series: [] },
+      {
+        months: [
+          { month: "2026-09", label: "September 2026", tokens: 241_000_000, cost: 209, calls: 817, sessions: 12, updatedAt: Date.parse("2026-09-01T06:00:00Z"), sources: [{ source: "studio:claude", tokens: 241_000_000, cost: 209, calls: 817, sessions: 12 }] },
+          { month: "2026-08", label: "August 2026", tokens: 79_920_000_000, cost: 67_369, calls: 300_015, sessions: 900, updatedAt: Date.parse("2026-08-31T23:00:00Z"), sources: [{ source: "mbp:codex", tokens: 79_920_000_000, cost: 67_369, calls: 300_015, sessions: 900 }] },
+        ],
+      },
+    );
+
+    expect(html).toContain("Monthly spend");
+    expect(html).toContain('<details class="month" open><summary><span class="month-name">September 2026');
+    expect(html).toContain('<details class="month"><summary><span class="month-name">August 2026');
+    expect(html).toContain("79.9B");
+    expect(html).toContain("studio · Claude Code");
+    // The caret is a literal glyph: a CSS unicode escape does not survive the
+    // template literal this page is built from.
+    expect(html).toContain('content:"▸"');
+  });
+
+  test("omits the monthly section entirely when nothing has been recorded", () => {
+    const html = renderHistoryHtml({ generatedAt: 1, sampleCount: 0, series: [] });
+    expect(html).not.toContain("Monthly spend");
+  });
 });

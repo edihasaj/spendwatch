@@ -1,5 +1,5 @@
 // Renders a standalone, self-contained HTML report from spendwatch reports.
-import type { Report, ToolRow, PromptRow } from "./aggregate";
+import type { Report, ReportPeriod, ToolRow, PromptRow } from "./aggregate";
 import { BRAND_HEAD_HTML } from "./branding";
 import { fmtTok, fmtUsd } from "./render";
 import {
@@ -9,6 +9,11 @@ import {
   type AccountGrouping,
   type SpendBreakdown,
 } from "./reports";
+
+function localDate(ts: number): string {
+  const at = new Date(ts);
+  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
+}
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
@@ -205,7 +210,14 @@ function agentPanel(
 
 export function renderHtml(
   reports: Report[],
-  opts: { generatedAt: number; days: number; accountGrouping?: AccountGrouping; limitsHref?: string; historyHref?: string },
+  opts: {
+    generatedAt: number;
+    days: number;
+    period?: ReportPeriod;
+    accountGrouping?: AccountGrouping;
+    limitsHref?: string;
+    historyHref?: string;
+  },
 ): string {
   const sources = reports.filter((r) => r.apiCalls > 0).sort((a, b) => b.totalTokens - a.totalTokens);
   const accountGrouping = opts.accountGrouping ?? "service";
@@ -215,9 +227,18 @@ export function renderHtml(
   const total = combined.totalCost;
   const totalTokens = combined.totalTokens;
   const since = combined.sinceTs;
-  const sinceStr = since && isFinite(since) ? new Date(since).toISOString().slice(0, 10) : "?";
+  // Local date, because month boundaries are local: a September report that
+  // reads "since 2026-08-31" looks like a leak rather than midnight in UTC+2.
+  const sinceStr = since && isFinite(since) ? localDate(since) : "?";
   const genStr = new Date(opts.generatedAt).toISOString().replace("T", " ").slice(0, 16) + " UTC";
-  const dayLabel = opts.days === 1 ? "day" : "days";
+  const period = opts.period ?? combined.period;
+  // A calendar month reads as an accumulating balance, so say so rather than
+  // implying the page covers a fixed-length trailing window.
+  const periodCopy = period
+    ? period.month
+      ? `${period.label}${opts.generatedAt < period.to ? " so far" : ""}`
+      : period.label
+    : `the last ${opts.days} ${opts.days === 1 ? "day" : "days"}`;
   const dimensions = reportBreakdowns(sources, accountGrouping);
   const accountNumbers = accountChipNumbers(sources, accountGrouping);
 
@@ -334,7 +355,7 @@ footer b{color:var(--amber)}
 </style></head>
 <body><div class="wrap">
 <div class="topbar"><div class="brand"><b>spend</b>watch</div>${opts.limitsHref ? `<nav class="nav"><a href="${esc(opts.limitsHref)}">Capacity</a><a class="active" href="./spend.html">Spend detail</a><a href="${esc(opts.historyHref ?? "history.html")}">History</a></nav>` : ""}<div class="top-actions"><button class="button" id="refresh">Refresh</button>${opts.limitsHref ? `<a class="button primary" href="${esc(opts.limitsHref)}#setup">Add account</a>` : ""}</div></div>
-<section class="report-hero"><div><p class="eyebrow">Spend detail</p><h1>Understand where <span>usage goes.</span></h1><p class="hero-copy">Exact token usage with API-equivalent cost estimates across every machine, account, agent, tool, and project for the last ${opts.days} ${dayLabel}.</p></div><div class="head-total"><div class="big">${fmtTok(totalTokens)} tokens</div><div class="exact">${totalTokens.toLocaleString("en-US")} exact</div><div class="cost">${fmtUsd(total)} estimated</div><div class="meta">${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · since ${esc(sinceStr)} · generated ${esc(genStr)}</div></div></section>
+<section class="report-hero"><div><p class="eyebrow">Spend detail</p><h1>Understand where <span>usage goes.</span></h1><p class="hero-copy">Exact token usage with API-equivalent cost estimates across every machine, account, agent, tool, and project for ${esc(periodCopy)}.</p></div><div class="head-total"><div class="big">${fmtTok(totalTokens)} tokens</div><div class="exact">${totalTokens.toLocaleString("en-US")} exact</div><div class="cost">${fmtUsd(total)} estimated</div><div class="meta">${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · since ${esc(sinceStr)} · generated ${esc(genStr)}</div></div></section>
 
 <div class="overview">${overview}</div>
 
