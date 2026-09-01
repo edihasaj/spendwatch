@@ -62,6 +62,17 @@ describe("project naming", () => {
     expect(projectFromCwd("/Users/developer/Projects/tmpl", HOME)).toBe("tmpl");
   });
 
+  test("buckets a run directory stamped with an epoch", () => {
+    // Each run of a tool invents its own name, so kept apart they outlive the
+    // run as a row apiece.
+    expect(projectFromCwd("/Users/developer/oktapod-goal-polish-1779439202/workspace", HOME)).toBe("~/scratch");
+    expect(projectFromCwd("/Users/developer/oktapod-current-live-1779457937", HOME)).toBe("~/scratch");
+    expect(projectFromCwd("/Users/developer/Projects/run-1779414813/out", HOME)).toBe("~/scratch");
+    // A version or a year in the name is not a run stamp.
+    expect(projectFromCwd("/Users/developer/Projects/analytics-2026", HOME)).toBe("analytics-2026");
+    expect(projectFromCwd("/Users/developer/Projects/tg/payroll-v2", HOME)).toBe("tg/payroll-v2");
+  });
+
   test("credits a dated scratch directory to the tool that made it", () => {
     expect(projectFromCwd("/Users/developer/Documents/Codex/2026-08-04/moonshot-reports", HOME)).toBe("Codex");
     expect(projectFromCwd("/Users/developer/Documents/Codex/2026-07-26/whe", HOME)).toBe("Codex");
