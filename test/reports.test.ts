@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Report } from "../src/aggregate";
 import { renderHtml } from "../src/html";
+import { monthPeriod } from "../src/periods";
 import { labelReports, loadReports, mergeReports, reportBreakdowns, sourceLabel } from "../src/reports";
 
 function report(source = "codex"): Report {
@@ -172,5 +173,30 @@ describe("portable reports", () => {
     expect(html).toContain("refreshValues");
     expect(html).not.toContain("location.reload()");
     expect(html).not.toContain("Know what you can");
+  });
+});
+
+describe("spend report period", () => {
+  test("names the calendar month, and marks it as still running", () => {
+    const september = monthPeriod("2026-09");
+    const live = renderHtml([report("studio:claude")], {
+      generatedAt: september.from + 86_400_000,
+      days: 30,
+      period: september,
+    });
+    expect(live).toContain("for September 2026 so far.");
+    expect(live).not.toContain("for the last 30 days.");
+
+    const closed = renderHtml([report("studio:claude")], {
+      generatedAt: september.to,
+      days: 30,
+      period: september,
+    });
+    expect(closed).toContain("for September 2026.");
+  });
+
+  test("still describes a rolling window when one was asked for", () => {
+    const html = renderHtml([report("studio:claude")], { generatedAt: 1, days: 7 });
+    expect(html).toContain("for the last 7 days.");
   });
 });

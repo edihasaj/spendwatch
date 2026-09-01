@@ -251,6 +251,7 @@ export function mergeReports(
     (row) => row.tokens,
   );
   return {
+    ...(reports.find((report) => report.period) ? { period: reports.find((report) => report.period)!.period } : {}),
     source,
     totalTokens: reports.reduce((sum, report) => sum + report.totalTokens, 0),
     totalCost: reports.reduce((sum, report) => sum + report.totalCost, 0),
