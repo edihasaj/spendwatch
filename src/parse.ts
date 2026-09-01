@@ -1,5 +1,6 @@
 // Parses Claude Code transcript JSONL lines into spend-relevant events.
 import type { Usage } from "./pricing";
+import { projectFromCwd } from "./projects";
 
 // {sub, deep} for a shell command, for spreading onto a tooluse event.
 export function cmdParts(command: string): { sub: string; deep: string } {
@@ -137,6 +138,13 @@ export function* parseLine(line: string): Generator<Event> {
   const sessionId = d.sessionId ?? "?";
   const ts = d.timestamp ? Date.parse(d.timestamp) : 0;
   const sidechain = d.isSidechain === true;
+
+  // The session directory name has every "/" flattened to "-", so it cannot
+  // tell "tg/payroll-backend" from "tg-payroll-backend". The transcript records
+  // the real working directory, which can.
+  if (typeof d.cwd === "string" && d.cwd) {
+    yield { t: "meta", sessionId, project: projectFromCwd(d.cwd), ts };
+  }
 
   if (d.type === "assistant" && d.message) {
     const m = d.message;
