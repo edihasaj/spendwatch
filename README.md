@@ -65,7 +65,7 @@ bin/spendwatch report                       # compiled binary (bun run build)
 
 `--html [path]` writes a self-contained, shareable `index.html` (default `spendwatch-report.html`): cross-agent overview, per-agent tabs, every table with heat bars, and **click any tool/command row to drill into the actual invocations** (which files, which commands, with counts + token cost) — the "what to automate" view. `--open` writes it and opens it.
 
-`--sqlite [path]` appends a normalized snapshot (one run per call) so you can build spend history and query with SQL — tables: `runs`, `agent_account`, `tools`, `commands`, `prompts`, `models`, `projects`, `samples`, `spend_month`.
+`--sqlite [path]` appends a normalized snapshot (one run per call) so you can build spend history and query with SQL — tables: `runs`, `agent_account`, `tools`, `commands`, `prompts`, `models`, `projects`, `samples`, `spend_month`, `spend_month_project`.
 
 ### Months
 
@@ -81,9 +81,22 @@ file into today's total.
 Each report carries the month it belongs to, so `--json` from several machines
 can be merged with `--input` and still land in the right month. With `--sqlite`
 those totals are recorded in `spend_month` (one row per month and source) and
-shown on the History tab, one collapsed card per month. Closed months are never
-deleted and never shrink: a re-read that finds less than the archive already
-holds — because session files rotate — is ignored.
+`spend_month_project` (where that month's tokens went), then shown on the
+History tab: an all-time total, then one collapsed card per month with who spent
+it and which projects it went to.
+
+Closed months are never deleted and never shrink. A re-read that finds less than
+the archive already holds — because session files rotate — is ignored, and its
+projects are left alone with it. So the archive keeps growing past the point
+where the transcripts behind it still exist:
+
+```sh
+spendwatch report --months 13 --sqlite spendwatch.db   # one-time backfill
+```
+
+A month holds the agents whose transcripts still existed when it was first
+recorded, which is not the same as the agents you used. Claude Code rotates its
+transcripts after about a month; Codex rollouts persist far longer.
 
 `--label` and `--input` support private multi-machine dashboards without copying
 transcript files. Export JSON on each machine, move those reports through your
