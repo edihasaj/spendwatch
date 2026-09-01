@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Aggregator } from "../src/aggregate";
-import { IncrementalReader, humanProject, humanCodexProject } from "../src/scan";
+import { IncrementalReader } from "../src/scan";
+import { humanProject, projectFromCwd } from "../src/projects";
 import { parseLine, commandPath } from "../src/parse";
 import { newCodexCtx, parseCodexLine } from "../src/codex";
 import type { SourceFile } from "../src/sources";
@@ -200,7 +201,7 @@ describe("project naming", () => {
   test("claude + codex", () => {
     expect(humanProject("-Users-developer-Projects-sample-app")).toBe("sample-app");
     expect(humanProject("-Users-developer-Projects")).toBe("~/Projects");
-    expect(humanCodexProject("/Users/developer/Projects/sample-app")).toBe("sample-app");
+    expect(projectFromCwd("/Users/developer/Projects/sample-app")).toBe("sample-app");
   });
 });
 

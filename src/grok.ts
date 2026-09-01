@@ -8,7 +8,7 @@
 // single HTTP request. The turn's `modelUsage` map splits it per model, and each
 // entry becomes its own api event.
 import { cmdParts, type Event } from "./parse";
-import { humanCodexProject } from "./scan";
+import { projectFromCwd } from "./projects";
 
 export interface GrokCtx {
   model?: string;
@@ -29,7 +29,7 @@ export function grokProjectFromDir(dirName: string): string {
   try {
     cwd = decodeURIComponent(dirName);
   } catch {}
-  return humanCodexProject(cwd);
+  return projectFromCwd(cwd);
 }
 
 // Tools whose first argument is a shell command, so the bash/deep drill-downs work.

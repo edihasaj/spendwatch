@@ -209,6 +209,8 @@ describe("grok discovery", () => {
 
   test("decodes the session directory name into a project", () => {
     expect(grokProjectFromDir("%2FUsers%2Fdev%2FProjects%2Fspendwatch")).toBe("spendwatch");
-    expect(grokProjectFromDir("%2FUsers%2Fdev")).toBe("edi");
+    // A session started in the home directory is "~", not a project named
+    // after the account that ran it.
+    expect(grokProjectFromDir("%2FUsers%2Fdev")).toBe("~");
   });
 });
