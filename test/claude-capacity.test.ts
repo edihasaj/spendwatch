@@ -6,6 +6,8 @@ import {
   classifyReadFailure,
   claudeCapacityFromUsage,
   discoverClaudeProfiles,
+  freshestCredentials,
+  keychainAccountsFrom,
   needsRefresh,
   persistClaudeCredentials,
   preferUsableCredentials,
@@ -161,6 +163,61 @@ describe("Claude credential source", () => {
   test("keeps the husk when the Keychain yields nothing, so the caller still rejects it", () => {
     const husk = { accessToken: "" };
     expect(preferUsableCredentials(husk, () => undefined)).toBe(husk);
+  });
+});
+
+describe("Keychain items for one service", () => {
+  // Trimmed to the attributes the parser reads, in `security dump-keychain` order.
+  const dump = [
+    'keychain: "/Users/x/Library/Keychains/login.keychain-db"',
+    'class: "genp"',
+    'attributes:',
+    '    "acct"<blob>="unknown"',
+    '    "svce"<blob>="Claude Code-credentials"',
+    'keychain: "/Users/x/Library/Keychains/login.keychain-db"',
+    'class: "genp"',
+    'attributes:',
+    '    "acct"<blob>="someone"',
+    '    "svce"<blob>="Other service"',
+    'keychain: "/Users/x/Library/Keychains/login.keychain-db"',
+    'class: "genp"',
+    'attributes:',
+    '    "acct"<blob>="edihasaj"',
+    '    "svce"<blob>="Claude Code-credentials"',
+  ].join("\n");
+
+  test("lists every account holding credentials for the service", () => {
+    expect(keychainAccountsFrom(dump, "Claude Code-credentials")).toEqual(["unknown", "edihasaj"]);
+  });
+
+  test("ignores other services and an empty dump", () => {
+    expect(keychainAccountsFrom(dump, "Missing service")).toEqual([]);
+    expect(keychainAccountsFrom("", "Claude Code-credentials")).toEqual([]);
+  });
+
+  test("picks the live credential over an orphan left by an earlier login", () => {
+    // The orphan shadowed the real one for a week: every read returned HTTP 401.
+    const now = Date.parse("2026-09-16T20:00:00Z");
+    const orphan = { accessToken: "expired", expiresAt: Date.parse("2026-09-09T12:43:56Z") };
+    const live = { accessToken: "current", expiresAt: Date.parse("2026-09-17T04:00:00Z") };
+    expect(freshestCredentials([orphan, live], now)).toBe(live);
+    expect(freshestCredentials([live, orphan], now)).toBe(live);
+  });
+
+  test("falls back to the furthest deadline when every item has expired", () => {
+    const now = Date.parse("2026-09-16T20:00:00Z");
+    const older = { accessToken: "a", expiresAt: Date.parse("2026-09-01T00:00:00Z") };
+    const newer = { accessToken: "b", expiresAt: Date.parse("2026-09-09T00:00:00Z") };
+    expect(freshestCredentials([newer, older], now)).toBe(newer);
+  });
+
+  test("skips husks and reports nothing when no item carries a token", () => {
+    const now = Date.parse("2026-09-16T20:00:00Z");
+    const husk = { accessToken: "", expiresAt: Date.parse("2026-09-30T00:00:00Z") };
+    const live = { accessToken: "current", expiresAt: Date.parse("2026-09-17T04:00:00Z") };
+    expect(freshestCredentials([husk, live], now)).toBe(live);
+    expect(freshestCredentials([husk, undefined], now)).toBeUndefined();
+    expect(freshestCredentials([], now)).toBeUndefined();
   });
 });
 
