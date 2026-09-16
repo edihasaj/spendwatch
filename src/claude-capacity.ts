@@ -234,21 +234,69 @@ function stringField(source: unknown, key: string): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-// Claude Code keeps the default profile's credentials in the login Keychain on
-// macOS. It can also leave the on-disk file behind as a husk with blank tokens
-// after that migration, so presence of the file says nothing about usability.
-function keychainCredentials(): unknown {
-  if (platform() !== "darwin") return undefined;
-  const result = spawnSync("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], {
-    encoding: "utf8",
-    timeout: 5_000,
-  });
+export const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
+
+/**
+ * Every account name holding credentials for `service`, read from the
+ * attribute-only Keychain dump. Claude Code leaves the previous item behind
+ * when it re-creates one under a different account name, so the service alone
+ * can match more than one item.
+ */
+export function keychainAccountsFrom(dump: string, service: string): string[] {
+  const accounts: string[] = [];
+  for (const record of dump.split(/^keychain: /m)) {
+    if (!record.includes(`"svce"<blob>="${service}"`)) continue;
+    const account = /^\s*"acct"<blob>="([^"]*)"/m.exec(record)?.[1];
+    if (account !== undefined && !accounts.includes(account)) accounts.push(account);
+  }
+  return accounts;
+}
+
+/**
+ * The credential a login would produce, out of everything the Keychain holds
+ * for the service. `security find-generic-password` returns whichever item it
+ * matches first, which is not the newest: an orphan left by an earlier login
+ * shadowed the live credential for a week and every read came back HTTP 401.
+ * Prefer a token that has not expired, then the furthest deadline.
+ */
+export function freshestCredentials(candidates: unknown[], nowMs: number): unknown {
+  const ranked = candidates
+    .filter((candidate) => stringField(candidate, "accessToken"))
+    .map((candidate) => {
+      const expiresAt = Number((candidate as Record<string, unknown>).expiresAt);
+      const deadline = Number.isFinite(expiresAt) ? expiresAt : Number.NEGATIVE_INFINITY;
+      return { candidate, deadline, usable: deadline > nowMs };
+    })
+    .sort((a, b) => Number(b.usable) - Number(a.usable) || b.deadline - a.deadline);
+  return ranked[0]?.candidate;
+}
+
+function keychainSecret(args: string[]): unknown {
+  const result = spawnSync("/usr/bin/security", args, { encoding: "utf8", timeout: 5_000 });
   if (result.status !== 0 || !result.stdout) return undefined;
   try {
     return (JSON.parse(result.stdout) as Record<string, unknown>).claudeAiOauth;
   } catch {
     return undefined;
   }
+}
+
+// Claude Code keeps the default profile's credentials in the login Keychain on
+// macOS. It can also leave the on-disk file behind as a husk with blank tokens
+// after that migration, so presence of the file says nothing about usability.
+function keychainCredentials(nowMs = Date.now()): unknown {
+  if (platform() !== "darwin") return undefined;
+  const dump = spawnSync("/usr/bin/security", ["dump-keychain"], { encoding: "utf8", timeout: 10_000 });
+  const accounts = dump.status === 0 && dump.stdout
+    ? keychainAccountsFrom(dump.stdout, CLAUDE_KEYCHAIN_SERVICE)
+    : [];
+  const candidates = accounts.map((account) =>
+    keychainSecret(["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-a", account, "-w"]));
+  const freshest = freshestCredentials(candidates, nowMs);
+  if (freshest !== undefined) return freshest;
+  // The dump is attribute-only and needs no unlock, but a locked or unreadable
+  // Keychain still has to fall back to the plain lookup rather than go blind.
+  return keychainSecret(["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-w"]);
 }
 
 /**
