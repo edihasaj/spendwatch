@@ -109,6 +109,9 @@ describe("Codex limits", () => {
     expect(html).toContain(".setup-item{min-width:0");
     expect(html).toContain(".command code{flex:1;min-width:0");
     expect(html).toContain("lokai-router check");
+    // Closing the panel must drop #setup, or every reload reopens it.
+    expect(html).toContain("if(!open&&location.hash==='#setup')history.replaceState(null,'',location.pathname+location.search)");
+    expect(html).toContain("showSetup(!setup.classList.contains('open'))");
     expect(html).toContain('href="spend.html"');
     expect(html).toContain('href="history.html">History</a>');
     expect(html.indexOf("Spend detail")).toBeLessThan(html.indexOf(">History</a>"));
