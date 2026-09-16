@@ -767,9 +767,14 @@ const refreshValues=async(interactive=false)=>{if(refreshing)return;refreshing=t
 hydrateRelative();refreshButton.addEventListener('click',()=>refreshValues(true));setInterval(()=>refreshValues(false),15000);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')refreshValues(false)});
 alertButton.addEventListener('click',enableOrTestAlerts);void updateAlertButton();
 const setup=document.querySelector('#setup');
-document.querySelector('#add').addEventListener('click',()=>setup.classList.toggle('open'));
+// Closing has to drop the #setup hash too. A sign-in link or a cross-page Add
+// account link leaves it in the URL, and every later reload reopened the panel
+// on top of the dashboard however many times it had been closed.
+const showSetup=open=>{setup.classList.toggle('open',open);if(!open&&location.hash==='#setup')history.replaceState(null,'',location.pathname+location.search)};
+document.querySelector('#add').addEventListener('click',()=>showSetup(!setup.classList.contains('open')));
 if(location.hash==='#setup')setup.classList.add('open');
-document.querySelectorAll('.auth-required a').forEach(link=>link.addEventListener('click',event=>{const row=event.currentTarget.closest('.auth-required');setup.classList.add('open');profileName.value=row.dataset.authProfile==='default'?'default':row.dataset.authProfile;updateCommands();setTimeout(()=>setup.scrollIntoView({behavior:'smooth',block:'start'}),0)}));
+addEventListener('hashchange',()=>{if(location.hash==='#setup')setup.classList.add('open')});
+document.querySelectorAll('.auth-required a').forEach(link=>link.addEventListener('click',event=>{const row=event.currentTarget.closest('.auth-required');showSetup(true);profileName.value=row.dataset.authProfile==='default'?'default':row.dataset.authProfile;updateCommands();setTimeout(()=>setup.scrollIntoView({behavior:'smooth',block:'start'}),0)}));
 const profileName=document.querySelector('#profile-name');const updateCommands=()=>{const name=(profileName.value.toLowerCase().replace(/[^a-z0-9-]/g,'-').replace(/^-+|-+$/g,'').slice(0,32)||'new-account');document.querySelectorAll('[data-template]').forEach(code=>code.textContent=code.dataset.template.replace('{name}',name))};profileName.addEventListener('input',updateCommands);updateCommands();
 document.querySelectorAll('.copy').forEach(button=>button.addEventListener('click',async event=>{const code=event.currentTarget.parentElement.querySelector('code').textContent;await navigator.clipboard.writeText(code);event.currentTarget.textContent='COPIED';setTimeout(()=>event.currentTarget.textContent='COPY',1400)}));
 </script></body></html>`;
