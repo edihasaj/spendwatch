@@ -13,6 +13,7 @@ import type { Event } from "./parse";
 import { parseLine } from "./parse";
 import { newCodexCtx, parseCodexLine } from "./codex";
 import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
+import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
 import { walkJsonl } from "./scan";
 
@@ -199,6 +200,17 @@ export function defaultGrokRoots(home = homedir()): RootCfg[] {
   return profileRoots(home, "grok", ".grok");
 }
 
+// pi keeps sessions under ~/.pi/agent/sessions (or $PI_CODING_AGENT_DIR/sessions);
+// its fork oh-my-pi uses the same layout under ~/.omp.
+export function defaultPiRoots(home = homedir()): RootCfg[] {
+  const dir = process.env.PI_CODING_AGENT_DIR;
+  return [{ agent: "pi", path: dir ? join(expand(dir), "sessions") : join(home, ".pi", "agent", "sessions") }];
+}
+
+export function defaultOmpRoots(home = homedir()): RootCfg[] {
+  return [{ agent: "omp", path: join(home, ".omp", "agent", "sessions") }];
+}
+
 // ---- per-agent collectors ---------------------------------------------------
 function collectClaude(dir: string, account: string, sinceMs: number, project?: string): SourceFile[] {
   const files: SourceFile[] = [];
@@ -247,6 +259,24 @@ function collectGrok(dir: string, account: string, sinceMs: number, project?: st
   return files;
 }
 
+// pi and oh-my-pi lay sessions out as <root>/<encoded cwd>/<timestamp>_<id>.jsonl.
+// The encoding is lossy (every separator becomes "-"), so the project comes
+// from the cwd in the session header instead, as with Codex.
+function collectPi(dir: string, agent: "pi" | "omp", account: string, sinceMs: number): SourceFile[] {
+  const files: SourceFile[] = [];
+  if (!existsSync(dir)) return files;
+  for (const encoded of safeReaddir(dir)) {
+    const cwdDir = join(dir, encoded);
+    if (!statSafe(cwdDir)?.isDirectory()) continue;
+    for (const f of safeReaddir(cwdDir)) {
+      if (!f.endsWith(".jsonl")) continue;
+      const path = join(cwdDir, f);
+      if (mtimeOk(path, sinceMs)) files.push({ path, project: "?", source: agent, account: account || "default", parse: parsePiLine, ctx: newPiCtx() });
+    }
+  }
+  return files;
+}
+
 export function discover(opts: { sinceMs: number; project?: string; agents?: Set<string> }): SourceStatus[] {
   const out: SourceStatus[] = [];
   const want = (id: string) => !opts.agents || opts.agents.has(id);
@@ -286,6 +316,14 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   if (want("grok")) {
     const files = grokRoots.flatMap((r) => collectGrok(r.path, r.account ?? "", opts.sinceMs, opts.project));
     out.push({ id: "grok", present: grokRoots.some((r) => existsSync(r.path)), parseable: true, files });
+  }
+
+  for (const agent of ["pi", "omp"] as const) {
+    if (!want(agent)) continue;
+    const roots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === agent) : agent === "pi" ? defaultPiRoots() : defaultOmpRoots();
+    const files = roots.flatMap((r) => collectPi(r.path, agent, r.account ?? "", opts.sinceMs));
+    const present = roots.some((r) => existsSync(r.path));
+    out.push({ id: agent, present, parseable: true, note: present ? undefined : "not installed", files });
   }
 
   // Copilot CLI — chat sessions are stored in a binary Xodus DB (.xd), not JSONL.

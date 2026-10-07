@@ -36,7 +36,7 @@ install -m 0755 spendwatch /opt/homebrew/bin/spendwatch
 
 ```sh
 bun src/cli.ts report                      # all agents, past 30 days
-bun src/cli.ts report --agent codex        # one agent (claude,codex,grok,copilot,gemini)
+bun src/cli.ts report --agent codex        # one agent (claude,codex,grok,pi,omp,copilot,gemini)
 bun src/cli.ts report --project chat-sql   # filter by project substring
 bun src/cli.ts report --month 2026-08      # one calendar month
 bun src/cli.ts report --months 3           # this month plus the two before it
