@@ -213,7 +213,7 @@ options:
   --days N          rolling window of N days instead of a calendar month
   --month YYYY-MM   report one calendar month (default: the current month)
   --months N        also aggregate the previous N-1 months, for history backfill
-  --agent LIST      comma list: claude,codex,grok,copilot,gemini (default all)
+  --agent LIST      comma list: claude,codex,grok,pi,omp,copilot,gemini (default all)
   --account STR     filter by account substring (email/label)
   --account-group X group HTML accounts by service (default) or email
   --project STR     filter project by substring
@@ -245,6 +245,8 @@ sources:
   claude   ~/.claude/projects/**/*.jsonl        (token usage ✓)
   codex    ~/.codex/sessions/**/rollout-*.jsonl (token usage ✓)
   grok     ~/.grok/sessions/**/updates.jsonl     (token usage ✓)
+  pi       ~/.pi/agent/sessions/*/*.jsonl        (token usage ✓)
+  omp      ~/.omp/agent/sessions/*/*.jsonl       (oh-my-pi, token usage ✓)
   copilot  ~/.config/github-copilot             (binary store, no usage)
   gemini   ~/.gemini                             (when present)
 
