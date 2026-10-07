@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Track pi and oh-my-pi alongside Claude Code, Codex and Grok. Sessions are read from `~/.pi/agent/sessions` (or `$PI_CODING_AGENT_DIR/sessions`) and `~/.omp/agent/sessions`; oh-my-pi is a fork that keeps pi's format, so one parser reads both. Every assistant message carries the usage of its own model call and is billed on its own, as are calls made outside the conversation: cache warming, compaction and branch summaries, and oh-my-pi's `model_usage`. Branching keeps abandoned paths in the file, and those calls were paid for too, so they count. The project comes from the cwd in the session header, because the folder name flattens every separator to `-`.
+
+- Price self-hosted models at zero on purpose. `qwen3.8-flash-next` served by vLLM on your own hardware has no per-token bill; it was already free as an unknown model, and is now listed so the zero is deliberate. Its tokens still count.
+
 - Keep the Add account panel closed once it is closed. A sign-in link or a cross-page Add account link leaves `#setup` in the URL, and the panel reopened on every later load however many times it had been dismissed. Closing it now clears that hash, so only an explicit click reopens it.
 
 - Read the Claude credential that a login actually wrote, not whichever Keychain item matched first. Claude Code leaves the previous item behind when it re-creates one under a different account name, and `security find-generic-password -s "Claude Code-credentials"` returns an arbitrary match: an orphan whose token expired on 9 September shadowed the live credential for a week, so every capacity read came back HTTP 401, the card sat on a sign-in banner, and the account finally aged off the dashboard altogether. Every item for the service is now read and the unexpired one with the furthest deadline wins, falling back to the plain lookup when the Keychain cannot be enumerated.
