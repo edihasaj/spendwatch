@@ -60,6 +60,8 @@ export function sourceLabel(source: string): string {
     claude: "Claude Code",
     codex: "Codex",
     grok: "Grok",
+    pi: "pi",
+    omp: "oh-my-pi",
     copilot: "Copilot",
     gemini: "Gemini",
   };

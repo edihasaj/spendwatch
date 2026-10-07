@@ -41,6 +41,9 @@ const PRICES: Array<[RegExp, ModelPrice]> = [
   // DeepSeek direct API pricing. Routing execution is explicit and opt-in.
   [/deepseek-v4-flash/, { input: 0.14, output: 0.28, cachedInput: 0.0028 }],
   [/deepseek-v4-pro/, { input: 0.435, output: 0.87, cachedInput: 0.003625 }],
+  // Self-hosted models (vLLM on your own hardware): no per-token bill. Listed so
+  // they are priced at zero on purpose rather than as an unknown model.
+  [/qwen3\.8-flash-next/, { input: 0, output: 0 }],
   // Google (Gemini), best-effort 2.5-pro tier.
   [/gemini.*pro/, { input: 1.25, output: 10 }],
   [/gemini/, { input: 0.3, output: 2.5 }],
