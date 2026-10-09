@@ -78,6 +78,8 @@ export interface ReportPeriod {
   month: boolean;
 }
 export interface Report {
+  /** Stable for one installation; changes when the machine starts with fresh history. */
+  installationId?: string;
   /** Window this report covers. Absent on reports written before periods existed. */
   period?: ReportPeriod;
   totalTokens: number;

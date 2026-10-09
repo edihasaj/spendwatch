@@ -11,6 +11,7 @@ import { rollingDays } from "./periods";
 import type { Period } from "./periods";
 import { groupImported, newestPopulated, primaryPeriod, resolvePeriods } from "./report-window";
 import { loadMonthlySpend, writeMonthlySpend } from "./spend-history";
+import { loadArchivedReports } from "./spend-report-archive";
 import { importCapacityHistory, loadCapacityHistory, writeCapacitySnapshot } from "./capacity-db";
 import { runCapacityCommand } from "./capacity-cli";
 import { loadCapacityDashboard } from "./capacity-dashboard";
@@ -52,6 +53,7 @@ interface Args {
   sqlite?: string; // output db path when --sqlite given
   inputs: string[];
   label?: string;
+  installationId?: string;
   interval: number;
   limitsHref?: string;
   spendHref?: string;
@@ -165,6 +167,10 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--sqlite" || x === "--db") a.sqlite = rest[0] && !rest[0].startsWith("-") ? rest.shift()! : "spendwatch.db";
     else if (x === "--input") a.inputs.push(...(rest.shift() ?? "").split(",").filter(Boolean));
     else if (x === "--label" || x === "--machine") a.label = rest.shift();
+    else if (x === "--installation-id") {
+      a.installationId = rest.shift();
+      if (!a.installationId?.trim()) throw new Error("--installation-id requires a non-empty ID");
+    }
     else if (x === "--interval") a.interval = Number(rest.shift());
     else if (x === "--limits-href") a.limitsHref = rest.shift();
     else if (x === "--spend-href") a.spendHref = rest.shift();
@@ -225,6 +231,7 @@ options:
   --sqlite [PATH]   append a snapshot to a SQLite db (default spendwatch.db)
   --input PATHS     render exported report JSON instead of local logs (repeatable or comma-separated)
   --label STR       prefix local report tabs with a machine/site label
+  --installation-id STR  identify a fresh machine installation when exporting
   --interval MS     watch poll interval (default 2000)
   --limits-href URL add a Capacity link to the spend report
   --spend-href URL  set the Spend detail link in the limits dashboard
@@ -333,9 +340,19 @@ async function report(a: Args) {
   // Imported reports are already aggregated, so the period each machine recorded
   // is the only truth about which month they belong to. `--label` stays a
   // local-export concern: those reports were labelled when they were written.
-  const byPeriod = a.inputs.length
+  let byPeriod = a.inputs.length
     ? groupImported(loadReports(a.inputs), primary)
     : new Map([...reportsByPeriod(built, a)].map(([key, rows]) => [key, labelReports(rows, a.label)]));
+  if (!a.inputs.length && a.installationId) {
+    byPeriod = new Map([...byPeriod].map(([key, rows]) => [key, rows.map((row) => ({ ...row, installationId: a.installationId }))]));
+  }
+  if (a.sqlite && !a.json) {
+    const incoming = [...byPeriod.values()].flat();
+    writeMonthlySpend(resolve(a.sqlite), incoming, { generatedAt: nowMs() });
+    if (incoming.every((row) => row.period?.month) && !a.daysExplicit && !a.project && !a.account && !a.agents) {
+      byPeriod = groupImported(loadArchivedReports(resolve(a.sqlite)), primary);
+    }
+  }
   // An import is a fixed set of already-measured months, so with no month asked
   // for, show the newest one it actually contains rather than silently emptying
   // the page because the collector's calendar has already moved on.
@@ -395,12 +412,6 @@ async function report(a: Args) {
     const out = resolve(a.sqlite);
     const { runId, rows } = writeSnapshot(out, reports, { generatedAt: nowMs(), days: a.days });
     process.stdout.write(`\x1b[2m→ SQLite snapshot run #${runId} (${rows} rows) appended to ${out}\x1b[0m\n`);
-    // Closed months outlive the transcripts they were read from, so their totals
-    // are kept once the session files have rotated away.
-    const monthly = writeMonthlySpend(out, [...byPeriod.values()].flat(), { generatedAt: nowMs() });
-    if (monthly.rows) {
-      process.stdout.write(`\x1b[2m→ Monthly spend recorded for ${monthly.months.join(", ")} (${monthly.rows} rows)\x1b[0m\n`);
-    }
   }
 }
 
