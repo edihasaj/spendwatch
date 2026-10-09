@@ -98,6 +98,18 @@ A month holds the agents whose transcripts still existed when it was first
 recorded, which is not the same as the agents you used. Claude Code rotates its
 transcripts after about a month; Codex rollouts persist far longer.
 
+With `--sqlite`, monthly exports also keep their detailed reports in
+`spend_report`. Rendering reads this archive, so an empty export from a freshly
+reset machine still shows the reports collected before the reset. The archive
+has no automatic deletion.
+
+Export with `--installation-id ID` when a machine can be reset. Keep the ID
+stable while that installation is in use, then choose a new ID for a fresh
+installation with empty agent history. The collector adds new usage to the old
+installation's totals, and repeated imports do not count it twice. The first ID
+adopts older unlabeled totals. If old transcripts are restored, keep their
+original ID to avoid counting those transcripts as new usage.
+
 Projects are named from the working directory each session recorded, so every
 agent agrees on one name for one directory:
 
