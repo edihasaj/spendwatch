@@ -195,6 +195,7 @@ export function mergeReports(
   reports: Report[],
   source = "all",
   accountGrouping: AccountGrouping = "service",
+  preserveAccountLabels = false,
 ): Report {
   const tools = mergeToolRows(reports, "tools");
   const bash = mergeToolRows(reports, "bash");
@@ -238,7 +239,7 @@ export function mergeReports(
     reports.flatMap((report) =>
       report.accounts.map((account) => ({
         ...account,
-        account: accountLabel(report.source, account.account, accountGrouping),
+        account: preserveAccountLabels ? account.account : accountLabel(report.source, account.account, accountGrouping),
       })),
     ),
     (row) => row.account,
