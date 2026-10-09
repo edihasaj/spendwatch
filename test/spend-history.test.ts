@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Report } from "../src/aggregate";
 import { monthPeriod } from "../src/periods";
 import { loadMonthlySpend, writeMonthlySpend } from "../src/spend-history";
+import { loadArchivedReports } from "../src/spend-report-archive";
 
 function dbPath(): string {
   return join(mkdtempSync(join(tmpdir(), "spendwatch-months-")), "spendwatch.db");
@@ -31,6 +32,54 @@ function report(
 }
 
 describe("monthly spend archive", () => {
+  test("a reset adds new chats immediately and keeps old detail after an empty export", () => {
+    const path = dbPath();
+    const old = { ...report("2026-10", "macbook:codex", 20_000, 900,
+      [{ project: "manager", tokens: 20_000, cost: 20 }]), installationId: "before-reset",
+      accounts: [{ account: "edi@example.com (work)", tokens: 20_000, cost: 20, calls: 900, sessions: 3 }],
+      prompts: [{ key: "old", text: "old chat", project: "manager", tokens: 20_000, cost: 20, toolCalls: 0, outTok: 100, ts: 1 }],
+    };
+    const fresh = { ...report("2026-10", "macbook:codex", 500, 2,
+      [{ project: "manager", tokens: 500, cost: 0.5 }]), installationId: "after-reset",
+      accounts: [{ account: "edi@example.com (work)", tokens: 500, cost: 0.5, calls: 2, sessions: 3 }],
+      prompts: [{ key: "new", text: "new chat", project: "manager", tokens: 500, cost: 0.5, toolCalls: 0, outTok: 5, ts: 2 }],
+    };
+    writeMonthlySpend(path, [old], { generatedAt: 1 });
+    writeMonthlySpend(path, [{ ...fresh, apiCalls: 0, totalTokens: 0 }], { generatedAt: 2 });
+    expect(loadArchivedReports(path)[0]!.prompts[0]!.text).toBe("old chat");
+    writeMonthlySpend(path, [fresh], { generatedAt: 3 });
+    // Re-importing either installation must neither double count nor drop one.
+    writeMonthlySpend(path, [fresh, old], { generatedAt: 4 });
+    const [month] = loadMonthlySpend(path);
+    expect(month!.tokens).toBe(20_500);
+    expect(month!.calls).toBe(902);
+    expect(month!.sources).toHaveLength(1);
+    expect(month!.projects).toEqual([{ project: "manager", tokens: 20_500, cost: 20.5 }]);
+    const [detail] = loadArchivedReports(path);
+    expect(detail!.totalTokens).toBe(20_500);
+    expect(detail!.accounts).toEqual([{ account: "edi@example.com (work)", tokens: 20_500, cost: 20.5, calls: 902, sessions: 6 }]);
+    expect(detail!.prompts.map((row) => row.text)).toEqual(["old chat", "new chat"]);
+  });
+
+  test("adding installation identity adopts legacy totals without double counting", () => {
+    const path = dbPath();
+    const old = report("2026-09", "macbook:claude", 20_000, 900);
+    writeMonthlySpend(path, [old], { generatedAt: 1 });
+    writeMonthlySpend(path, [{ ...old, installationId: "current" }], { generatedAt: 2 });
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(20_000);
+    expect(loadArchivedReports(path)[0]!.totalTokens).toBe(20_000);
+    writeMonthlySpend(path, [{ ...old, installationId: "new", totalTokens: 500, apiCalls: 2 }], { generatedAt: 3 });
+    writeMonthlySpend(path, [old], { generatedAt: 4 });
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(20_500);
+  });
+
+  test("partial rereads keep the strongest detail for each installation", () => {
+    const path = dbPath();
+    const old = { ...report("2026-09", "macbook:claude", 20_000, 900), installationId: "one" };
+    writeMonthlySpend(path, [old], { generatedAt: 1 });
+    writeMonthlySpend(path, [{ ...old, totalTokens: 500, apiCalls: 2 }], { generatedAt: 2 });
+    expect(loadArchivedReports(path)[0]!.totalTokens).toBe(20_000);
+  });
   test("keeps one row per month and source, newest month first", () => {
     const path = dbPath();
     writeMonthlySpend(path, [

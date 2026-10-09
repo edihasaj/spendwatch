@@ -3,6 +3,7 @@
 import { Database } from "bun:sqlite";
 import type { Report } from "./aggregate";
 import { monthLabel } from "./periods";
+import { archivedSourceLabels, archiveReport, archiveSource, initReportArchive } from "./spend-report-archive";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS spend_month (
@@ -76,6 +77,7 @@ export function writeMonthlySpend(
   try {
     db.exec("PRAGMA journal_mode = WAL;");
     db.exec(SCHEMA);
+    initReportArchive(db);
     const upsert = db.prepare(`
       INSERT INTO spend_month(month, source, tokens, cost, calls, sessions, first_ts, updated_at)
       VALUES (?,?,?,?,?,?,?,?)
@@ -96,9 +98,11 @@ export function writeMonthlySpend(
     const tx = db.transaction(() => {
       for (const report of reports) {
         if (!report.period?.month || report.apiCalls <= 0) continue;
+        const source = archiveSource(db, report);
+        archiveReport(db, report, source, opts.generatedAt);
         const result = upsert.run(
           report.period.key,
-          report.source,
+          source,
           Math.round(report.totalTokens),
           report.totalCost,
           report.apiCalls,
@@ -111,12 +115,12 @@ export function writeMonthlySpend(
         if (!result.changes) continue;
         months.add(report.period.key);
         rows++;
-        clearProjects.run(report.period.key, report.source);
+        clearProjects.run(report.period.key, source);
         for (const project of report.projects.slice(0, PROJECTS_PER_SOURCE)) {
           if (project.tokens <= 0) continue;
           insertProject.run(
             report.period.key,
-            report.source,
+            source,
             project.project,
             Math.round(project.tokens),
             project.cost,
@@ -152,6 +156,7 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
       .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name='spend_month'")
       .get();
     if (!exists) return [];
+    const sourceLabels = archivedSourceLabels(db);
     const rows = db
       .query<Row, []>(`
         SELECT month, source, tokens, cost, calls, sessions, first_ts AS firstTs, updated_at AS updatedAt
@@ -188,8 +193,15 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
       month.sessions += row.sessions;
       month.updatedAt = Math.max(month.updatedAt, row.updatedAt);
       if (row.firstTs) month.firstTs = Math.min(month.firstTs ?? row.firstTs, row.firstTs);
-      month.sources.push({
-        source: row.source,
+      const source = sourceLabels.get(row.source) ?? row.source;
+      const existingSource = month.sources.find((item) => item.source === source);
+      if (existingSource) {
+        existingSource.tokens += row.tokens;
+        existingSource.cost += row.cost;
+        existingSource.calls += row.calls;
+        existingSource.sessions += row.sessions;
+      } else month.sources.push({
+        source,
         tokens: row.tokens,
         cost: row.cost,
         calls: row.calls,
