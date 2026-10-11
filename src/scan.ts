@@ -36,6 +36,12 @@ export class IncrementalReader {
   /** Read new bytes from a file into the aggregator. Returns bytes consumed. */
   poll(file: SourceFile): number {
     const { path, project, source, account, parse, ctx } = file;
+    if (file.events) {
+      const fold = this.agg.stream(file.key ?? path, project, source, account);
+      let count = 0;
+      for (const event of file.events()) { fold(event); count++; }
+      return count;
+    }
     let size: number;
     try {
       size = statSync(path).size;
@@ -70,6 +76,7 @@ export class IncrementalReader {
 
   /** Flush a trailing line with no newline (end-of-scan for report mode). */
   flush(file: SourceFile) {
+    if (file.events) return;
     const carry = this.partial.get(file.path);
     if (!carry) return;
     const fold = this.agg.stream(file.path, file.project, file.source, file.account);
