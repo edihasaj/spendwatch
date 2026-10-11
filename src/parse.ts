@@ -45,7 +45,7 @@ export function toolDetail(name: string, input: any): string | undefined {
 
 export type Event =
   | { t: "prompt"; sessionId: string; promptId: string; text: string; sidechain: boolean; ts: number }
-  | { t: "api"; sessionId: string; requestId: string; model?: string; usage: Usage; sidechain: boolean; ts: number }
+  | { t: "api"; sessionId: string; requestId: string; model?: string; usage: Usage; costUsd?: number; sidechain: boolean; ts: number }
   | { t: "tooluse"; sessionId: string; requestId: string; id: string; name: string; argChars: number; sub?: string; deep?: string; detail?: string; ts: number }
   | { t: "toolresult"; sessionId: string; id: string; chars: number; error?: boolean; exit?: number; ts: number }
   | { t: "meta"; sessionId: string; project?: string; model?: string; ts: number };

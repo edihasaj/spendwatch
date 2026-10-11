@@ -11,6 +11,10 @@ export interface CopilotBudget {
   usd: number;
   /** Derived price of one AI credit. */
   creditUsd: number;
+  currency?: "EUR";
+  amount?: number;
+  usdToCurrency?: number;
+  rateDate?: string;
 }
 
 function positiveNumber(raw: string | undefined): number | undefined {
@@ -20,9 +24,27 @@ function positiveNumber(raw: string | undefined): number | undefined {
 }
 
 export function copilotBudget(env: Record<string, string | undefined> = process.env): CopilotBudget {
+  const eur = positiveNumber(env.SPENDWATCH_COPILOT_MONTHLY_EUR);
+  if (eur !== undefined) {
+    const rate = positiveNumber(env.SPENDWATCH_USD_EUR_RATE);
+    if (rate === undefined) throw new Error("EUR Copilot budget requires SPENDWATCH_USD_EUR_RATE");
+    const creditUsd = 0.01;
+    const usd = eur / rate;
+    return { credits: Math.floor(usd / creditUsd + 1e-8), usd, creditUsd,
+      currency: "EUR", amount: eur, usdToCurrency: rate, rateDate: env.SPENDWATCH_FX_RATE_DATE };
+  }
   const credits = positiveNumber(env.SPENDWATCH_COPILOT_MONTHLY_CREDITS) ?? COPILOT_MONTHLY_CREDIT_BUDGET;
   const usd = positiveNumber(env.SPENDWATCH_COPILOT_MONTHLY_USD) ?? COPILOT_MONTHLY_USD_BUDGET;
   return { credits, usd, creditUsd: usd / credits };
+}
+
+export function formatCopilotMoney(usd: number, budget: CopilotBudget, maximumFractionDigits = 2): string {
+  const value = usd * (budget.usdToCurrency ?? 1);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency", currency: budget.currency ?? "USD",
+    minimumFractionDigits: Number.isInteger(value) ? 0 : Math.min(2, maximumFractionDigits),
+    maximumFractionDigits,
+  }).format(value);
 }
 
 /** Reported monthly reset, or the next UTC month boundary when GitHub does not report one. */

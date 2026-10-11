@@ -16,7 +16,7 @@ interface StreamState {
   currentPromptKey?: string;
   toolUse: Map<string, { name: string; argChars: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string }>;
   results: Array<{ name: string; tokens: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string; error?: boolean; exit?: number }>;
-  usage: Map<string, { model?: string; usage: Usage; promptKey?: string; lastTs: number }>;
+  usage: Map<string, { model?: string; usage: Usage; costUsd?: number; promptKey?: string; lastTs: number }>;
   firstUserText?: string;
 }
 
@@ -168,7 +168,7 @@ export class Aggregator {
         s.model = e.model ?? s.model;
         if (!s.callIdx.has(e.requestId)) s.callIdx.set(e.requestId, s.nCalls++);
         // Streamed responses rewrite the same requestId with growing usage — keep latest.
-        s.usage.set(e.requestId, { model: e.model, usage: e.usage, promptKey: s.currentPromptKey, lastTs: e.ts });
+        s.usage.set(e.requestId, { model: e.model, usage: e.usage, costUsd: e.costUsd, promptKey: s.currentPromptKey, lastTs: e.ts });
         break;
       }
       case "tooluse": {
@@ -222,7 +222,7 @@ export class Aggregator {
       for (const [, u] of s.usage) {
         apiCalls++;
         const tokens = u.usage.input + u.usage.output + u.usage.cacheRead + u.usage.cache5m + u.usage.cache1h;
-        const cost = usageCost(u.model, u.usage);
+        const cost = u.costUsd ?? usageCost(u.model, u.usage);
         totalTokens += tokens;
         totalCost += cost;
         acc.tokens += tokens;
