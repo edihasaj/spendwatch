@@ -223,7 +223,14 @@ turns to `More capacity`. Browser alerts follow the same 30/15/10/5/0 steps as
 weekly quota, so the 0% alert is the notification that the budget was passed,
 sent once per monthly cycle. Override
 the ceiling with `SPENDWATCH_COPILOT_MONTHLY_CREDITS` and
-`SPENDWATCH_COPILOT_MONTHLY_USD`. When GitHub reports no monthly reset the next
+`SPENDWATCH_COPILOT_MONTHLY_USD`. For a euro reporting ceiling, set
+`SPENDWATCH_COPILOT_MONTHLY_EUR=400` and `SPENDWATCH_USD_EUR_RATE` to the
+number of euros per US dollar. `SPENDWATCH_FX_RATE_DATE` records the quote date.
+The EUR card converts GitHub's $0.01-per-credit value, displays the dated
+estimate, and derives the matching credit allowance. It keeps warning and
+pacing behavior; it does not enforce a GitHub spending cap. Subscription fees
+and taxes are outside this usage-value meter. Rendering makes no FX requests.
+When GitHub reports no monthly reset the next
 UTC month boundary is used. It never labels paid overflow as unlimited. API-backed
 Lokai routes show sanitized cash balances; route
 readiness without a reported balance is never labeled unlimited. Grok Build
@@ -494,10 +501,15 @@ service account across machines. Filter with `--account <substr>`.
 | Claude Code | `~/.claude/projects/**/*.jsonl` | ✓ |
 | Codex CLI   | `~/.codex/sessions/**/rollout-*.jsonl` | ✓ |
 | Grok CLI    | `~/.grok/sessions/**/updates.jsonl` | ✓ |
-| Copilot CLI | `~/.config/github-copilot` | ✗ (binary Xodus store, no usage) |
+| Copilot CLI | `~/.copilot/session-store.db` | ✓ per-request token usage and reported AI-credit value |
 | Gemini CLI  | `~/.gemini` | ✓ when present |
 
-Copilot/Gemini are detected and reported as footnotes until parseable logs exist. Adding a new agent = one parser emitting the shared `Event` model + a `sources.ts` entry.
+Copilot reads the local `assistant_usage_events` ledger in read-only mode. It
+keeps each request in its actual calendar month, separates cached input from
+uncached input, and uses reported nano-AI-credit charges when available instead
+of estimating them from a model list. Compatible Copilot Chat stores in Code,
+Code Insiders and Cursor are detected too. Copies of the same session are
+counted once. Legacy stores without this ledger and Gemini logs remain footnotes. Adding a new agent = one parser emitting the shared `Event` model + a `sources.ts` entry.
 
 Grok reports token usage once per prompt-turn, covering every model call its
 agentic loop made for that prompt, so its **API calls** count turns rather than
