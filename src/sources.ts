@@ -16,9 +16,12 @@ import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
 import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
 import { walkJsonl } from "./scan";
+import { collectCopilot, defaultCopilotRoots } from "./copilot";
 
 export interface SourceFile {
   path: string;
+  key?: string;
+  events?: () => Iterable<Event>;
   project: string;
   source: string;
   account: string;
@@ -326,10 +329,13 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
     out.push({ id: agent, present, parseable: true, note: present ? undefined : "not installed", files });
   }
 
-  // Copilot CLI — chat sessions are stored in a binary Xodus DB (.xd), not JSONL.
+  // Current Copilot CLI persists per-request usage and reported charges in SQLite.
   if (want("copilot")) {
-    const present = existsSync(join(homedir(), ".config", "github-copilot")) || existsSync(join(homedir(), ".copilot"));
-    out.push({ id: "copilot", present, parseable: false, note: present ? "found, but chat sessions are a binary Xodus DB (.xd) with no token usage — not parseable" : "not installed", files: [] });
+    const roots = cfg ? cfg.filter((r) => r.agent === "copilot") : defaultCopilotRoots().map((path) => ({ agent: "copilot", path, account: undefined }));
+    const files = roots.flatMap((r) => collectCopilot(r.path, opts.sinceMs, r.account));
+    const present = roots.some((r) => existsSync(r.path));
+    out.push({ id: "copilot", present, parseable: files.length > 0, files,
+      note: present && !files.length ? "no readable per-request usage for this period" : undefined });
   }
 
   // Gemini CLI — ~/.gemini (logs/telemetry); structure TBD.

@@ -5,7 +5,7 @@ import { predictWindow } from "./capacity-prediction";
 import { windowFreshness, type WindowFreshness } from "./capacity-freshness";
 import type { BurnForecast } from "./capacity-burn";
 import { buildUtilizationPlans, recommendAccount, UTILIZATION_TARGET_PERCENT, type AccountUtilizationPlan } from "./capacity-planner";
-import { copilotBudgetStatus, copilotCreditWindow } from "./copilot-budget";
+import { copilotBudgetStatus, copilotCreditWindow, formatCopilotMoney } from "./copilot-budget";
 import { compactDuration } from "./duration";
 
 export { predictWindow } from "./capacity-prediction";
@@ -500,7 +500,7 @@ function copilotLimits(account: CodexLimitAccount, nowMs: number): string {
     ? `Over budget by ${status.creditsOver.toLocaleString()} credits`
     : `${left}% of budget left`;
   const money = status.over
-    ? `${esc(formatUsd(status.usdOver))} over the ${esc(formatUsd(budget.usd))} ceiling`
+    ? `${esc(formatCopilotMoney(status.usdOver, budget))} over the ${esc(formatCopilotMoney(budget.usd, budget))} ceiling`
     : `${esc(overflow)}`;
   return `<section class="limit copilot-usage ${tone}">
     <div class="limit-head"><span>AI credits used</span><strong>${status.creditsUsed.toLocaleString()} / ${budget.credits.toLocaleString()}</strong></div>
@@ -508,8 +508,9 @@ function copilotLimits(account: CodexLimitAccount, nowMs: number): string {
     <div class="limit-meta split"><span>${esc(standing)}</span>${reset}</div>
     ${window && !status.over ? paceBlock(window, nowMs) : ""}
   </section><section class="limit copilot-pool ${tone}">
-    <div class="limit-head"><span>Monthly budget</span><strong>${esc(formatUsd(status.usdSpent))} / ${esc(formatUsd(budget.usd))}</strong></div>
-    <div class="limit-meta split"><span>${money}</span><span>${esc(formatUsd(budget.creditUsd, 4))} per credit</span></div>
+    <div class="limit-head"><span>Monthly budget</span><strong>${esc(formatCopilotMoney(status.usdSpent, budget))} / ${esc(formatCopilotMoney(budget.usd, budget))}</strong></div>
+    <div class="limit-meta split"><span>${money}</span><span>${esc(formatCopilotMoney(budget.creditUsd, budget, 4))} per credit</span></div>
+    ${budget.currency === "EUR" ? `<div class="limit-meta" title="ECB reference conversion; credit value excludes subscription fees and taxes"><span>EUR estimate · FX ${esc(budget.rateDate ?? "date unavailable")}</span></div>` : ""}
     <div class="pace"><span>${status.over ? "Ceiling passed, spending allowed" : "Manual ceiling"}</span><strong>${esc(billing)}</strong></div>
   </section>`;
 }
@@ -651,9 +652,9 @@ export function renderLimitsText(accounts: CodexLimitAccount[], nowMs = Date.now
     if (account.copilot) {
       const status = copilotBudgetStatus(account);
       const standing = status.over
-        ? `over budget by ${status.creditsOver} credits (${formatUsd(status.usdOver)})`
+        ? `over budget by ${status.creditsOver} credits (${formatCopilotMoney(status.usdOver, status.budget)})`
         : `${status.creditsLeft} credits left`;
-      return `${account.email}\t${account.plan}\t${status.creditsUsed} of ${status.budget.credits} AI credits used (${formatUsd(status.usdSpent)} of ${formatUsd(status.budget.usd)})\t${standing}`;
+      return `${account.email}\t${account.plan}\t${status.creditsUsed} of ${status.budget.credits} AI credits used (${formatCopilotMoney(status.usdSpent, status.budget)} of ${formatCopilotMoney(status.budget.usd, status.budget)})\t${standing}`;
     }
     if (account.spend) {
       const days = Math.round(account.spend.monthDays);
