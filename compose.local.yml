@@ -1,0 +1,13 @@
+name: spendwatch-local
+services:
+  app:
+    build: .
+    ports: ["127.0.0.1:28899:8899"]
+    volumes: [data:/data]
+    healthcheck:
+      test: [CMD, bun, -e, "const r = await fetch('http://127.0.0.1:8899/api/push/config'); if (!r.ok) process.exit(1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  data:
