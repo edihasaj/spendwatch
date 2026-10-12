@@ -1,0 +1,13 @@
+[
+  {
+    "account": "fixture@example.invalid",
+    "provider": "codex",
+    "usage": {
+      "accountEmail": "fixture@example.invalid",
+      "loginMethod": "pro",
+      "primary": { "usedPercent": 0, "windowMinutes": 300 },
+      "secondary": { "usedPercent": 0, "windowMinutes": 10080 }
+    },
+    "devices": ["docker-fixture"]
+  }
+]
