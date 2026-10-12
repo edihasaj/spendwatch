@@ -130,7 +130,7 @@ describe("Codex limits", () => {
     expect(html).not.toContain("Learned ·");
     expect(html).toContain("data-exhaust=\"2026-08-09T22:49:38.000Z\"");
     expect(html).toContain("studio");
-    expect(html).toContain("auto 15s");
+    expect(html).toContain("view sync 15s; collection is separate");
     expect((html.match(/<div class="limit-head"><span>5-hour window/g) ?? []).length).toBe(1);
     expect(html).not.toContain("Not active");
     expect(html).not.toContain("No current limit reported");
