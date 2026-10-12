@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Fit the capacity page to phone screens. Below 480px the source list is now a two-column grid with the device name above its status, so stale labels no longer wrap at different points. The last cell of the pace legend now spans the full row instead of leaving an empty cell. The Cycle column in each utilization card gets the most room, because it holds the longest value.
+- Fit the capacity page to phone screens. Below 480px the source list is now a two-column grid with the device name above its status, so stale labels no longer wrap at different points. The last cell of the pace legend now spans the full row instead of leaving an empty cell. The Cycle column in each utilization card gets the most room, because it holds the longest value. On wider screens, a long "Updated … · device + device" line no longer squeezes the account name and email into a one-letter column. That line now wraps, and the source list wraps inside its row instead of pushing the page wider than the window.
 
 - Track pi and oh-my-pi alongside Claude Code, Codex and Grok. Sessions are read from `~/.pi/agent/sessions` (or `$PI_CODING_AGENT_DIR/sessions`) and `~/.omp/agent/sessions`; oh-my-pi is a fork that keeps pi's format, so one parser reads both. Every assistant message carries the usage of its own model call and is billed on its own, as are calls made outside the conversation: cache warming, compaction and branch summaries, and oh-my-pi's `model_usage`. Branching keeps abandoned paths in the file, and those calls were paid for too, so they count. The project comes from the cwd in the session header, because the folder name flattens every separator to `-`.
 
