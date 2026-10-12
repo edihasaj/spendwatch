@@ -684,16 +684,17 @@ export function renderLimitsText(accounts: CodexLimitAccount[], nowMs = Date.now
 
 export function renderLimitsHtml(
   accounts: CodexLimitAccount[],
-  opts: { generatedAt: number; spendHref?: string; historyHref?: string; sources?: CapacitySourceHealth[]; authentication?: CapacityAuthenticationRequirement[] } = { generatedAt: Date.now() },
+  opts: { generatedAt: number; nowMs?: number; spendHref?: string; historyHref?: string; sources?: CapacitySourceHealth[]; authentication?: CapacityAuthenticationRequirement[] } = { generatedAt: Date.now() },
 ): string {
+  const nowMs = opts.nowMs ?? opts.generatedAt;
   const providerCount = new Set(accounts.map((account) => account.provider)).size;
   const generated = new Date(opts.generatedAt).toISOString();
-  const cards = accounts.map((account, index) => accountCard(account, index, opts.generatedAt)).join("");
+  const cards = accounts.map((account, index) => accountCard(account, index, nowMs)).join("");
   const spendHref = opts.spendHref ?? "spend.html";
   const historyHref = opts.historyHref ?? "history.html";
   const sources = opts.sources ?? [];
-  const recommendation = recommendAccount(accounts, sources, opts.generatedAt);
-  const utilizationPlans = buildUtilizationPlans(accounts, opts.generatedAt);
+  const recommendation = recommendAccount(accounts, sources, nowMs);
+  const utilizationPlans = buildUtilizationPlans(accounts, nowMs);
   const utilizationHtml = utilizationPlans.map(utilizationPlanCard).join("");
   const recommendationHtml = recommendation
     ? `<div class="best"><span>Best now</span><strong>${providerLabel(recommendation.provider)} · ${esc(recommendation.account)}</strong><em>${recommendation.weeklyLeft}% weekly${recommendation.sessionLeft === undefined ? "" : ` · ${recommendation.sessionLeft}% session`} · ${recommendation.willLastToReset ? "lasts to reset" : "run-out risk"}</em></div>`
@@ -757,7 +758,7 @@ addEventListener('beforeinstallprompt',event=>{event.preventDefault();installPro
 addEventListener('appinstalled',hideInstall);
 installButton.addEventListener('click',async()=>{if(!installPrompt)return;await installPrompt.prompt();await installPrompt.userChoice;hideInstall()});
 const relative=(iso,mode)=>{if(!iso)return mode==='reset'?'Reset unavailable':mode==='exhaust'?'Forecast unavailable':'Update unavailable';const t=Date.parse(iso);if(!Number.isFinite(t))return mode==='reset'?'Reset unavailable':mode==='exhaust'?'Forecast unavailable':'Update unavailable';const delta=t-Date.now(),abs=Math.abs(delta);if(mode==='reset'||mode==='exhaust'){if(delta<=0)return mode==='reset'?'Refreshing limit':'Ran out';const duration=compactDuration(abs);if(duration==='now')return mode==='reset'?'Resets now':'Runs out now';return(mode==='reset'?'Resets in ':'Runs out in ')+duration}if(abs<90000)return'Updated just now';return'Updated '+compactDuration(abs)+' ago'};
-const hydrateRelative=(root=document)=>{root.querySelectorAll('[data-reset]').forEach(el=>el.textContent=relative(el.dataset.reset,'reset'));root.querySelectorAll('[data-exhaust]').forEach(el=>el.textContent=relative(el.dataset.exhaust,'exhaust'));root.querySelectorAll('[data-updated]').forEach(el=>el.textContent=relative(el.dataset.updated,'updated')+(el.dataset.devices||''));root.querySelectorAll('[data-source-status]').forEach(el=>{const status=el.dataset.sourceStatus;el.textContent=status==='live'?'live':status+' '+compactDuration(Math.max(0,Date.now()-Date.parse(el.dataset.sourceLast)))});const generated=root.querySelector('#generated');if(generated)generated.textContent=relative(generated.dataset.generated,'updated')+' · auto 15s'};
+const hydrateRelative=(root=document)=>{root.querySelectorAll('[data-reset]').forEach(el=>el.textContent=relative(el.dataset.reset,'reset'));root.querySelectorAll('[data-exhaust]').forEach(el=>el.textContent=relative(el.dataset.exhaust,'exhaust'));root.querySelectorAll('[data-updated]').forEach(el=>el.textContent=relative(el.dataset.updated,'updated')+(el.dataset.devices||''));root.querySelectorAll('[data-source-status]').forEach(el=>{const status=el.dataset.sourceStatus;el.textContent=status==='live'?'live':status+' '+compactDuration(Math.max(0,Date.now()-Date.parse(el.dataset.sourceLast)))});const generated=root.querySelector('#generated');if(generated)generated.textContent=relative(generated.dataset.generated,'updated')+' · view sync 15s; collection is separate'};
 const syncAttrs=(current,next)=>{for(const attr of [...current.attributes])if(!next.hasAttribute(attr.name))current.removeAttribute(attr.name);for(const attr of [...next.attributes])if(current.getAttribute(attr.name)!==attr.value)current.setAttribute(attr.name,attr.value)};
 const patchNode=(current,next)=>{if(current.nodeType!==next.nodeType||current.nodeName!==next.nodeName){current.replaceWith(next.cloneNode(true));return}if(current.nodeType===Node.TEXT_NODE){if(current.nodeValue!==next.nodeValue)current.nodeValue=next.nodeValue;return}syncAttrs(current,next);const before=[...current.childNodes],after=[...next.childNodes],shared=Math.min(before.length,after.length);for(let i=0;i<shared;i++)patchNode(before[i],after[i]);for(let i=before.length-1;i>=after.length;i--)before[i].remove();for(let i=shared;i<after.length;i++)current.append(after[i].cloneNode(true))};
 const refreshButton=document.querySelector('#refresh');let refreshing=false;
