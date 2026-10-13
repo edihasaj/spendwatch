@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import type { Report } from "./aggregate";
 import { monthLabel } from "./periods";
 import { archivedSourceLabels, archiveReport, archiveSource, initReportArchive } from "./spend-report-archive";
+import {archiveTokenDays} from "./token-days";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS spend_month (
@@ -99,6 +100,7 @@ export function writeMonthlySpend(
       for (const report of reports) {
         if (!report.period?.month || report.apiCalls <= 0) continue;
         const source = archiveSource(db, report);
+        archiveTokenDays(db, report, source);
         archiveReport(db, report, source, opts.generatedAt);
         const result = upsert.run(
           report.period.key,

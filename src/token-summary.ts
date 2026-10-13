@@ -59,12 +59,22 @@ export function tokenSummary(path: string, options: {
   type Archived = {month: string; source: string; tokens: number; updated_at: number; report_json: string | null};
   const db = new Database(path, {readonly: true, create: false});
   let rows: Archived[];
+  let captures: Array<{source: string; measured_at: number}> = [];
+  let dailyRows: Array<{source: string; model: string; tokens: number}> = [];
   try {
     rows = db.query<Archived, [string, string]>(`
       SELECT m.month, m.source, m.tokens, m.updated_at, r.report_json
       FROM spend_month m LEFT JOIN spend_report r ON r.month=m.month AND r.source=m.source
       WHERE m.month LIKE ? AND m.month <= ? ORDER BY m.month, m.source
     `).all(`${year}-%`, month);
+    if (db.query("SELECT 1 FROM sqlite_master WHERE name='spend_token_capture'").get()) {
+      captures = db.query<{source: string; measured_at: number}, [string, string]>(
+        "SELECT source,measured_at FROM spend_token_capture WHERE time_zone=? AND month=?",
+      ).all(timeZone, month);
+      dailyRows = db.query<{source: string; model: string; tokens: number}, [string, string]>(
+        "SELECT source,model,tokens FROM spend_token_day WHERE time_zone=? AND day=?",
+      ).all(timeZone, day);
+    }
   } finally {db.close();}
   const period = (key: string): TokenPeriod => ({key, counts: null, sources: 0, expectedSources: 0, measuredAt: null});
   const periods = {day: period(day), month: period(month), year: period(year)};
@@ -104,6 +114,22 @@ export function tokenSummary(path: string, options: {
     times.day.push(measuredAt);
   }
   periods.day.sources = daySources.size;
+  // Independent day high-water marks survive partial rereads of a full month.
+  // Only a source actually captured today can contribute a daily zero.
+  const dayFormat = new Intl.DateTimeFormat("en-CA", {timeZone, year: "numeric", month: "2-digit", day: "2-digit"});
+  const eligible = captures.filter(c => {
+    if (!Number.isSafeInteger(c.measured_at) || c.measured_at > now + 60000) return false;
+    const p = dayFormat.formatToParts(c.measured_at);
+    const v = (key: string) => p.find(item => item.type === key)!.value;
+    return `${v("year")}-${v("month")}-${v("day")}` === day;
+  });
+  if (eligible.length) {
+    const sources = new Set(eligible.map(c => c.source));
+    periods.day.counts = modelCounts(dailyRows.filter(r => sources.has(r.source)));
+    periods.day.sources = sources.size;
+    periods.day.expectedSources = Math.max(periods.day.expectedSources, sources.size);
+    times.day = eligible.map(c => c.measured_at);
+  }
   periods.year.sources = periods.year.expectedSources = yearSources.size;
   for (const key of ["day", "month", "year"] as const) {
     if (times[key].length) periods[key].measuredAt = new Date(Math.min(...times[key])).toISOString();
