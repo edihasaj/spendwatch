@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -8,6 +8,15 @@ import { parseLine } from "../src/parse";
 import { humanProject, mergeProjectRows, projectFromCwd } from "../src/projects";
 
 const HOME = "/Users/developer";
+
+test("historical Documents and unavailable mount paths never trigger a filesystem case probe", () => {
+  const probe = spyOn(realpathSync, "native").mockImplementation(() => {throw new Error("Unnecessary filesystem probe");});
+  try {
+    expect(projectFromCwd("/Users/developer/Documents/Codex/2026-10-13/private-session", HOME)).toBe("Codex");
+    expect(projectFromCwd("/Volumes/offline/private-project", HOME)).toBe("/Volumes/offline/private-project");
+    expect(probe).not.toHaveBeenCalled();
+  } finally {probe.mockRestore();}
+});
 
 describe("project naming", () => {
   test("keeps the real path shape a flattened directory name loses", () => {

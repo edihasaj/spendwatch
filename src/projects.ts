@@ -13,7 +13,13 @@ const labels = new Map<string, string>();
 // macOS filesystems are case-insensitive, so "Projects/dayshape/Dayshape" and
 // "Projects/dayshape/dayshape" are one directory typed two ways. realpath
 // reports the case actually stored on disk, which settles it.
-function realCase(cwd: string): string {
+function realCase(cwd: string, home: string): string {
+  // Historical cwd values can point into protected Documents folders or
+  // unavailable mounts. Project labels do not justify opening those paths.
+  // Only the explicitly trusted checkout workspace needs disk case resolution.
+  const workspace = `${home}/Projects`.toLowerCase();
+  const lower = cwd.toLowerCase();
+  if (lower !== workspace && !lower.startsWith(workspace + "/")) return cwd;
   const hit = canonical.get(cwd);
   if (hit !== undefined) return hit;
   let resolved = cwd;
@@ -88,7 +94,7 @@ function repoDepth(root: string, segments: string[]): number | undefined {
 }
 
 function label(cwd: string, home: string): string {
-  const abs = realCase(cwd);
+  const abs = realCase(cwd, home);
   const { rest, inHome } = stripHome(abs, home);
   // Checked after the home test, because a home that itself sits under a temp
   // root — a container, a test fixture — still holds real projects.
