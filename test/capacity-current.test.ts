@@ -1,7 +1,30 @@
 import { expect, test } from "bun:test";
-import { capacityResultFromAppServer, paceFor } from "../src/capacity-current";
+import { capacityResultFromAppServer, codexBinary, paceFor } from "../src/capacity-current";
 
 const HOUR = 3_600_000;
+
+test("prefers the Homebrew Codex CLI over the home-local shim", () => {
+  expect(codexBinary("", "/Users/edi", (path) => ["/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/Users/edi/.local/bin/codex"].includes(path)))
+    .toBe("/opt/homebrew/bin/codex");
+});
+
+test("prefers the Intel macOS Codex CLI over the home-local shim", () => {
+  expect(codexBinary("", "/Users/edi", (path) => path === "/usr/local/bin/codex" || path === "/Users/edi/.local/bin/codex"))
+    .toBe("/usr/local/bin/codex");
+});
+
+test("uses the home-local Codex CLI when no native installation exists", () => {
+  expect(codexBinary("", "/Users/edi", (path) => path === "/Users/edi/.local/bin/codex"))
+    .toBe("/Users/edi/.local/bin/codex");
+});
+
+test("falls back to Codex on PATH when no candidate exists", () => {
+  expect(codexBinary("", "/Users/edi", () => false)).toBe("codex");
+});
+
+test("uses an explicit Codex binary override", () => {
+  expect(codexBinary("/custom/codex", "/Users/edi", () => false)).toBe("/custom/codex");
+});
 
 test("maps the official Codex rate-limit response to dashboard capacity", () => {
   const now = Date.parse("2026-08-16T10:00:00Z");
