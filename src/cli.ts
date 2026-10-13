@@ -6,6 +6,7 @@ import { dirname, relative, resolve } from "node:path";
 import packageMetadata from "../package.json";
 import { addAccount, type AccountAddOptions, type AccountProvider } from "./accounts";
 import { Aggregator, type Report } from "./aggregate";
+import {runTokenCommand} from "./token-summary";
 import { MonthlyAggregator } from "./monthly";
 import { rollingDays } from "./periods";
 import type { Period } from "./periods";
@@ -548,6 +549,7 @@ function watch(a: Args) {
 }
 
 async function runCli(argv: string[]): Promise<void> {
+if (runTokenCommand(argv)) return;
 if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-V")) {
   process.stdout.write(`${packageMetadata.version}\n`);
   process.exit(0);
