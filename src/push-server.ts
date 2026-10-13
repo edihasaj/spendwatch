@@ -2,6 +2,7 @@ import { resolve, sep } from "node:path";
 import webpush from "web-push";
 import { NOTIFICATION_BADGE, NOTIFICATION_ICON } from "./branding";
 import { loadCapacityDashboard } from "./capacity-dashboard";
+import { createCapacityPageRenderer } from "./capacity-page";
 import { PushStore, type PendingPushDelivery, type StoredPushSubscription } from "./push-store";
 import { SERVICE_WORKER_SOURCE } from "./service-worker";
 import { reportOperationalError } from "./telemetry";
@@ -178,6 +179,7 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
   };
 
   const publicRoot = resolve(options.publicDir);
+  const renderCapacityPage = createCapacityPageRenderer(options.capacityPath, options.databasePath);
   Bun.serve({
     hostname: options.host,
     port: options.port,
@@ -225,6 +227,12 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
         });
       }
       if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
+      if (url.pathname === "/" || url.pathname === "/index.html") {
+        const html = renderCapacityPage();
+        return new Response(request.method === "HEAD" ? null : html, {
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+        });
+      }
       let pathname: string;
       try { pathname = decodeURIComponent(url.pathname); } catch { return new Response("Bad path", { status: 400 }); }
       const relativePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
