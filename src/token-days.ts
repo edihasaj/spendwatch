@@ -26,3 +26,34 @@ export class TokenDayAccumulator {
       a.day.localeCompare(b.day) || a.model.localeCompare(b.model))};
   }
 }
+import type {Database} from "bun:sqlite";
+import type {Report} from "./aggregate";
+
+
+/** Daily detail can improve even when rotated logs no longer fill an archived month. */
+export function archiveTokenDays(db: Database, report: Report, source: string): void {
+  const daily = report.tokenDays;
+  if (!daily || !Number.isSafeInteger(daily.measuredAt) || daily.measuredAt <= 0) return;
+  new Intl.DateTimeFormat("en-CA", {timeZone: daily.timeZone}).format(daily.measuredAt);
+  const keys = new Set<string>();
+  let total = 0;
+  for (const row of daily.rows) {
+    const key = JSON.stringify([row.day, row.model]);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(row.day) || typeof row.model !== "string" ||
+        !Number.isSafeInteger(row.tokens) || row.tokens < 0 || keys.has(key)) return;
+    keys.add(key); total += row.tokens;
+  }
+  if (total !== report.totalTokens) return; // missing timestamps are not measured zero
+  db.prepare(`
+    INSERT INTO spend_token_capture VALUES (?,?,?,?)
+    ON CONFLICT(source,time_zone,month) DO UPDATE SET
+      measured_at=MAX(spend_token_capture.measured_at,excluded.measured_at)
+  `).run(source, daily.timeZone, report.period!.key, daily.measuredAt);
+  const upsert = db.prepare(`
+    INSERT INTO spend_token_day VALUES (?,?,?,?,?,?)
+    ON CONFLICT(day,source,time_zone,model) DO UPDATE SET
+      measured_at=CASE WHEN excluded.tokens>=spend_token_day.tokens THEN excluded.measured_at ELSE spend_token_day.measured_at END,
+      tokens=MAX(spend_token_day.tokens,excluded.tokens)
+  `);
+  for (const row of daily.rows) upsert.run(row.day, source, daily.timeZone, row.model, row.tokens, daily.measuredAt);
+}

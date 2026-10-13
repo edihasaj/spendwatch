@@ -14,6 +14,15 @@ export function initReportArchive(db: Database): void {
       report_json TEXT NOT NULL, updated_at INTEGER NOT NULL,
       PRIMARY KEY (month, source)
     );
+    CREATE TABLE IF NOT EXISTS spend_token_day (
+      day TEXT NOT NULL, source TEXT NOT NULL, time_zone TEXT NOT NULL,
+      model TEXT NOT NULL, tokens INTEGER NOT NULL, measured_at INTEGER NOT NULL,
+      PRIMARY KEY(day,source,time_zone,model)
+    );
+    CREATE TABLE IF NOT EXISTS spend_token_capture (
+      source TEXT NOT NULL, time_zone TEXT NOT NULL, month TEXT NOT NULL,
+      measured_at INTEGER NOT NULL, PRIMARY KEY(source,time_zone,month)
+    );
   `);
 }
 

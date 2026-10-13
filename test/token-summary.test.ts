@@ -69,6 +69,20 @@ test("reimports and installation resets do not double count or erase historical 
   expect(tokenSummary(db, options).periods.month.counts!.total).toBe(130);
 });
 
+test("daily capture can advance without shrinking a fuller archived month", () => {
+  const db = path();
+  const old = report("mac:codex", 1000);
+  old.apiCalls = 100;
+  delete old.tokenDays;
+  writeMonthlySpend(db, [old], {generatedAt: now - 86400000});
+  writeMonthlySpend(db, [report("mac:codex", 30)], {generatedAt: now});
+  writeMonthlySpend(db, [report("mac:codex", 30)], {generatedAt: now});
+  const s = tokenSummary(db, options);
+  expect(s.periods.month.counts!.total).toBe(1000);
+  expect(s.periods.day.counts!.total).toBe(30);
+  expect(s.periods.day.sources).toBe(1);
+});
+
 test("old captures, other timezones and inconsistent detail cannot masquerade as today's zero", () => {
   for (const change of ["old", "timezone", "inconsistent"]) {
     const db = path(), r = report("mac:codex");
