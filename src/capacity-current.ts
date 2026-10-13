@@ -176,14 +176,19 @@ export function capacityResultFromAppServer(
   };
 }
 
-function codexBinary(): string {
-  if (process.env.SPENDWATCH_CODEX_BIN) return process.env.SPENDWATCH_CODEX_BIN;
+export function codexBinary(
+  override = process.env.SPENDWATCH_CODEX_BIN,
+  home = homedir(),
+  exists: (path: string) => boolean = existsSync,
+): string {
+  if (override) return override;
+  // Installed native CLI precedes home wrappers to preserve each profile's CODEX_HOME.
   const candidates = [
-    join(homedir(), ".local", "bin", "codex"),
     "/opt/homebrew/bin/codex",
     "/usr/local/bin/codex",
+    join(home, ".local", "bin", "codex"),
   ];
-  return candidates.find(existsSync) ?? "codex";
+  return candidates.find(exists) ?? "codex";
 }
 
 async function liveProfileCapacity(profileHome: string, now: number): Promise<CapacityResult | undefined> {

@@ -298,8 +298,13 @@ Every named Codex account gets its own `CODEX_HOME`, while the official Codex
 CLI owns login, refresh, and
 `auth.json`. Spendwatch validates the returned identity and discovers the
 profile; it never copies OAuth tokens into its database. Use `--device-auth`
-for a headless Codex login. Metered API keys are also supported without placing
-the secret in argv or shell history:
+for a headless Codex login. For live quota reads, Spendwatch discovers the
+native Codex CLI in `/opt/homebrew/bin/codex`, then `/usr/local/bin/codex`,
+before falling back to `~/.local/bin/codex` or `codex` on `PATH`; set
+`SPENDWATCH_CODEX_BIN` to choose a specific binary. This default discovery
+order applies only to quota reads and does not change the configured inference
+gateway. Metered API keys are also supported without placing the secret in argv
+or shell history:
 
 ```bash
 export OPENAI_API_KEY=... # preferably injected by your secret manager
