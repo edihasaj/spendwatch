@@ -540,6 +540,26 @@ The **AUTOMATE — top targets** list (top of the report, and `--brief`) ranks s
 
 ## What the numbers mean
 
+### Count-only token export
+
+`spendwatch tokens --sqlite spendwatch.db --time-zone Europe/Berlin` emits only
+today, calendar-month and calendar-year token totals, source coverage and
+measurement timestamps. It reads the archive without connecting to any device
+or provider. It exports no accounts, prompts, commands or transcript content.
+Totals include input, output and cache usage, not token estimates from cost.
+
+New reports include deduplicated daily model buckets. Set
+`SPENDWATCH_TOKEN_TIME_ZONE=Europe/Berlin` on exporters to align their days.
+Older reports still contribute preserved monthly/yearly totals but cannot
+fabricate today's count. Daily counts are unavailable or partial until those
+sources are collected with the new exporter. These are recorded snapshots, not
+a promise that every AI call across all products is captured.
+
+Repeat `--local-model MODEL` for verified self-hosted routes and
+`--cloud-model MODEL` for verified hosted open-weight routes. Unmapped models
+remain unclassified; zero price never proves that a request ran locally.
+There is no automatic device collection.
+
 - **tokens**: the primary Spend detail metric, summed from exact input, output, cache-read, and cache-write usage fields. The hero, source tabs, machine/account/agent breakdowns, and detail tables rank usage by tokens before cost.
 - **$**: the API-equivalent estimate from those same per-request `usage` fields (Claude: `cache_creation`/`cache_read`; Codex: `last_token_usage`, summed and verified equal to cumulative). GPT-5.6 Sol/Terra/Luna, GPT-5.5/5.4, and DeepSeek V4 prices are model-specific; OpenAI requests above 272K input context use published long-context rates. Codex $ remains an estimate because much usage is subscription/credit-billed. Cache prices are model-specific when published.
 - **ctx $** (per tool/command) — est. cost a call's *results* impose on the session: result tokens (chars/4) × one cache write + a 0.1× reread on every later request in that session. Big outputs early in long sessions cost the most.

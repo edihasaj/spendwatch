@@ -3,6 +3,7 @@ import type { Event } from "./parse";
 import type { Period } from "./periods";
 import { contextCost, estTokens, usageCost, type Usage } from "./pricing";
 import { mergeProjectRows } from "./projects";
+import {TokenDayAccumulator, type TokenDays} from "./token-days";
 
 interface StreamState {
   project: string;
@@ -78,6 +79,8 @@ export interface ReportPeriod {
   month: boolean;
 }
 export interface Report {
+  /** Count-only day/model buckets; older exports legitimately lack them. */
+  tokenDays?: TokenDays;
   /** Stable for one installation; changes when the machine starts with fresh history. */
   installationId?: string;
   /** Window this report covers. Absent on reports written before periods existed. */
@@ -185,6 +188,7 @@ export class Aggregator {
   }
 
   report(topN = 15): Report {
+    const tokenDays = new TokenDayAccumulator();
     const tools = new Map<string, ToolRow>();
     const bash = new Map<string, ToolRow>();
     const deep = new Map<string, ToolRow>();
@@ -234,6 +238,7 @@ export class Aggregator {
         project.cost += cost;
         projects.set(s.project, project);
         const mk = u.model ?? "unknown";
+        tokenDays.add(u.lastTs, mk, tokens);
         let m = models.get(mk);
         if (!m) models.set(mk, (m = { model: mk, calls: 0, inTok: 0, outTok: 0, cacheReadTok: 0, cacheWriteTok: 0, cost: 0 }));
         m.calls++;
@@ -327,6 +332,7 @@ export class Aggregator {
     const by = <T>(arr: T[], f: (x: T) => number) => arr.sort((a, b) => f(b) - f(a));
     return {
       ...(this.period ? { period: { ...this.period } } : {}),
+      tokenDays: tokenDays.snapshot(),
       totalTokens,
       totalCost,
       apiCalls,
