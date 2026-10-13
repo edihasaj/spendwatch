@@ -339,6 +339,11 @@ Capacity refreshes visible values every 15 seconds without navigating or
 reloading the document. History does the same every 60 seconds while preserving
 the selected range or calendar month. Manual Refresh buttons also update only
 their current view's values and retain tabs, expanded rows, and scroll position.
+View refresh is not provider collection. The dashboard server re-evaluates
+stored quota freshness on every Capacity request, so a snapshot becomes
+`Not current` or `Cycle ended` even when no collector runs. It suppresses stale
+pace forecasts and recommendations without contacting providers or adding
+history samples. The displayed update time remains the stored snapshot's time.
 Background alerts are opt-in per browser. The server registers a service worker
 and sends one weekly notification per account at 30%, 15%, 10%, 5%, and 0%.
 A large usage jump produces only the most severe newly crossed threshold, so it
