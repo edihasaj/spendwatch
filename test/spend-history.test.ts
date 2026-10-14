@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +30,24 @@ function report(
     source,
     sinceTs: monthPeriod(month).from,
   };
+}
+
+/** Day buckets that add up to a report's totalTokens, which the archiver requires. */
+function dayRows(month: string, rows: Array<[day: string, tokens: number]>) {
+  return {
+    timeZone: "UTC",
+    measuredAt: monthPeriod(month).from + 3_600_000,
+    rows: rows.map(([day, tokens]) => ({ day, model: "gpt-5.5", tokens })),
+  };
+}
+
+function storedDays(path: string): Array<{ day: string; tokens: number }> {
+  const db = new Database(path, { readonly: true, create: false });
+  try {
+    return db.query<{ day: string; tokens: number }, []>("SELECT day, tokens FROM spend_token_day ORDER BY day").all();
+  } finally {
+    db.close();
+  }
 }
 
 describe("monthly spend archive", () => {
@@ -169,6 +188,64 @@ describe("monthly spend archive", () => {
     ])], { generatedAt: 2 });
 
     expect(loadMonthlySpend(path)[0]!.projects).toEqual([{ project: "spendwatch", tokens: 20_000, cost: 20 }]);
+  });
+
+  test("observed calls replace a month that fewer billed calls would lose", () => {
+    const path = dbPath();
+    writeMonthlySpend(path, [report("2026-08", "studio:codex", 20_000, 900)], { generatedAt: 1 });
+    // The gateway billed 800 of the 900 calls it observed, so the deduped report
+    // still saw the whole month and should win.
+    const fuller = { ...report("2026-08", "studio:codex", 25_000, 800), observedCalls: 900 };
+    expect(writeMonthlySpend(path, [fuller], { generatedAt: 2 }).rows).toBeGreaterThan(0);
+
+    const [august] = loadMonthlySpend(path);
+    expect(august!.tokens).toBe(25_000);
+    expect(august!.calls).toBe(800);
+    expect(loadArchivedReports(path)[0]!.totalTokens).toBe(25_000);
+  });
+
+  test("a thin re-read with a lower observed count is rejected", () => {
+    const path = dbPath();
+    writeMonthlySpend(path, [{ ...report("2026-08", "studio:codex", 20_000, 800), observedCalls: 900 }], { generatedAt: 1 });
+    const thinner = { ...report("2026-08", "studio:codex", 500, 10), observedCalls: 20 };
+
+    expect(writeMonthlySpend(path, [thinner], { generatedAt: 2 }).rows).toBe(0);
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(20_000);
+    expect(loadArchivedReports(path)[0]!.totalTokens).toBe(20_000);
+  });
+
+  test("an accepted run replaces its days instead of maxing them", () => {
+    const path = dbPath();
+    const august = (tokens: number, calls: number, days: Array<[string, number]>): Report => ({
+      ...report("2026-08", "studio:codex", tokens, calls),
+      observedCalls: calls,
+      tokenDays: dayRows("2026-08", days),
+    });
+    writeMonthlySpend(path, [august(1_000, 900, [["2026-08-05", 1_000]])], { generatedAt: 1 });
+    // The next read re-buckets the same month: day 5 was really 600 of it.
+    writeMonthlySpend(path, [august(1_000, 900, [["2026-08-05", 600], ["2026-08-06", 400]])], { generatedAt: 2 });
+
+    expect(storedDays(path)).toEqual([
+      { day: "2026-08-05", tokens: 600 },
+      { day: "2026-08-06", tokens: 400 },
+    ]);
+  });
+
+  test("a rejected run merges its days without shrinking the month", () => {
+    const path = dbPath();
+    const august = (tokens: number, calls: number, days: Array<[string, number]>): Report => ({
+      ...report("2026-08", "studio:codex", tokens, calls),
+      observedCalls: calls,
+      tokenDays: dayRows("2026-08", days),
+    });
+    writeMonthlySpend(path, [august(1_000, 900, [["2026-08-05", 1_000]])], { generatedAt: 1 });
+    // A partial re-read saw less of the 5th but found a day the archive missed.
+    writeMonthlySpend(path, [august(700, 20, [["2026-08-05", 200], ["2026-08-07", 500]])], { generatedAt: 2 });
+
+    expect(storedDays(path)).toEqual([
+      { day: "2026-08-05", tokens: 1_000 },
+      { day: "2026-08-07", tokens: 500 },
+    ]);
   });
 
   test("rolling-window reports are not filed as a month", () => {

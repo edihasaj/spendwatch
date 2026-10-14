@@ -3,7 +3,7 @@
 import { Database } from "bun:sqlite";
 import type { Report } from "./aggregate";
 import { monthLabel } from "./periods";
-import { archivedSourceLabels, archiveReport, archiveSource, initReportArchive } from "./spend-report-archive";
+import { addObservedCallsColumn, archivedSourceLabels, archiveReport, archiveSource, initReportArchive } from "./spend-report-archive";
 import {archiveTokenDays} from "./token-days";
 
 const SCHEMA = `
@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS spend_month (
   tokens INTEGER NOT NULL,
   cost REAL NOT NULL,
   calls INTEGER NOT NULL,
+  observed_calls INTEGER,
   sessions INTEGER NOT NULL,
   first_ts INTEGER,
   updated_at INTEGER NOT NULL,
@@ -79,13 +80,15 @@ export function writeMonthlySpend(
     db.exec("PRAGMA journal_mode = WAL;");
     db.exec(SCHEMA);
     initReportArchive(db);
+    addObservedCallsColumn(db, "spend_month");
     const upsert = db.prepare(`
-      INSERT INTO spend_month(month, source, tokens, cost, calls, sessions, first_ts, updated_at)
-      VALUES (?,?,?,?,?,?,?,?)
+      INSERT INTO spend_month(month, source, tokens, cost, calls, observed_calls, sessions, first_ts, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?)
       ON CONFLICT(month, source) DO UPDATE SET
         tokens = excluded.tokens, cost = excluded.cost, calls = excluded.calls,
+        observed_calls = excluded.observed_calls,
         sessions = excluded.sessions, first_ts = excluded.first_ts, updated_at = excluded.updated_at
-      WHERE excluded.calls >= spend_month.calls
+      WHERE excluded.observed_calls >= COALESCE(spend_month.observed_calls, spend_month.calls)
     `);
     // A source rewrites its own project rows wholesale, so a project that went
     // quiet disappears from the month instead of lingering at a stale total.
@@ -100,14 +103,17 @@ export function writeMonthlySpend(
       for (const report of reports) {
         if (!report.period?.month || report.apiCalls <= 0) continue;
         const source = archiveSource(db, report);
-        archiveTokenDays(db, report, source);
-        archiveReport(db, report, source, opts.generatedAt);
+        // The full report decides first: its acceptance says whether this run
+        // really saw the whole month, which picks the daily detail's mode.
+        const accepted = archiveReport(db, report, source, opts.generatedAt);
+        archiveTokenDays(db, report, source, accepted ? "replace" : "merge");
         const result = upsert.run(
           report.period.key,
           source,
           Math.round(report.totalTokens),
           report.totalCost,
           report.apiCalls,
+          report.observedCalls ?? report.apiCalls,
           report.sessions,
           report.sinceTs || null,
           opts.generatedAt,
