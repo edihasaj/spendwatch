@@ -257,6 +257,7 @@ export function mergeReports(
     totalTokens: reports.reduce((sum, report) => sum + report.totalTokens, 0),
     totalCost: reports.reduce((sum, report) => sum + report.totalCost, 0),
     apiCalls: reports.reduce((sum, report) => sum + report.apiCalls, 0),
+    observedCalls: reports.reduce((sum, report) => sum + (report.observedCalls ?? report.apiCalls), 0),
     sessions: reports.reduce((sum, report) => sum + report.sessions, 0),
     tools,
     bash,

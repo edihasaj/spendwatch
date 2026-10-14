@@ -48,7 +48,8 @@ export function copilotUsage(row: UsageRow): Usage {
   };
 }
 
-function accountLabel(): string {
+// Shared with the gateway ledger, whose Copilot rows belong to the same account.
+export function accountLabel(): string {
   if (process.env.SPENDWATCH_COPILOT_ACCOUNT) return process.env.SPENDWATCH_COPILOT_ACCOUNT;
   try {
     const text = readFileSync(join(homedir(), ".config/gh/hosts.yml"), "utf8");

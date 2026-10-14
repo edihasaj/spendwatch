@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultCodexRoots, discover } from "../src/sources";
+import { defaultCodexRoots, discover, pollOrder } from "../src/sources";
 
 // Minimal unsigned JWT: Codex reads the payload of auth.json's id_token only.
 function idToken(email: string, plan: string): string {
@@ -113,5 +113,130 @@ describe("Codex profile discovery", () => {
       if (previousFree === undefined) delete process.env.SPENDWATCH_INCLUDE_FREE;
       else process.env.SPENDWATCH_INCLUDE_FREE = previousFree;
     }
+  });
+});
+
+// The gateway ledger is not an agent: its rows join the subscriptions that own
+// them, so it reaches a report through the claude and copilot statuses.
+describe("gateway source", () => {
+  const ROLLOUT = "rollout-2026-10-05T10-00-00-11111111-2222-3333-4444-555555555555.jsonl";
+
+  function homeWith(structure: Record<string, string[]>): string {
+    const home = mkdtempSync(join(tmpdir(), "spendwatch-home-"));
+    for (const [dir, files] of Object.entries(structure)) {
+      mkdirSync(join(home, dir), { recursive: true });
+      for (const file of files) writeFileSync(join(home, dir, file), "");
+    }
+    return home;
+  }
+
+  function withEnv(values: Record<string, string | undefined>, run: () => void): void {
+    const previous = new Map(Object.keys(values).map((key) => [key, process.env[key]]));
+    Object.entries(values).forEach(([key, value]) => { if (value === undefined) delete process.env[key]; else process.env[key] = value; });
+    try {
+      run();
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  /** A ledger with one billed call for each subscription. */
+  function ledgerDir(): string {
+    const state = mkdtempSync(join(tmpdir(), "spendwatch-gateway-"));
+    mkdirSync(join(state, "usage"), { recursive: true });
+    const at = new Date();
+    const month = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}`;
+    const row = (vendor: string, id: string) => JSON.stringify({
+      v: 1, at: at.toISOString(), host: "studio", requestId: id, responseId: `resp_gl_${id}`,
+      origin: "gateway", providerType: `${vendor}-subscription`, model: "gpt-5.1-codex",
+      session: true, inputTokens: 900, cachedTokens: 0, cacheWriteTokens: 0, outputTokens: 9,
+    });
+    writeFileSync(join(state, "usage", `usage-${month}.jsonl`), `${row("claude", "c1")}\n${row("copilot", "p1")}\n`);
+    return state;
+  }
+
+  test("lists archived rollouts after the live ones", () => {
+    const home = homeWith({
+      ".codex/sessions": [], ".codex/archived_sessions": [],
+      ".codex-work/sessions": [], ".codex-work/archived_sessions": [],
+    });
+    expect(defaultCodexRoots(home).map((root) => root.path)).toEqual([
+      join(home, ".codex", "sessions"),
+      join(home, ".codex-work", "sessions"),
+      join(home, ".codex", "archived_sessions"),
+      join(home, ".codex-work", "archived_sessions"),
+    ]);
+  });
+
+  test("bills an archived rollout once", () => {
+    const home = homeWith({ ".codex/sessions": [ROLLOUT], ".codex/archived_sessions": [ROLLOUT] });
+    const roots = [join(home, ".codex", "sessions"), join(home, ".codex", "archived_sessions")];
+    const config = join(home, "config.json");
+    writeFileSync(config, JSON.stringify(roots.map((path) => ({ agent: "codex", path }))));
+    withEnv({ SPENDWATCH_CONFIG: config }, () => {
+      const codex = discover({ sinceMs: 0, agents: new Set(["codex"]) }).find((s) => s.id === "codex");
+      expect(codex?.files.map((f) => f.path)).toEqual([join(roots[0]!, ROLLOUT)]);
+    });
+  });
+
+  test("adds the ledger to the Claude and Copilot sources", () => {
+    const home = homeWith({ ".claude/projects": [], ".copilot": [] });
+    const state = ledgerDir();
+    const config = join(home, "config.json");
+    writeFileSync(config, JSON.stringify([
+      { agent: "claude", path: join(home, ".claude", "projects") },
+      { agent: "copilot", path: join(home, ".copilot", "session-store.db") },
+      { agent: "gateway", path: state },
+    ]));
+    withEnv({ SPENDWATCH_CONFIG: config, SPENDWATCH_GATEWAY_SOURCE: undefined }, () => {
+      const found = discover({ sinceMs: 0, agents: new Set(["claude", "copilot"]) });
+      const claude = found.find((s) => s.id === "claude");
+      const copilot = found.find((s) => s.id === "copilot");
+      // A subscription with no local transcripts is still present: the ledger saw it.
+      expect(claude?.files.map((f) => f.key)).toEqual(["gateway:claude"]);
+      expect(copilot?.files.map((f) => f.key)).toEqual(["gateway:copilot"]);
+      expect([claude?.present, copilot?.present, copilot?.parseable]).toEqual([true, true, true]);
+      expect(claude?.files[0]).toMatchObject({ project: "gateway", source: "claude" });
+    });
+  });
+
+  test("reads the ledger only when it is configured or discovered", () => {
+    const home = homeWith({ ".claude/projects": [] });
+    const state = ledgerDir();
+    const config = join(home, "config.json");
+    withEnv({ SPENDWATCH_CONFIG: config, SPENDWATCH_GATEWAY_SOURCE: undefined, SPENDWATCH_GATEWAY_STATE: state }, () => {
+      // An explicit config states where logs live; without a gateway root it
+      // deliberately leaves the ledger out.
+      writeFileSync(config, JSON.stringify([{ agent: "claude", path: join(home, ".claude", "projects") }]));
+      expect(discover({ sinceMs: 0, agents: new Set(["claude"]) })[0]!.files).toEqual([]);
+
+      writeFileSync(config, JSON.stringify([{ agent: "claude", path: join(home, ".claude", "projects") }, { agent: "gateway", path: state }]));
+      expect(discover({ sinceMs: 0, agents: new Set(["claude"]) })[0]!.files.map((f) => f.key)).toEqual(["gateway:claude"]);
+
+      // SPENDWATCH_GATEWAY_SOURCE=off skips it either way.
+      process.env.SPENDWATCH_GATEWAY_SOURCE = "off";
+      expect(discover({ sinceMs: 0, agents: new Set(["claude"]) })[0]!.files).toEqual([]);
+    });
+  });
+
+  test("polls rollouts before the ledger so claims land first", () => {
+    const home = homeWith({ ".codex/sessions": [], ".claude/projects": [], ".copilot": [] });
+    const config = join(home, "config.json");
+    writeFileSync(config, JSON.stringify([
+      { agent: "claude", path: join(home, ".claude", "projects") },
+      { agent: "codex", path: join(home, ".codex", "sessions") },
+      { agent: "copilot", path: join(home, ".copilot", "session-store.db") },
+    ]));
+    const previous = process.env.SPENDWATCH_CONFIG;
+    process.env.SPENDWATCH_CONFIG = config;
+    let found: ReturnType<typeof discover>;
+    try { found = discover({ sinceMs: 0, agents: new Set(["claude", "codex", "copilot"]) }); }
+    finally { if (previous === undefined) delete process.env.SPENDWATCH_CONFIG; else process.env.SPENDWATCH_CONFIG = previous; }
+    expect(found.map((s) => s.id)).toEqual(["claude", "codex", "copilot"]);
+    expect(pollOrder(found).map((s) => s.id)).toEqual(["codex", "claude", "copilot"]);
+    expect(found.map((s) => s.id)).toEqual(["claude", "codex", "copilot"]);
   });
 });
