@@ -94,6 +94,22 @@ where the transcripts behind it still exist:
 spendwatch report --months 13 --sqlite spendwatch.db   # one-time backfill
 ```
 
+Both archives compare `observed_calls` — the calls the agent itself counted —
+rather than billed calls, because one turn can be billed by a subscription
+gateway and still appear twice in the rollout. A report that deduped those
+duplicates keeps its full month: its billed `calls` can fall below the archived
+figure while its `observed_calls` cannot, so the month survives. Older rows fall
+back to their `calls`. Check what a month's transcripts actually contributed:
+
+```sql
+SELECT source, calls, observed_calls FROM spend_report
+WHERE month = '2026-10' AND source LIKE '%:codex%';
+```
+
+`calls` below `observed_calls` is the gateway doing its job — the subscription
+billed those turns, and the transcripts stopped billing them a second time. A
+month where both are equal was never routed at all.
+
 A month holds the agents whose transcripts still existed when it was first
 recorded, which is not the same as the agents you used. Claude Code rotates its
 transcripts after about a month; Codex rollouts persist far longer.
@@ -509,10 +525,11 @@ service account across machines. Filter with `--account <substr>`.
 | agent   | logs | token usage |
 |---------|------|-------------|
 | Claude Code | `~/.claude/projects/**/*.jsonl` | ✓ |
-| Codex CLI   | `~/.codex/sessions/**/rollout-*.jsonl` | ✓ |
+| Codex CLI   | `~/.codex/sessions/**/rollout-*.jsonl`, plus `~/.codex*/archived_sessions` | ✓ |
 | Grok CLI    | `~/.grok/sessions/**/updates.jsonl` | ✓ |
 | Copilot CLI | `~/.copilot/session-store.db` | ✓ per-request token usage and reported AI-credit value |
 | Gemini CLI  | `~/.gemini` | ✓ when present |
+| Subscription gateway | `<state>/usage/usage-YYYY-MM.jsonl` | ✓ per-call tokens, plus AI credits for Copilot rows |
 
 Copilot reads the local `assistant_usage_events` ledger in read-only mode. It
 keeps each request in its actual calendar month, separates cached input from
@@ -527,6 +544,45 @@ individual requests. Cost uses xAI's published per-model rates including the
 200k-token long-context tier; on captured turns that agrees exactly with the
 cost Grok itself reports. Grok exposes no quota endpoint, so it appears in the
 spend report but not in `capacity` or `guard`.
+
+### Subscription gateway
+
+A gateway can bill a Codex or Claude Code turn on a Copilot or Claude
+subscription instead of an API key, and it keeps a month ledger of what it
+billed. Spendwatch reads that ledger as a source, so a routed turn is counted
+once — by the subscription that paid for it — instead of twice.
+
+Rows are read from `usage/usage-YYYY-MM.jsonl`, oldest month file first. The
+state directory is `$SPENDWATCH_GATEWAY_STATE`, else the `stateDirectory` key of
+the gateway's own config (`~/Library/Application Support/Subscription
+Gateway/gateway.json` on macOS, `~/.config/subscription-gateway/gateway.json` on
+Linux — only that key is read), else `state` beside that config.
+`SPENDWATCH_GATEWAY_SOURCE=off` skips the ledger; with an explicit
+`~/.config/spendwatch/config.json`, only a `{ "agent": "gateway", "path": … }`
+root switches it on. `$SPENDWATCH_GATEWAY_PROVIDER_MAP` (`copilot=claude`, or
+JSON) retargets the provider names a telemetry row can arrive with.
+
+| the ledger says | what spendwatch does |
+|---|---|
+| gateway-origin row with a `resp_gl_*` response id | counts the row; the rollout's copy of that turn is dropped |
+| telemetry row for a session turn a rollout claims — same model, same input and output tokens, within 30 seconds | counts the row once, and drops the rollout's copy |
+| telemetry row with `session: false` | counts the row; the gateway never saw a response of its own |
+| an unmarked gateway row, or a telemetry row nothing claimed | leaves it to the transcript, which already bills it |
+
+Rows are keyed by `<host>:<requestId>`, so one call recorded twice counts once
+and the gateway's own row wins the key: it is the row carrying the charge.
+Copilot rows are labelled as they were billed — plain model alias when the
+credits are complete, `<model> (partial credits)` when fewer arrived than the
+call cost, `<model> (unpriced)` when none did, and
+`<model> (telemetry backfill, unpriced)` for a call the gateway only heard about
+afterwards. Claude rows carry no credit figure at all, so they are priced from
+their tokens under the model alias, and only gain a `(telemetry backfill)` suffix
+when telemetry is where they came from. Codex and self-hosted rows are ignored:
+this ledger bills neither.
+
+Gateway rows join the Claude and Copilot tabs — that is whose subscription paid —
+under the project `gateway`. Rollouts are always read before the ledger, because
+a transcript can only give up a turn it has already asked the ledger about.
 
 ## What to automate
 
@@ -577,6 +633,7 @@ There is no automatic device collection.
 - `src/projects.ts` — one project name per working directory, shared by every parser
 - `src/parse.ts` — Claude JSONL → events; `commandPath()` deep shell breakdown
 - `src/codex.ts` — Codex rollout JSONL → same events
+- `src/gateway.ts` — subscription gateway ledger: dedupe, claims, and per-vendor rows
 - `src/grok.ts` — Grok ACP session updates → same events
 - `src/sources.ts` — agent registry: log locations, discovery, account detection, config roots
 - `src/aggregate.ts` — per-session fold → leaderboards + per-account + drill-down samples

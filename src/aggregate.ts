@@ -12,6 +12,7 @@ interface StreamState {
   sessionId: string;
   sidechain: boolean;
   model?: string;
+  observed: number; // calls as the agent counted them, repeats included
   nCalls: number;
   callIdx: Map<string, number>; // requestId -> 0-based call index
   currentPromptKey?: string;
@@ -88,6 +89,8 @@ export interface Report {
   totalTokens: number;
   totalCost: number;
   apiCalls: number;
+  /** Calls as the agent counted them. Absent on reports written before this existed. */
+  observedCalls?: number;
   sessions: number;
   tools: ToolRow[];
   bash: ToolRow[];
@@ -129,6 +132,7 @@ export class Aggregator {
         account,
         sessionId: "?",
         sidechain: fileKey.includes("agent-"),
+        observed: 0,
         nCalls: 0,
         callIdx: new Map(),
         toolUse: new Map(),
@@ -179,6 +183,10 @@ export class Aggregator {
         s.toolUse.set(e.id, { name: e.name, argChars: e.argChars, idx, promptKey: s.currentPromptKey, sub: e.sub, deep: e.deep, detail: e.detail });
         break;
       }
+      case "observed": {
+        s.observed++;
+        return;
+      }
       case "toolresult": {
         const tu = s.toolUse.get(e.id);
         if (tu) s.results.push({ name: tu.name, tokens: estTokens(e.chars), idx: tu.idx, promptKey: tu.promptKey, sub: tu.sub, deep: tu.deep, detail: tu.detail, error: e.error, exit: e.exit });
@@ -215,9 +223,13 @@ export class Aggregator {
     let totalCost = 0;
     let totalTokens = 0;
     let apiCalls = 0;
+    let observedCalls = 0;
     let sinceTs = Infinity;
 
     for (const s of this.streams.values()) {
+      // Streams from parsers that never emit `observed` (Claude, Grok, pi) still
+      // know how many calls they folded, so fall back to those.
+      observedCalls += s.observed || s.usage.size;
       sessions.add(s.sessionId);
       sources.add(s.source);
       let acc = accounts.get(s.account);
@@ -336,6 +348,7 @@ export class Aggregator {
       totalTokens,
       totalCost,
       apiCalls,
+      observedCalls,
       sessions: sessions.size,
       tools: by([...tools.values()], (t) => t.ctxCost),
       bash: by([...bash.values()], (t) => t.ctxCost),

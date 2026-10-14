@@ -33,7 +33,7 @@ import { runRouteCommand } from "./route-cli";
 import { runRunCommand } from "./run-cli";
 import { runEvalCommand } from "./eval-cli";
 import { IncrementalReader } from "./scan";
-import { discover, type SourceStatus } from "./sources";
+import { discover, pollOrder, type SourceStatus } from "./sources";
 import { reportOperationalError } from "./telemetry";
 
 interface Args {
@@ -255,8 +255,9 @@ sources:
   grok     ~/.grok/sessions/**/updates.jsonl     (token usage ✓)
   pi       ~/.pi/agent/sessions/*/*.jsonl        (token usage ✓)
   omp      ~/.omp/agent/sessions/*/*.jsonl       (oh-my-pi, token usage ✓)
-  copilot  ~/.config/github-copilot             (binary store, no usage)
+  copilot  ~/.copilot/session-store.db           (token usage ✓)
   gemini   ~/.gemini                             (when present)
+  gateway  <gateway state>/usage/*.jsonl         (subscription ledger; SPENDWATCH_GATEWAY_SOURCE=off to skip)
 
 multi-account:
   Accounts are auto-detected (Claude email, Codex JWT, Grok auth.json). For roots
@@ -293,15 +294,19 @@ function build(a: Args, periods: Period[]): Built {
     const sink: Sink = periods.length === 1 && !periods[0]!.month
       ? new Aggregator(periods[0])
       : new MonthlyAggregator(periods);
-    const reader = new IncrementalReader(sink);
+    readers.set(st.id, { reader: new IncrementalReader(sink), sink, status: st });
+  }
+  // Rollouts are read first: a gateway row can only be dropped or backfilled
+  // after the transcript it duplicates has already claimed it.
+  for (const st of pollOrder(statuses)) {
+    const slot = readers.get(st.id)!;
     for (const f of st.files) {
       // Claude and Grok can pre-filter by project (it's in the dir name).
       if ((st.id === "claude" || st.id === "grok") && !matchesProject(f.project, a.project)) continue;
       if (a.account && !f.account.toLowerCase().includes(a.account.toLowerCase())) continue;
-      reader.poll(f);
-      reader.flush(f);
+      slot.reader.poll(f);
+      slot.reader.flush(f);
     }
-    readers.set(st.id, { reader, sink, status: st });
   }
   return { statuses, readers, periods };
 }
@@ -539,7 +544,7 @@ function watch(a: Args) {
   draw();
   setInterval(() => {
     let changed = 0;
-    for (const st of discover({ sinceMs, agents: a.agents })) {
+    for (const st of pollOrder(discover({ sinceMs, agents: a.agents }))) {
       const slot = built.readers.get(st.id);
       if (!slot) continue;
       for (const f of st.files) changed += slot.reader.poll(f);

@@ -11,6 +11,7 @@ export function initReportArchive(db: Database): void {
     );
     CREATE TABLE IF NOT EXISTS spend_report (
       month TEXT NOT NULL, source TEXT NOT NULL, calls INTEGER NOT NULL,
+      observed_calls INTEGER,
       report_json TEXT NOT NULL, updated_at INTEGER NOT NULL,
       PRIMARY KEY (month, source)
     );
@@ -24,6 +25,15 @@ export function initReportArchive(db: Database): void {
       measured_at INTEGER NOT NULL, PRIMARY KEY(source,time_zone,month)
     );
   `);
+  addObservedCallsColumn(db, "spend_report");
+}
+
+/** Archives predate this column; ALTER is the only way to add it without a rebuild. */
+export function addObservedCallsColumn(db: Database, table: string): void {
+  const named = db.query<{ name: string }, [string, string]>(
+    "SELECT name FROM pragma_table_info(?) WHERE name = ?",
+  ).get(table, "observed_calls");
+  if (!named) db.exec(`ALTER TABLE ${table} ADD COLUMN observed_calls INTEGER`);
 }
 
 /** Bind old unlabeled measurements to the first installation, without copying totals. */
@@ -49,13 +59,16 @@ export function archiveSource(db: Database, report: Report): string {
   return storageSource;
 }
 
-export function archiveReport(db: Database, report: Report, source: string, generatedAt: number): void {
-  db.prepare(`
-    INSERT INTO spend_report VALUES (?,?,?,?,?)
+export function archiveReport(db: Database, report: Report, source: string, generatedAt: number): boolean {
+  const result = db.prepare(`
+    INSERT INTO spend_report(month, source, calls, observed_calls, report_json, updated_at)
+    VALUES (?,?,?,?,?,?)
     ON CONFLICT(month, source) DO UPDATE SET
-      calls = excluded.calls, report_json = excluded.report_json, updated_at = excluded.updated_at
-    WHERE excluded.calls >= spend_report.calls
-  `).run(report.period!.key, source, report.apiCalls, JSON.stringify(report), generatedAt);
+      calls = excluded.calls, observed_calls = excluded.observed_calls,
+      report_json = excluded.report_json, updated_at = excluded.updated_at
+    WHERE excluded.observed_calls >= COALESCE(spend_report.observed_calls, spend_report.calls)
+  `).run(report.period!.key, source, report.apiCalls, report.observedCalls ?? report.apiCalls, JSON.stringify(report), generatedAt);
+  return result.changes > 0;
 }
 
 /** Restore the fullest reports for every installation, merged under the original machine. */
