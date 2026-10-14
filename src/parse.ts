@@ -48,7 +48,9 @@ export type Event =
   | { t: "api"; sessionId: string; requestId: string; model?: string; usage: Usage; costUsd?: number; sidechain: boolean; ts: number }
   | { t: "tooluse"; sessionId: string; requestId: string; id: string; name: string; argChars: number; sub?: string; deep?: string; detail?: string; ts: number }
   | { t: "toolresult"; sessionId: string; id: string; chars: number; error?: boolean; exit?: number; ts: number }
-  | { t: "meta"; sessionId: string; project?: string; model?: string; ts: number };
+  | { t: "meta"; sessionId: string; project?: string; model?: string; ts: number }
+  /** A call the agent observed, before any dedup — the CLI's own call count. */
+  | { t: "observed"; sessionId: string; ts: number };
 
 // "<command-name>/goal</command-name>...<command-args>x</command-args>..." -> "/goal x"
 export function cleanPromptText(text: string): string {

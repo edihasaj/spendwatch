@@ -17,6 +17,7 @@ import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
 import { walkJsonl } from "./scan";
 import { collectCopilot, defaultCopilotRoots } from "./copilot";
+import { GatewayIndex, type GatewayLedger } from "./gateway";
 
 export interface SourceFile {
   path: string;
@@ -70,7 +71,8 @@ function shortEmail(email?: string): string | undefined {
 }
 
 // Claude account: <home>/.claude.json (or <root>/../.claude.json) → oauthAccount.emailAddress
-function claudeAccount(projectsDir: string): string {
+// Exported for the gateway ledger, whose Claude rows belong to the same account.
+export function claudeAccount(projectsDir = join(homedir(), ".claude", "projects")): string {
   const candidates = [join(homedir(), ".claude.json"), join(dirname(dirname(projectsDir)), ".claude.json"), join(dirname(projectsDir) + ".json")];
   for (const c of candidates) {
     try {
@@ -196,7 +198,14 @@ function profileRoots(home: string, agent: string, dot: string): RootCfg[] {
 }
 
 export function defaultCodexRoots(home = homedir()): RootCfg[] {
-  return profileRoots(home, "codex", ".codex");
+  // Codex moves a rollout to `archived_sessions` instead of deleting it, so the
+  // same basename can sit in both. Listing the live roots first keeps that copy,
+  // which the rollout-name dedupe in `discover` then bills exactly once.
+  const roots = profileRoots(home, "codex", ".codex");
+  const archived = roots
+    .map((root) => ({ agent: "codex", path: join(dirname(root.path), "archived_sessions") }))
+    .filter((root) => existsSync(root.path));
+  return [...roots, ...archived];
 }
 
 export function defaultGrokRoots(home = homedir()): RootCfg[] {
@@ -231,13 +240,17 @@ function collectClaude(dir: string, account: string, sinceMs: number, project?: 
   return files;
 }
 
-function collectCodex(dir: string, account: string, sinceMs: number): SourceFile[] {
+function collectCodex(dir: string, account: string, sinceMs: number, gateway?: GatewayLedger): SourceFile[] {
   const files: SourceFile[] = [];
   if (!existsSync(dir)) return files;
   const acct = account || codexAccount(dir);
   for (const path of walkJsonl(dir)) {
     if (!path.includes("rollout-")) continue;
-    if (mtimeOk(path, sinceMs)) files.push({ path, project: "?", source: "codex", account: acct, parse: parseCodexLine, ctx: newCodexCtx() });
+    if (!mtimeOk(path, sinceMs)) continue;
+    const ctx = newCodexCtx(gateway);
+    // With a ledger loaded, a gateway-marked response is billed there instead.
+    if (gateway) ctx.skipMarked = true;
+    files.push({ path, project: "?", source: "codex", account: acct, parse: parseCodexLine, ctx });
   }
   return files;
 }
@@ -290,9 +303,23 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   const codexRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "codex") : defaultCodexRoots();
   const grokRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "grok") : defaultGrokRoots();
 
+  // The gateway ledger is one read for the whole run: it answers claims for every
+  // rollout and supplies the rows the subscriptions billed on their own.
+  // With an explicit config, only a `gateway` root enables it — a config states
+  // where logs live, and it may deliberately leave the gateway out.
+  const gatewayRoot = cfg?.find((r) => r.agent === "gateway");
+  const gatewayOn = process.env.SPENDWATCH_GATEWAY_SOURCE !== "off" && (cfg ? !!gatewayRoot : true);
+  const gateway = gatewayOn ? GatewayIndex.load({ sinceMs: opts.sinceMs, stateDir: gatewayRoot?.path }) : undefined;
+
   if (want("claude")) {
     const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project));
-    out.push({ id: "claude", present: claudeRoots.some((r) => existsSync(r.path)), parseable: true, files });
+    const ledger = gateway?.files("claude") ?? [];
+    out.push({
+      id: "claude",
+      present: claudeRoots.some((r) => existsSync(r.path)) || ledger.length > 0,
+      parseable: true,
+      files: [...files, ...ledger],
+    });
   }
 
   if (want("codex")) {
@@ -306,14 +333,25 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
     const billable = codexRoots.filter((r) => !isFreeCodexHome(r.path));
     const ordered = [...billable].sort((a, b) => Number(isPlayground(a)) - Number(isPlayground(b)));
     const files = ordered
-      .flatMap((r) => collectCodex(r.path, r.account ?? "", opts.sinceMs))
+      .flatMap((r) => collectCodex(r.path, r.account ?? "", opts.sinceMs, gateway))
       .filter((file) => {
         const rollout = basename(file.path);
         if (seenRollouts.has(rollout)) return false;
         seenRollouts.add(rollout);
         return true;
       });
-    out.push({ id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, files });
+    const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, files };
+    // Asked after the rollouts have been read, because only the parser knows what
+    // a rollout recorded: gateway-routed turns with token_count and no record were
+    // deduped against telemetry rows alone.
+    if (gateway) Object.defineProperty(codex, "note", {
+      get: () => files.some((f) => f.ctx?.modelProvider === "subscription_gateway" && f.ctx?.lastCount !== undefined)
+        ? "gateway-routed rollouts recorded token_count without token_usage_record; those calls were matched against the gateway ledger"
+        : undefined,
+      enumerable: true,
+      configurable: true,
+    });
+    out.push(codex);
   }
 
   if (want("grok")) {
@@ -333,9 +371,11 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   if (want("copilot")) {
     const roots = cfg ? cfg.filter((r) => r.agent === "copilot") : defaultCopilotRoots().map((path) => ({ agent: "copilot", path, account: undefined }));
     const files = roots.flatMap((r) => collectCopilot(r.path, opts.sinceMs, r.account));
-    const present = roots.some((r) => existsSync(r.path));
-    out.push({ id: "copilot", present, parseable: files.length > 0, files,
-      note: present && !files.length ? "no readable per-request usage for this period" : undefined });
+    const ledger = gateway?.files("copilot") ?? [];
+    const all = [...files, ...ledger];
+    const present = roots.some((r) => existsSync(r.path)) || ledger.length > 0;
+    out.push({ id: "copilot", present, parseable: all.length > 0, files: all,
+      note: present && !all.length ? "no readable per-request usage for this period" : undefined });
   }
 
   // Gemini CLI — ~/.gemini (logs/telemetry); structure TBD.
@@ -346,4 +386,13 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   }
 
   return out;
+}
+
+/**
+ * Rollouts must be read before the gateway ledger is, so every claim a transcript
+ * can make is already taken when its gateway rows are folded. Reader order is
+ * untouched; only the polling pass is reordered.
+ */
+export function pollOrder(statuses: SourceStatus[]): SourceStatus[] {
+  return [...statuses].sort((a, b) => Number(a.id !== "codex") - Number(b.id !== "codex"));
 }
