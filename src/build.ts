@@ -16,9 +16,23 @@ export interface BuildOptions {
 
 type Sink = Aggregator | MonthlyAggregator;
 
+/** Where one source's files are read and what they add up to. */
+interface Slot {
+  reader: IncrementalReader;
+  sink: Sink;
+  status: SourceStatus;
+}
+
+function newSlot(status: SourceStatus, periods: Period[]): Slot {
+  const sink: Sink = periods.length === 1 && !periods[0]!.month
+    ? new Aggregator(periods[0])
+    : new MonthlyAggregator(periods);
+  return { reader: new IncrementalReader(sink), sink, status };
+}
+
 export interface Built {
   statuses: SourceStatus[];
-  readers: Map<string, { reader: IncrementalReader; sink: Sink; status: SourceStatus }>;
+  readers: Map<string, Slot>;
   /** Reads the rollouts a filter leaves out, for their gateway claims only; it reports nothing. */
   claims: IncrementalReader;
   periods: Period[];
@@ -59,13 +73,8 @@ export function build(a: BuildOptions, periods: Period[], { watching = false }: 
   const sinceMs = Math.min(...periods.map((period) => period.from));
   // Codex project lives inside the file, so don't pre-filter codex by project name.
   const statuses = discover({ sinceMs, agents: a.agents, project: undefined });
-  const readers = new Map<string, { reader: IncrementalReader; sink: Sink; status: SourceStatus }>();
-  for (const st of statuses) {
-    const sink: Sink = periods.length === 1 && !periods[0]!.month
-      ? new Aggregator(periods[0])
-      : new MonthlyAggregator(periods);
-    readers.set(st.id, { reader: new IncrementalReader(sink), sink, status: st });
-  }
+  const readers = new Map<string, Slot>();
+  for (const st of statuses) readers.set(st.id, newSlot(st, periods));
   const claims = new IncrementalReader(new Aggregator());
   // Rollouts are read first: a gateway row can only be dropped or backfilled
   // after the transcript it duplicates has already claimed it.
@@ -83,28 +92,55 @@ export function build(a: BuildOptions, periods: Period[], { watching = false }: 
 }
 
 /**
+ * Brings a source's status up to date with this tick's discovery: a source that had nothing to read when `watch`
+ * started (a ledger with no row for the account yet) can have something now, and its first read must not stay the
+ * last word on whether it reports. A source never goes back to having nothing, as a report it has made would not.
+ */
+function follow(known: SourceStatus, now: SourceStatus): void {
+  if (now.parseable) known.parseable = true;
+  if (now.ledger) known.ledger = true;
+}
+
+/**
  * One watch tick: re-read what each newly discovered file appended since the last tick, into the reader the
  * first read chose for it, with the same filters. Every reader keeps its parsers' state between ticks.
  * Returns the bytes (or ledger events) consumed.
  */
 export function pollWatched(built: Built, statuses: SourceStatus[], a: BuildOptions): number {
   let changed = 0;
+  // The files each reader is given this tick, and how it carries a kept file this discovery did not find again.
+  const found = new Map<IncrementalReader, SourceFile[]>();
+  const carries = new Map<IncrementalReader, NonNullable<SourceStatus["carry"]>>();
+  const readerOf = (st: SourceStatus, slot: Slot, f: SourceFile): IncrementalReader | undefined => {
+    const target = readerFor(st, f, a);
+    return target === "report" ? slot.reader : target === "claims" ? built.claims : undefined;
+  };
   // This tick's ledger is new, and has to give each rollout's earlier decisions back their rows before any rollout
   // makes a new one: a rollout read first would otherwise take a row another rollout's earlier call held.
   for (const st of pollOrder(statuses)) {
     const slot = built.readers.get(st.id);
     if (!slot) continue;
+    follow(slot.status, st);
     for (const f of st.files) {
-      const target = readerFor(st, f, a);
-      (target === "report" ? slot.reader : target === "claims" ? built.claims : undefined)?.renew(f);
+      const reader = readerOf(st, slot, f);
+      if (!reader) continue;
+      reader.renew(f);
+      const list = found.get(reader);
+      if (list) list.push(f);
+      else found.set(reader, [f]);
+    }
+    // A rollout that left the roots the config names (finished, and filed away) still has decisions the ledger must hold.
+    if (st.carry) for (const reader of [slot.reader, built.claims]) {
+      carries.set(reader, st.carry);
+      reader.renewAbsent(found.get(reader) ?? [], st.carry);
     }
   }
+  for (const reader of carries.keys()) changed += reader.settleAbsent(found.get(reader) ?? []);
   for (const st of pollOrder(statuses)) {
     const slot = built.readers.get(st.id);
     if (!slot) continue;
     for (const f of st.files) {
-      const target = readerFor(st, f, a);
-      const reader = target === "report" ? slot.reader : target === "claims" ? built.claims : undefined;
+      const reader = readerOf(st, slot, f);
       if (reader) changed += reader.poll(f);
     }
   }

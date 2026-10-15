@@ -26,6 +26,9 @@ export function* walkJsonl(dir: string): Generator<string> {
   }
 }
 
+/** The part of a file that identifies it and settles what its parser left waiting; it keeps nothing of one discovery. */
+type Settling = Pick<SourceFile, "path" | "key" | "project" | "source" | "account" | "settle">;
+
 // Tracks per-file read offsets so watch mode only parses appended bytes.
 // Parser is supplied per-file via SourceFile, so one reader serves all sources.
 export class IncrementalReader {
@@ -36,6 +39,8 @@ export class IncrementalReader {
   private contexts = new Map<string, unknown>();
   /** The `version` each events-backed file had when it was last folded. */
   private versions = new Map<string, string>();
+  /** What is needed to settle each file that has parser state if `watch` stops discovering it (see `renewAbsent`). */
+  private seen = new Map<string, Settling>();
 
   constructor(private agg: EventSink) {}
 
@@ -43,7 +48,7 @@ export class IncrementalReader {
    * A file moves (Codex files a finished rollout under archived_sessions) but its offset, parser state and
    * stream belong to the file, so a source that names its files gives them a stable `key`.
    */
-  private identity(file: SourceFile): string {
+  private identity(file: Pick<SourceFile, "path" | "key">): string {
     return file.key ?? file.path;
   }
 
@@ -101,7 +106,7 @@ export class IncrementalReader {
     return consumed + settled;
   }
 
-  private settle(file: SourceFile, ctx: unknown, final: boolean): number {
+  private settle(file: Settling, ctx: unknown, final: boolean): number {
     if (!file.settle) return 0;
     // The stream opens only for an event: an empty file must not become a session.
     let fold: ((event: Event) => void) | undefined;
@@ -124,10 +129,33 @@ export class IncrementalReader {
 
   private context(file: SourceFile): unknown {
     const id = this.identity(file);
+    this.seen.set(id, { path: file.path, key: file.key, project: file.project, source: file.source, account: file.account, settle: file.settle });
     if (!this.contexts.has(id)) this.contexts.set(id, file.ctx);
     const kept = this.contexts.get(id);
     if (kept !== file.ctx) file.renew?.(kept);
     return kept;
+  }
+
+  /**
+   * The files this reader has parser state for that `found` does not hold: ones the agent moved out of every root
+   * (Codex files a finished rollout under archived_sessions, which a config may leave out) or deleted. What they
+   * decided about the gateway ledger, and the calls they left waiting for a row, still count.
+   */
+  private absent(found: SourceFile[]): Array<{ file: Settling; ctx: unknown }> {
+    const here = new Set(found.map((file) => this.identity(file)));
+    return [...this.seen].filter(([id]) => !here.has(id)).map(([id, file]) => ({ file, ctx: this.contexts.get(id) }));
+  }
+
+  /** Hands each absent file's kept state what this discovery decided afresh, as `renew` does for a file found again. */
+  renewAbsent(found: SourceFile[], carry: (kept: any) => void): void {
+    for (const { ctx } of this.absent(found)) carry(ctx);
+  }
+
+  /** Decides what each absent file left waiting, against this discovery (see `SourceFile.settle`). */
+  settleAbsent(found: SourceFile[]): number {
+    let count = 0;
+    for (const { file, ctx } of this.absent(found)) count += this.settle(file, ctx, false);
+    return count;
   }
 
   /**
