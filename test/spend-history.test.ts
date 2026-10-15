@@ -292,10 +292,11 @@ describe("monthly spend archive", () => {
 
   test("a month whose every call was routed replaces the stale month that billed those turns", () => {
     const path = dbPath();
-    const stale = { ...report("2026-10", "client:codex", 26_000, 50), observedCalls: 50, tokenDays: dayRows("2026-10", [["2026-10-05", 26_000]]) };
+    // The serving Mac's own Codex month, read before its gateway kept a ledger: all 50 turns billed in Codex.
+    const stale = { ...report("2026-10", "studio:codex", 26_000, 50), observedCalls: 50, tokenDays: dayRows("2026-10", [["2026-10-05", 26_000]]) };
     writeMonthlySpend(path, [stale], { generatedAt: 1 });
-    // The ledger now bills all 50 turns on the serving Mac, so this Mac bills none of them.
-    const routed: Report = { ...report("2026-10", "client:codex", 0, 0), observedCalls: 50, ledger: true, tokenDays: dayRows("2026-10", []) };
+    // Read with its ledger, which holds a row for every one of them: the ledger bills all 50, Codex none.
+    const routed: Report = { ...report("2026-10", "studio:codex", 0, 0), observedCalls: 50, ledger: true, routedCalls: 50, tokenDays: dayRows("2026-10", []) };
     expect(writeMonthlySpend(path, [routed], { generatedAt: 2 }).rows).toBeGreaterThan(0);
     expect(loadMonthlySpend(path)[0]!.tokens).toBe(0);
     expect(loadArchivedReports(path)[0]!.totalTokens).toBe(0);

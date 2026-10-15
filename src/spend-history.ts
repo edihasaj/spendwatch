@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import type { Report } from "./aggregate";
 import { monthLabel } from "./periods";
 import { planLedgerMonths } from "./archive-ledger";
+import { archivedCoverage, byMonthSource, callTotals, settledDifference } from "./gateway-settle";
 import { addArchiveColumns, archivedSourceLabels, archiveReport, archiveSource, fullerRead, initReportArchive } from "./spend-report-archive";
 import {archiveTokenDays} from "./token-days";
 
@@ -174,7 +175,10 @@ interface Row {
   updatedAt: number;
 }
 
-/** Every recorded month, newest first, with its per-source and per-project breakdown. */
+/**
+ * Every recorded month, newest first, with its per-source and per-project breakdown. A Codex call another Mac's
+ * gateway billed is taken out of the client's rows here, as `loadArchivedReports` takes it out of its report.
+ */
 export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 12): MonthlySpend[] {
   const db = new Database(path, { readonly: true, create: false });
   try {
@@ -189,12 +193,18 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
         FROM spend_month ORDER BY month DESC, tokens DESC
       `)
       .all();
-    const projectRows = db
-      .query<{ month: string; project: string; tokens: number; cost: number }, []>(`
-        SELECT month, project, SUM(tokens) AS tokens, SUM(cost) AS cost
-        FROM spend_month_project GROUP BY month, project ORDER BY month DESC, tokens DESC
-      `)
-      .all();
+    const coverage = archivedCoverage(db);
+    for (const row of rows) {
+      const calls = byMonthSource(coverage, row.month, row.source);
+      if (!calls.length) continue;
+      const covered = callTotals(calls);
+      // Never below zero: the calls were part of this read, so a smaller row is not the read they came from.
+      row.tokens = Math.max(0, row.tokens - covered.tokens);
+      row.cost = Math.max(0, settledDifference(row.cost, covered.cost));
+      row.calls = Math.max(0, row.calls - covered.calls);
+    }
+    if (coverage.size) rows.sort((a, b) => b.month.localeCompare(a.month) || b.tokens - a.tokens);
+    const projectRows = monthProjects(db, coverage);
     const months = new Map<string, MonthlySpend>();
     for (const row of rows) {
       let month = months.get(row.month);
@@ -243,4 +253,24 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
   } finally {
     db.close();
   }
+}
+
+/** Project totals per month across sources, largest first, less the calls another Mac's gateway billed. */
+function monthProjects(db: Database, coverage: ReturnType<typeof archivedCoverage>): Array<{ month: string; project: string; tokens: number; cost: number }> {
+  const totals = new Map<string, { month: string; project: string; tokens: number; cost: number }>();
+  const rows = db.query<{ month: string; source: string; project: string; tokens: number; cost: number }, []>(
+    "SELECT month, source, project, tokens, cost FROM spend_month_project",
+  ).all();
+  for (const row of rows) {
+    const calls = byMonthSource(coverage, row.month, row.source).filter((call) => call.project.toLowerCase() === row.project.toLowerCase());
+    const covered = callTotals(calls);
+    const key = JSON.stringify([row.month, row.project]);
+    const total = totals.get(key) ?? { month: row.month, project: row.project, tokens: 0, cost: 0 };
+    total.tokens += calls.length ? Math.max(0, row.tokens - covered.tokens) : row.tokens;
+    total.cost += calls.length ? Math.max(0, settledDifference(row.cost, covered.cost)) : row.cost;
+    totals.set(key, total);
+  }
+  return [...totals.values()]
+    .filter((row) => row.tokens > 0 || row.cost > 0)
+    .sort((a, b) => b.month.localeCompare(a.month) || b.tokens - a.tokens);
 }

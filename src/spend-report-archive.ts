@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { Report } from "./aggregate";
+import { settleAcrossMacs } from "./gateway-settle";
 import { mergeReports } from "./reports";
 
 export function initReportArchive(db: Database): void {
@@ -119,13 +120,17 @@ export function archiveReport(db: Database, report: Report, source: string, gene
   return (report.routedCalls ?? 0) < (stored?.routed ?? 0) ? "placement" : "fewer";
 }
 
-/** Restore the fullest reports for every installation, merged under the original machine. */
+/**
+ * Restore the fullest reports for every installation, merged under the original machine. Each was archived as its
+ * Mac read it; read back together, a Codex call another Mac's gateway billed is taken out of the client's report.
+ */
 export function loadArchivedReports(path: string): Report[] {
   const db = new Database(path, { readonly: true, create: false });
   try {
     const groups = new Map<string, Report[]>();
-    for (const row of db.query<{ report_json: string }, []>("SELECT report_json FROM spend_report ORDER BY month, source").all()) {
-      const report = JSON.parse(row.report_json) as Report;
+    const archived = db.query<{ report_json: string }, []>("SELECT report_json FROM spend_report ORDER BY month, source").all()
+      .map((row) => JSON.parse(row.report_json) as Report);
+    for (const report of settleAcrossMacs(archived)) {
       const key = JSON.stringify([report.period!.key, report.source]);
       const group = groups.get(key) ?? [];
       group.push(report);

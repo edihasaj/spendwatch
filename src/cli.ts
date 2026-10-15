@@ -27,6 +27,7 @@ import { attachSessionEquivalentForecasts } from "./session-equivalents";
 import { serveDashboard, testBackgroundPush } from "./push-server";
 import { renderBrief, renderOverview, renderReport } from "./render";
 import { labelReports, loadReports, type AccountGrouping } from "./reports";
+import { settledAmong } from "./gateway-settle";
 import { runRouteCommand } from "./route-cli";
 import { runRunCommand } from "./run-cli";
 import { runEvalCommand } from "./eval-cli";
@@ -295,7 +296,9 @@ async function report(a: Args) {
   // for, show the newest one it actually contains rather than silently emptying
   // the page because the collector's calendar has already moved on.
   const shown = a.inputs.length && !a.month && !a.daysExplicit ? newestPopulated(byPeriod, primary.key) : primary.key;
-  const reports = byPeriod.get(shown) ?? [];
+  const measured = byPeriod.get(shown) ?? [];
+  // Shown with each routed turn counted once where several Macs meet; `--json` passes the reports on as measured.
+  const reports = settledAmong(measured, [...byPeriod.values()].flat());
   if (a.json) {
     // Every measured period ships in one payload so a collector can merge months
     // from several machines without a second pass over the transcripts. Imported
@@ -306,7 +309,7 @@ async function report(a: Args) {
       ? [...byPeriod.values()].flat()
       : periods.length > 1
         ? [...byPeriod.values()].flat().filter((report) => (report.observedCalls ?? report.apiCalls) > 0)
-        : reports;
+        : measured;
     // Wait for slow consumers such as SSH to drain large reports before exit.
     await new Promise<void>((resolve, reject) => {
       process.stdout.write(JSON.stringify(payload, null, 2) + "\n", (error) =>
