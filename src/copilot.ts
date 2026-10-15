@@ -21,6 +21,9 @@ interface UsageRow {
   created_at: string;
 }
 
+/** Sessions whose usage rows are read together. */
+const BATCH = 50;
+
 const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
 
 export function defaultCopilotRoots(): string[] {
@@ -94,42 +97,58 @@ export function collectCopilot(root: string, sinceMs: number, account?: string):
         AND julianday(u.created_at) >= julianday(?)
       ) ORDER BY s.id
     `).all(new Date(sinceMs).toISOString());
-    // Every read of a session's usage opens the store afresh: the CLI keeps writing to it while Spendwatch watches.
-    const usageOf = (sessionId: string): UsageRow[] => {
+    // Every read opens the store afresh: the CLI keeps writing to it while Spendwatch watches. The table has no index
+    // on the session, so each read scans all of it: a session's rows are read together with those of the next
+    // `BATCH - 1` sessions, once per discovery, and each file takes its own when it is polled.
+    const readRows = (sessionIds: string[]): Map<string, UsageRow[]> => {
       const reader = new Database(path, { readonly: true, create: false });
       try {
-        return reader.query<UsageRow, [string]>(`
-          SELECT id, model, ${selection}, created_at
-          FROM assistant_usage_events WHERE session_id=? ORDER BY id
-        `).all(sessionId);
+        const bySession = new Map<string, UsageRow[]>(sessionIds.map((id) => [id, []]));
+        const rows = reader.query<UsageRow & { session_id: string }, string[]>(`
+          SELECT session_id, id, model, ${selection}, created_at
+          FROM assistant_usage_events WHERE session_id IN (${sessionIds.map(() => "?").join(",")}) ORDER BY id
+        `).all(...sessionIds);
+        for (const { session_id, ...row } of rows) bySession.get(String(session_id))?.push(row);
+        return bySession;
       } finally { reader.close(); }
     };
-    return sessions.map((session): SourceFile => {
-      const seen = new Map<number, string>();
+    const ids = sessions.map((session) => session.id);
+    const loaded = new Set<number>();
+    const waiting = new Map<string, UsageRow[]>();
+    const usageOf = (index: number): UsageRow[] => {
+      const first = index - (index % BATCH);
+      if (!loaded.has(first)) {
+        loaded.add(first);
+        for (const [id, rows] of readRows(ids.slice(first, first + BATCH))) waiting.set(id, rows);
+      }
+      const rows = waiting.get(ids[index]!);
+      waiting.delete(ids[index]!);
+      // A file polled again in the same discovery has taken its rows already: read them afresh, they may have changed.
+      return rows ?? readRows([ids[index]!]).get(ids[index]!)!;
+    };
+    return sessions.map((session, index): SourceFile => {
       const project = session.cwd ? projectFromCwd(session.cwd) : "?";
-      let unreadable = 0;
+      function* eventsOf(rows: UsageRow[]): Generator<Event> {
+        yield { t: "meta", sessionId: session.id, project, ts: 0 };
+        for (const row of rows) {
+          const ts = timestamp(row.created_at);
+          if (!Number.isFinite(ts)) continue;
+          const nano = row.total_nano_aiu;
+          yield { t: "api", sessionId: session.id, requestId: String(row.id), model: row.model,
+            usage: copilotUsage(row), costUsd: nano !== null && Number.isFinite(nano) && nano >= 0 ? nano / 100_000_000_000 : undefined,
+            sidechain: false, ts };
+        }
+      }
       return {
         path, key: `copilot-session:${session.id}`, project, source: "copilot", account: account ?? accountLabel(),
         parse: () => [], ctx: null,
-        // What the session's events depend on, so a `watch` tick that finds the session unchanged folds nothing and
-        // draws nothing. A finalized charge updates a row in place, so the whole row counts, not only how many there are.
-        version: () => {
-          try { return `${Bun.hash(JSON.stringify(usageOf(session.id)))}`; } catch { return `unreadable:${unreadable++}`; }
-        },
-        events: function* (): Generator<Event> {
-          const rows = usageOf(session.id);
-          yield { t: "meta", sessionId: session.id, project, ts: 0 };
-          for (const row of rows) {
-            const signature = JSON.stringify(row);
-            if (seen.get(row.id) === signature) continue;
-            const ts = timestamp(row.created_at);
-            if (!Number.isFinite(ts)) continue;
-            const nano = row.total_nano_aiu;
-            yield { t: "api", sessionId: session.id, requestId: String(row.id), model: row.model,
-              usage: copilotUsage(row), costUsd: nano !== null && Number.isFinite(nano) && nano >= 0 ? nano / 100_000_000_000 : undefined,
-              sidechain: false, ts };
-            seen.set(row.id, signature);
-          }
+        // One read of the session gives its events and what they depend on, so a `watch` tick that finds the session
+        // unchanged folds nothing and draws nothing. A finalized charge updates a row in place, so the whole row
+        // counts, not only how many there are. A store that cannot be read now is skipped until the next tick.
+        snapshot: () => {
+          let rows: UsageRow[];
+          try { rows = usageOf(index); } catch { return undefined; }
+          return { version: `${Bun.hash(JSON.stringify(rows))}`, events: eventsOf(rows) };
         },
       };
     });
