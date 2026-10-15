@@ -43,6 +43,11 @@ export interface SourceStatus {
   note?: string;
   /** The gateway ledger was read for this source: its routed turns are counted from the ledger once. */
   ledger?: boolean;
+  /**
+   * Read so its rollouts can claim ledger rows, without reporting anything. The gateway's telemetry rows count
+   * only once a rollout claims them, so `--agents claude` still needs the Codex rollouts it did not ask for.
+   */
+  claimOnly?: boolean;
   files: SourceFile[];
 }
 
@@ -91,6 +96,19 @@ export function claudeAccount(projectsDir = join(homedir(), ".claude", "projects
     } catch {}
   }
   return "default";
+}
+
+/**
+ * The Claude account that signed in under one `CLAUDE_CONFIG_DIR`, which keeps its `.claude.json` inside it.
+ * A directory with no signed-in account is named by the directory itself: it must never be mistaken for the
+ * default account, whose turns are billed elsewhere.
+ */
+export function claudeAccountIn(configDir: string): string {
+  try {
+    const e = shortEmail(JSON.parse(readFileSync(join(configDir, ".claude.json"), "utf8"))?.oauthAccount?.emailAddress);
+    if (e) return e;
+  } catch {}
+  return basename(configDir) || "default";
 }
 
 // Codex profile label: ~/.codex → "main", ~/.codex-tertiary → "tertiary".
@@ -258,8 +276,15 @@ function collectCodex(dir: string, account: string, sinceMs: number, gateway?: G
     const ctx = newCodexCtx(gateway);
     // With a ledger loaded, a gateway-marked response is billed there instead.
     if (gateway) ctx.skipMarked = true;
-    files.push({ path, project: "?", source: "codex", account: acct, parse: parseCodexLine, ctx,
-      renew: (kept: CodexCtx) => { kept.gateway = ctx.gateway; kept.skipMarked = ctx.skipMarked; } });
+    // A rollout keeps its identity when Codex moves it into archived_sessions, so a watching reader carries on
+    // from its offset instead of reading the file again as a new one.
+    files.push({ path, key: `codex:${basename(path)}`, project: "?", source: "codex", account: acct, parse: parseCodexLine, ctx,
+      renew: (kept: CodexCtx) => {
+        kept.gateway = ctx.gateway;
+        kept.skipMarked = ctx.skipMarked;
+        // The reloaded ledger may now hold rows for calls this rollout already billed on an earlier tick.
+        ctx.gateway?.adopt?.(kept.billed ?? []);
+      } });
   }
   return files;
 }
@@ -332,7 +357,10 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
     });
   }
 
-  if (want("codex")) {
+  // A report must not depend on which agents were asked for: the ledger's telemetry rows count only once a
+  // rollout claims them, so the rollouts are still read, report nothing, when only their claims are needed.
+  const claimOnly = !want("codex") && !!gateway?.hasClaimable();
+  if (want("codex") || claimOnly) {
     // A profile home can be a copy-on-write clone of another (e.g. ~/.codex cloned
     // from ~/.codex-primary): same rollout under two real paths, so realpath dedupe
     // in defaultCodexRoots cannot catch it. Bill each rollout id only once, and
@@ -350,11 +378,11 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
         seenRollouts.add(rollout);
         return true;
       });
-    const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger: !!gateway, files };
+    const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger: !!gateway, ...(claimOnly ? { claimOnly } : {}), files };
     // Asked after the rollouts have been read, because only the parser knows what
     // a rollout recorded: gateway-routed turns with token_count and no record were
     // deduped against telemetry rows alone.
-    if (gateway) Object.defineProperty(codex, "note", {
+    if (gateway && !claimOnly) Object.defineProperty(codex, "note", {
       get: () => files.some((f) => f.ctx?.modelProvider === "subscription_gateway" && f.ctx?.lastCount !== undefined)
         ? "gateway-routed rollouts recorded token_count without token_usage_record; those calls were matched against the gateway ledger by model, token counts and time (telemetry rows and billed rows), and a call the ledger does not hold is counted from the rollout"
         : undefined,

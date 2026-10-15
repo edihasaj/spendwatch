@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Aggregator } from "../src/aggregate";
 import { usageCost } from "../src/pricing";
 import type { Event } from "../src/parse";
 import { GatewayIndex, type GatewayLedger, type GatewayVendor } from "../src/gateway";
+import { claudeAccount } from "../src/sources";
 
 const NOW = Date.now();
 
@@ -192,5 +193,173 @@ describe("gateway ledger", () => {
     // Two month files, written newest first: the report still reads them oldest first.
     const index = load([claude({ requestId: "new" }), claude({ requestId: "old", at: earlier.getTime() })]);
     expect(apiEvents(index, "claude").map((r) => r.requestId)).toEqual(["studio:old", "studio:new"]);
+  });
+});
+
+/** Runs `body` with these variables set (undefined removes one), then puts every one back. */
+function withEnv<T>(env: Record<string, string | undefined>, body: () => T): T {
+  const saved = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(env)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  try { return body(); }
+  finally { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+}
+
+// An imported telemetry row, as the gateway writes it: no response id, no provider type, credits copied across.
+const telemetry = (over: Row = {}): Row => copilot({
+  origin: "telemetry", providerType: undefined, responseId: "", session: false, ...over,
+});
+
+describe("telemetry-origin Copilot rows", () => {
+  test("keep the credits they carry, and say they came from telemetry", () => {
+    const rows = apiEvents(load([
+      telemetry({ requestId: "full", nanoAiu: 250_000_000, nanoAiuStatus: "complete" }),
+      telemetry({ requestId: "part", nanoAiu: 100_000_000, nanoAiuStatus: "partial" }),
+    ]), "copilot");
+    expect(rows.map((r) => [r.requestId, r.model, r.costUsd])).toEqual([
+      ["studio:full", "gpt-5.1-codex (telemetry backfill)", 0.0025],
+      ["studio:part", "gpt-5.1-codex (telemetry backfill, partial credits)", 0.001],
+    ]);
+  });
+
+  test("stay at $0 and unpriced only when no credits were recorded", () => {
+    const [row] = apiEvents(load([telemetry({ nanoAiu: null, nanoAiuStatus: undefined })]), "copilot");
+    expect(row!.model).toBe("gpt-5.1-codex (telemetry backfill, unpriced)");
+    expect(row!.costUsd).toBe(0);
+    // Zero credits is a recorded figure, not a missing one.
+    const [free] = apiEvents(load([telemetry({ nanoAiu: 0 })]), "copilot");
+    expect(free!.model).toBe("gpt-5.1-codex (telemetry backfill)");
+    expect(free!.costUsd).toBe(0);
+  });
+});
+
+describe("where the ledger lives", () => {
+  /** A gateway config directory holding gateway.json, with a ledger at `<dir>/<state>` filled with one Claude row. */
+  function installed(config: Record<string, unknown> | undefined, state: string, row: Row = claude()) {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "spendwatch-config-")));
+    const stateDir = join(dir, state);
+    mkdirSync(join(stateDir, "usage"), { recursive: true });
+    writeFileSync(join(stateDir, "usage", `usage-${monthKey(row.at as number)}.jsonl`), JSON.stringify({ v: 1, host: "studio", ...row }) + "\n");
+    if (config) writeFileSync(join(dir, "gateway.json"), JSON.stringify(config));
+    return { dir, file: join(dir, "gateway.json") };
+  }
+  const read = (file: string) => withEnv({ SPENDWATCH_GATEWAY_CONFIG: file, SPENDWATCH_GATEWAY_STATE: undefined }, () =>
+    GatewayIndex.load({ sinceMs: 0 }));
+
+  test("resolves a relative stateDirectory against the config directory, as the gateway does", () => {
+    // `gateway init` writes ".state": spendwatch must not look for it in its own working directory.
+    const { file } = installed({ version: 1, stateDirectory: ".state", providers: [] }, ".state");
+    expect(apiEvents(read(file), "claude")).toHaveLength(1);
+    const other = installed({ version: 1, stateDirectory: "ledgers/main", providers: [] }, "ledgers/main");
+    expect(apiEvents(read(other.file), "claude")).toHaveLength(1);
+  });
+
+  test("defaults a missing stateDirectory key to .state beside the config", () => {
+    const { file, dir } = installed({ version: 1, providers: [] }, ".state");
+    const ledger = read(file);
+    expect(ledger.stateDir).toBe(join(dir, ".state"));
+    expect(apiEvents(ledger, "claude")).toHaveLength(1);
+  });
+
+  test("reads an absolute stateDirectory as written", () => {
+    const elsewhere = stateDir([claude()]);
+    const { file } = installed({ version: 1, stateDirectory: elsewhere, providers: [] }, ".state-unused");
+    expect(read(file).stateDir).toBe(elsewhere);
+  });
+
+  test("falls back to the state directory `gateway setup` leaves only when there is no gateway.json", () => {
+    const { file } = installed(undefined, "state");
+    expect(apiEvents(read(file), "claude")).toHaveLength(1);
+    // With a gateway.json the fallback is not consulted: its own default, .state, is empty here.
+    const configured = installed({ version: 1, providers: [] }, "state");
+    expect(apiEvents(read(configured.file), "claude")).toEqual([]);
+  });
+
+  test("SPENDWATCH_GATEWAY_STATE and an explicit root still win over the config", () => {
+    const { file } = installed({ version: 1, stateDirectory: ".state", providers: [] }, ".state");
+    const dir = stateDir([claude({ requestId: "other" })]);
+    const ledger = withEnv({ SPENDWATCH_GATEWAY_CONFIG: file, SPENDWATCH_GATEWAY_STATE: dir }, () => GatewayIndex.load({ sinceMs: 0 }));
+    expect(apiEvents(ledger, "claude").map((r) => r.requestId)).toEqual(["studio:other"]);
+  });
+});
+
+describe("provider map for telemetry rows", () => {
+  const qwen = (over: Row = {}): Row => telemetry({ requestId: "q", provider: "qwen", model: "qwen3.8", ...over });
+  const withMap = (map: string | undefined, rows: Row[]) => {
+    const dir = stateDir(rows);
+    return withEnv({ SPENDWATCH_GATEWAY_PROVIDER_MAP: map }, () => GatewayIndex.load({ sinceMs: 0, stateDir: dir }));
+  };
+
+  test("ignores a provider name it was not told about", () => {
+    const ledger = withMap(undefined, [qwen()]);
+    expect([apiEvents(ledger, "claude"), apiEvents(ledger, "copilot")]).toEqual([[], []]);
+  });
+
+  test("retargets a provider name, in the comma form and the JSON form", () => {
+    expect(apiEvents(withMap("qwen=claude", [qwen()]), "claude").map((r) => r.requestId)).toEqual(["studio:q"]);
+    expect(apiEvents(withMap('{"qwen":"copilot"}', [qwen()]), "copilot").map((r) => r.requestId)).toEqual(["studio:q"]);
+  });
+
+  test("a name mapped to nothing is removed from the defaults", () => {
+    const rows = [qwen({ provider: "copilot", requestId: "c" }), qwen({ provider: "claude", requestId: "k" })];
+    const ledger = withMap("copilot=none", rows);
+    expect(apiEvents(ledger, "copilot")).toEqual([]);
+    expect(apiEvents(ledger, "claude").map((r) => r.requestId)).toEqual(["studio:k"]);
+    // A value that is not JSON or pairs changes nothing.
+    expect(apiEvents(withMap("{broken", rows), "copilot")).toHaveLength(1);
+  });
+});
+
+describe("the account a Claude row is billed to", () => {
+  function twoAccounts() {
+    const config = realpathSync(mkdtempSync(join(tmpdir(), "spendwatch-claude-")));
+    mkdirSync(join(config, "claude-work"), { recursive: true });
+    writeFileSync(join(config, "claude-work", ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "work@example.com" } }));
+    mkdirSync(join(config, "claude-bare"), { recursive: true });
+    const state = stateDir([
+      claude({ requestId: "main", provider: "claude" }),
+      claude({ requestId: "work", provider: "claude-work", responseId: "resp_gl_work" }),
+      claude({ requestId: "bare", provider: "claude-bare", responseId: "resp_gl_bare" }),
+    ]);
+    writeFileSync(join(config, "gateway.json"), JSON.stringify({ version: 1, stateDirectory: state, providers: [
+      { id: "claude", type: "claude-subscription" },
+      { id: "claude-work", type: "claude-subscription", authDirectory: "claude-work" },
+      { id: "claude-bare", type: "claude-subscription", authDirectory: "claude-bare" },
+    ] }));
+    return withEnv({ SPENDWATCH_GATEWAY_CONFIG: join(config, "gateway.json"), SPENDWATCH_GATEWAY_STATE: undefined }, () => GatewayIndex.load({ sinceMs: 0 }));
+  }
+
+  test("follows the provider's own authDirectory instead of the default account", () => {
+    const files = twoAccounts().files("claude");
+    expect(files.map((f) => f.account).sort()).toEqual([claudeAccount(), "claude-bare", "work@example.com"].sort());
+    const byAccount = Object.fromEntries(files.map((f) => [f.account, [...f.events!()].filter((e) => e.t === "api").map((e) => (e as Api).requestId)]));
+    expect(byAccount["work@example.com"]).toEqual(["studio:work"]);
+    expect(byAccount["claude-bare"]).toEqual(["studio:bare"]);
+    expect(byAccount[claudeAccount()]).toEqual(["studio:main"]);
+    // One stream per account, and the usual account keeps the plain key.
+    expect(new Set(files.map((f) => f.key)).size).toBe(3);
+    expect(files.find((f) => f.account === claudeAccount())!.key).toBe("gateway:claude");
+  });
+});
+
+describe("a call a rollout billed before its row existed", () => {
+  test("is not billed again by the row that arrives later", () => {
+    const index = load([copilot({ requestId: "g1", responseId: "resp_gl_g1" }), copilot({ requestId: "g2", responseId: "resp_gl_g2", at: NOW + 5_000 })]);
+    index.adopt([{ model: "gpt-5.1-codex", input: 1000, output: 50, ts: NOW + 4_000 }]);
+    // The nearer row is the one the rollout billed; one row per call.
+    expect(apiEvents(index, "copilot").map((r) => r.requestId)).toEqual(["studio:g1"]);
+    index.adopt([{ model: "gpt-5.1-codex", input: 1000, output: 50, ts: NOW }]);
+    expect(apiEvents(index, "copilot")).toEqual([]);
+    // It cannot be claimed any more either, and a call with no such row is left alone.
+    expect(index.claim("gpt-5.1-codex", 1000, 50, NOW, { gatewayRows: true })).toBe(false);
+  });
+
+  test("leaves rows that differ in model, tokens or time", () => {
+    const index = load([copilot()]);
+    index.adopt([
+      { model: "other", input: 1000, output: 50, ts: NOW },
+      { model: "gpt-5.1-codex", input: 999, output: 50, ts: NOW },
+      { model: "gpt-5.1-codex", input: 1000, output: 50, ts: NOW + 31_000 },
+    ]);
+    expect(apiEvents(index, "copilot")).toHaveLength(1);
   });
 });
