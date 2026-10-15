@@ -169,7 +169,7 @@ describe("codex subscription_gateway routing", () => {
     expect(call).toMatchObject({ requestId: "resp_gl_9", model: "gpt-5.5 (gateway-routed, not in this Mac's ledger)" });
     expect(call!.usage).toEqual({ input: 500, output: 25, cacheRead: 0, cache5m: 0, cache1h: 0 });
     expect(ctx.unconfirmed).toBe(1);
-    expect(ctx.decisions).toEqual([{ kind: "billed", model: "gpt-5.5", input: 500, output: 25, ts: MS, responseId: "resp_gl_9" }]);
+    expect(ctx.decisions).toEqual([{ seq: expect.any(Number), kind: "billed", model: "gpt-5.5", input: 500, output: 25, ts: MS, responseId: "resp_gl_9" }]);
     // With the gateway source off there is no ledger to ask: an ordinary call, unlabelled.
     expect(apis(collect([meta("subscription_gateway"), marked]))[0]!.model).toBe("gpt-5.5");
   });
@@ -190,6 +190,21 @@ describe("codex subscription_gateway routing", () => {
     expect(claims).toEqual([["gpt-5.5", 1000, 50, MS], ["gpt-5.5", 700, 20, MS]]);
     expect(apis(events)).toHaveLength(1);
     expect(observed(events)).toHaveLength(2);
+  });
+
+  test("a claim remembers the row it took and its place among the decisions, for a reloaded ledger", () => {
+    const gateway: GatewayIndex = { claim: (_model, input, _output, _ts, options) => { options?.onClaim?.(`studio:row-${input}`); return true; } };
+    const ctx = newCodexCtx(gateway);
+    collect([
+      meta("subscription_gateway"),
+      count({ input_tokens: 1000, cached_input_tokens: 0, output_tokens: 50 }),
+      count({ input_tokens: 700, cached_input_tokens: 0, output_tokens: 20 }),
+    ], ctx);
+    expect(ctx.decisions).toMatchObject([
+      { kind: "claimed", input: 1000, key: "studio:row-1000" },
+      { kind: "claimed", input: 700, key: "studio:row-700" },
+    ]);
+    expect(ctx.decisions![1]!.seq).toBeGreaterThan(ctx.decisions![0]!.seq!);
   });
 
   test("without a gateway index, claims cannot skip anything", () => {
