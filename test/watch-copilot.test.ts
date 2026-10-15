@@ -134,9 +134,14 @@ describe("reading a native Copilot session store", () => {
 });
 
 describe("a Copilot session store that has not been written to for a while", () => {
-  /** Makes the store look as if it was last written a minute ago, which is what lets a tick trust that it is as it was. */
+  /**
+   * Makes the store look as if it was last written a minute ago or more, which is what lets a tick trust that it is as it
+   * was. Each call names a different time, as writes at different moments would: the same size and time twice is not a change.
+   */
+  let age = 60_000;
   const settle = (path: string): void => {
-    const old = new Date(Date.now() - 60_000);
+    age += 1_000;
+    const old = new Date(Date.now() - age);
     utimesSync(path, old, old);
   };
   const reads = (spy: { mock: { calls: unknown[][] } }, what: string): number => spy.mock.calls.filter(([sql]) => String(sql).includes(what)).length;
