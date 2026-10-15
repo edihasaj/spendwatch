@@ -120,7 +120,7 @@ export function collectCopilot(root: string, sinceMs: number, account?: string):
   const stamp = stampOf(path);
   const before = reads.get(path);
   // A store as it was at the last discovery has the same sessions and the same rows, so a tick that finds it so reads nothing.
-  const same = stamp !== undefined && before?.stamp === stamp && before.sinceMs === sinceMs ? before : undefined;
+  const same = before && before.stamp === stamp && before.sinceMs === sinceMs ? before : undefined;
   let db: Database | undefined;
   try {
     let read = same;
@@ -197,7 +197,7 @@ export function collectCopilot(root: string, sinceMs: number, account?: string):
           // A store unchanged since the version was taken has the same rows: they are read only if a reader that has
           // not folded this version asks for the events. A store written since, or a moment ago, is read again.
           const current = stampOf(path);
-          const unchanged = current !== undefined && current === stored.stamp;
+          const unchanged = current === stored.stamp;
           const known = unchanged ? versions.get(session.id) : undefined;
           if (known !== undefined) return { version: known, events: lazyEvents(session.id) };
           let rows: UsageRow[];
