@@ -31,4 +31,10 @@ describe("the build script", () => {
     expect(buildClean(dir, ["sh", "-c", "touch .half-00000000.bun-build; exit 3"])).toBe(3);
     expect(leftovers(dir)).toEqual([]);
   });
+
+  test("reports a build that a signal killed as a failure, though it has no exit code", () => {
+    const dir = tempDir("spendwatch-build-script-");
+    expect(buildClean(dir, ["sh", "-c", "touch .killed-00000000.bun-build; kill -9 $$"])).not.toBe(0);
+    expect(leftovers(dir)).toEqual([]);
+  });
 });
