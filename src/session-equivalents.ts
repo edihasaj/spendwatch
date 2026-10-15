@@ -25,17 +25,32 @@ export function loadSessionEquivalentForecasts(
   const db = new Database(path, { readonly: true });
   const grouped = new Map<string, PairedRow[]>();
   const pairedSamples = db.query<PairedRow, [string, string]>(`
-    WITH session_samples AS (
+    WITH recent_times AS MATERIALIZED (
+      SELECT w.sampled_at_ms
+      FROM capacity_history w
+      WHERE w.provider = ?1 AND w.account = ?2 COLLATE NOCASE
+        AND w.window_kind = 'weekly'
+        AND EXISTS (
+          SELECT 1 FROM capacity_history s
+          WHERE s.provider = ?1 AND s.account = ?2 COLLATE NOCASE
+            AND s.window_kind = 'session' AND s.sampled_at_ms = w.sampled_at_ms
+        )
+      GROUP BY w.sampled_at_ms
+      ORDER BY w.sampled_at_ms DESC
+      LIMIT 5000
+    ), session_samples AS (
       SELECT provider, account, sampled_at_ms,
         MAX(used_percent) AS used_percent, MAX(resets_at_ms) AS resets_at_ms
       FROM capacity_history
       WHERE provider = ?1 AND account = ?2 COLLATE NOCASE AND window_kind = 'session'
+        AND sampled_at_ms IN (SELECT sampled_at_ms FROM recent_times)
       GROUP BY provider, account, sampled_at_ms
     ), weekly_samples AS (
       SELECT provider, account, sampled_at_ms,
         MAX(used_percent) AS used_percent, MAX(resets_at_ms) AS resets_at_ms
       FROM capacity_history
       WHERE provider = ?1 AND account = ?2 COLLATE NOCASE AND window_kind = 'weekly'
+        AND sampled_at_ms IN (SELECT sampled_at_ms FROM recent_times)
       GROUP BY provider, account, sampled_at_ms
     )
     SELECT s.provider, s.account, s.sampled_at_ms AS sampledAt,
