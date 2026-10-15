@@ -68,6 +68,11 @@ export interface SourceStatus {
    * only once a rollout claims them, so `--agents claude` still needs the Codex rollouts it did not ask for.
    */
   claimOnly?: boolean;
+  /**
+   * Hands the kept parser state of a file this discovery did not find again whatever it decided afresh (the reloaded
+   * gateway ledger), as `SourceFile.renew` does for a file it found.
+   */
+  carry?: (kept: any) => void;
   files: SourceFile[];
 }
 
@@ -288,6 +293,15 @@ function collectClaude(dir: string, account: string, sinceMs: number, project?: 
   return files;
 }
 
+/**
+ * The reloaded ledger has not seen what a rollout already did: rows it claimed, and calls it billed before their rows
+ * existed. It gets them, and the rollout carries on against it.
+ */
+function carryLedger(kept: CodexCtx, gateway?: GatewayIndex): void {
+  kept.gateway = gateway;
+  gateway?.replay?.(kept.decisions ?? []);
+}
+
 function collectCodex(dir: string, account: string, sinceMs: number, gateway?: GatewayLedger): SourceFile[] {
   const files: SourceFile[] = [];
   if (!existsSync(dir)) return files;
@@ -305,10 +319,7 @@ function collectCodex(dir: string, account: string, sinceMs: number, gateway?: G
         // Once per discovery: what the kept state decided since is already known to this ledger.
         if (renewed) return;
         renewed = true;
-        kept.gateway = ctx.gateway;
-        // The reloaded ledger has not seen what this rollout already did: rows it claimed, and calls it billed
-        // before their rows existed.
-        ctx.gateway?.replay?.(kept.decisions ?? []);
+        carryLedger(kept, ctx.gateway);
       } });
   }
   return files;
@@ -406,7 +417,8 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
         seenRollouts.add(rollout);
         return true;
       });
-    const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger, ...(claimOnly ? { claimOnly } : {}), files };
+    const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger, ...(claimOnly ? { claimOnly } : {}), files,
+      ...(gateway ? { carry: (kept: CodexCtx) => carryLedger(kept, gateway) } : {}) };
     // Asked after the rollouts have been read, because only the parser knows what a rollout recorded.
     if (gateway && !claimOnly) Object.defineProperty(codex, "warning", {
       get: () => gatewayWarning(files.map((f) => f.ctx as CodexCtx)),
