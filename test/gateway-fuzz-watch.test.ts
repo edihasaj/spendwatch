@@ -5,7 +5,7 @@ import type { Aggregator } from "../src/aggregate";
 import { build, pollWatched, reportsFrom, watchPeriod, type BuildOptions, type Built } from "../src/build";
 import { rollingDays } from "../src/periods";
 import { discover } from "../src/sources";
-import { copilotRow, iso, rng, routedLine } from "./fuzz-world";
+import { copilotRow, iso, onlySeed, rng, routedLine, seedCount } from "./fuzz-world";
 import { tempDir } from "./tmp";
 
 // The ledger's one promise, shaken by seeded random worlds: however the gateway's rows and the rollouts' lines
@@ -103,7 +103,8 @@ describe("watch bills every routed call exactly once", () => {
   for (const [kind, size, mode, seeds] of worlds) {
     test(`${kind} worlds, ${mode}: ${seeds} seeds, every call billed once, watched and fresh`, () => {
       const bad: unknown[] = [];
-      for (let seed = 1; seed <= seeds; seed++) {
+      const only = onlySeed();
+      for (let seed = only ?? 1; seed <= (only ?? seedCount(seeds)); seed++) {
         const out = world(seed, mode, undefined, size);
         // The calls, and the one older row.
         if (out.codex + out.copilot !== size.calls + 1 || out.freshCodex + out.freshCopilot !== size.calls + 1) bad.push({ seed, ...out, log: out.log.join("; ") });
@@ -115,7 +116,8 @@ describe("watch bills every routed call exactly once", () => {
   for (const mode of ["counts", "mixed"] as const) {
     test(`${mode}: reading only the Codex rollouts bills them as the full read does`, () => {
       const bad: unknown[] = [];
-      for (let seed = 1; seed <= 100; seed++) {
+      const only = onlySeed();
+      for (let seed = only ?? 1; seed <= (only ?? seedCount(100)); seed++) {
         const full = world(seed, mode);
         const only = world(seed, mode, new Set(["codex"]));
         if (only.codex !== full.codex) bad.push({ seed, full: full.codex, only: only.codex, log: full.log.join("; ") });
