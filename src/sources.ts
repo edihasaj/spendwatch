@@ -11,7 +11,7 @@ import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Event } from "./parse";
 import { parseLine } from "./parse";
-import { newCodexCtx, parseCodexLine, UNCONFIRMED, type CodexCtx } from "./codex";
+import { newCodexCtx, parseCodexLine, settleRouted, UNCONFIRMED, type CodexCtx } from "./codex";
 import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
 import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
@@ -34,6 +34,11 @@ export interface SourceFile {
    * new discovery decided afresh (such as the reloaded gateway ledger).
    */
   renew?: (kept: any) => void;
+  /**
+   * Events a parser held back until something it waits for turns up (a Codex rollout's routed call waits for its
+   * gateway ledger row). Asked on every poll, with `final` at the end of a read, when nothing may wait any longer.
+   */
+  settle?: (ctx: any, final: boolean) => Iterable<Event>;
 }
 
 export interface SourceStatus {
@@ -280,6 +285,7 @@ function collectCodex(dir: string, account: string, sinceMs: number, gateway?: G
     // A rollout keeps its identity when Codex moves it into archived_sessions, so a watching reader carries on
     // from its offset instead of reading the file again as a new one.
     files.push({ path, key: `codex:${basename(path)}`, project: "?", source: "codex", account: acct, parse: parseCodexLine, ctx,
+      settle: (kept: CodexCtx, final: boolean) => settleRouted(kept, final),
       renew: (kept: CodexCtx) => {
         kept.gateway = ctx.gateway;
         // The reloaded ledger has not seen what this rollout already did: rows it claimed, and calls it billed
@@ -431,7 +437,7 @@ function gatewayWarning(contexts: CodexCtx[]): string | undefined {
   const routed = contexts.filter((ctx) => ctx?.modelProvider === "subscription_gateway");
   // No count here: these files can reach outside the report's window, and the labelled model rows carry the figures.
   const notes = [
-    routed.some((ctx) => ctx.unconfirmed) ? `some gateway-routed calls in these rollouts had no row in this Mac's gateway ledger, so they are counted under Codex as "<model> (${UNCONFIRMED})"; if another Mac's gateway served them and that Mac runs Spendwatch, they are counted there as well` : "",
+    routed.some((ctx) => ctx.unconfirmed) ? `some gateway-routed calls in these rollouts had no row in this Mac's gateway ledger, so they are counted under Codex as "<model> (${UNCONFIRMED})"; where this report is combined with the report of the Mac whose gateway served them (--input, or the spend archive), that Mac's ledger bills them and they leave Codex` : "",
     routed.some((ctx) => ctx.lastCount !== undefined) ? "gateway-routed rollouts recorded token_count without token_usage_record; those calls were matched against this Mac's gateway ledger by model, token counts and time, and a call it does not hold is counted from the rollout" : "",
   ].filter(Boolean);
   return notes.length ? notes.join("; ") : undefined;

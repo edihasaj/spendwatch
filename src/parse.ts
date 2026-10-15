@@ -43,9 +43,20 @@ export function toolDetail(name: string, input: any): string | undefined {
   }
 }
 
+/**
+ * A call the subscription gateway marked as billed on a subscription (`resp_gl_<id>`). `id` is the part after the
+ * marker, the gateway's request id without dashes, and nothing else about the call. A serving Mac's ledger row is
+ * "billed"; a Codex rollout's copy that no ledger on its own Mac holds is "unconfirmed". When reports of several Macs
+ * meet, an unconfirmed call whose id another report billed is taken out of the client's report (see gateway-settle.ts).
+ */
+export interface GatewayMark {
+  id: string;
+  role: "billed" | "unconfirmed";
+}
+
 export type Event =
   | { t: "prompt"; sessionId: string; promptId: string; text: string; sidechain: boolean; ts: number }
-  | { t: "api"; sessionId: string; requestId: string; model?: string; usage: Usage; costUsd?: number; sidechain: boolean; ts: number }
+  | { t: "api"; sessionId: string; requestId: string; model?: string; usage: Usage; costUsd?: number; sidechain: boolean; ts: number; gateway?: GatewayMark }
   | { t: "tooluse"; sessionId: string; requestId: string; id: string; name: string; argChars: number; sub?: string; deep?: string; detail?: string; ts: number }
   | { t: "toolresult"; sessionId: string; id: string; chars: number; error?: boolean; exit?: number; ts: number }
   | { t: "meta"; sessionId: string; project?: string; model?: string; ts: number }

@@ -98,6 +98,45 @@ describe("the month the gateway ledger takes over", () => {
     expect(stored(path)).toEqual(both({ "studio:codex": 90, "studio:claude": 50, "studio:copilot": 10 }));
   });
 
+  test("takes over a month whose every Codex call was routed, together with Copilot", () => {
+    const path = dbPath();
+    writeMonthlySpend(path, [read("studio:codex", 50), read("studio:copilot", 5)], { generatedAt: 1 });
+    // With the ledger, all 50 Codex turns are Copilot's: Codex bills none of them, though it observed every one.
+    writeMonthlySpend(path, [
+      read("studio:codex", 0, { observedCalls: 50, ledger: true, routedCalls: 50 }),
+      read("studio:copilot", 55, { ledger: true, routedCalls: 50 }),
+    ], { generatedAt: 2 });
+    expect(stored(path)).toEqual(both({ "studio:codex": 0, "studio:copilot": 55 }));
+  });
+
+  test("lets the fullest offer alone speak for one installation's month offered twice in a run", () => {
+    const path = dbPath();
+    writeMonthlySpend(path, before(), { generatedAt: 1 });
+    // The same export passed twice (`--input a.json,a.json`), while Claude's read is refused: neither copy may move Codex.
+    const codex = () => read("studio:codex", 90, { observedCalls: 100, ledger: true, routedCalls: 10 });
+    writeMonthlySpend(path, [codex(), codex(), read("studio:claude", 40, { ledger: true, routedCalls: 10 })], { generatedAt: 2 });
+    expect(stored(path)).toEqual(both({ "studio:codex": 100, "studio:claude": 50 }));
+  });
+
+  test("keeps the sources together in an archive that never recorded an installation", () => {
+    const path = dbPath();
+    const db = new Database(path);
+    db.exec(`CREATE TABLE spend_month (month TEXT NOT NULL, source TEXT NOT NULL, tokens INTEGER NOT NULL, cost REAL NOT NULL, calls INTEGER NOT NULL,
+      sessions INTEGER NOT NULL, first_ts INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY (month, source));
+      CREATE TABLE spend_report (month TEXT NOT NULL, source TEXT NOT NULL, calls INTEGER NOT NULL, report_json TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (month, source));`);
+    for (const report of before()) {
+      db.prepare("INSERT INTO spend_month VALUES (?,?,?,?,?,?,?,?)").run("2026-10", report.source, report.totalTokens, report.totalCost, report.apiCalls, 1, null, 1);
+      db.prepare("INSERT INTO spend_report VALUES (?,?,?,?,?)").run("2026-10", report.source, report.apiCalls, JSON.stringify(report), 1);
+    }
+    db.close();
+    // Claude's read is refused, so Codex must keep the routed turns too, although no installation names its rows.
+    writeMonthlySpend(path, [
+      read("studio:codex", 90, { observedCalls: 100, ledger: true, routedCalls: 10 }),
+      read("studio:claude", 40, { ledger: true, routedCalls: 10 }),
+    ], { generatedAt: 2 });
+    expect(stored(path)).toEqual(both({ "studio:codex": 100, "studio:claude": 50 }));
+  });
+
   test("keeps another installation's month out of the decision", () => {
     const path = dbPath();
     writeMonthlySpend(path, [{ ...read("studio:codex", 100), installationId: "a" }, { ...read("studio:claude", 50), installationId: "a" }], { generatedAt: 1 });

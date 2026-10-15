@@ -8,7 +8,9 @@
 //   * a gateway-origin row carrying a `resp_gl_*` id IS the billed record, so it
 //     is counted here, and a rollout record with that exact response id is
 //     dropped (`covers`). A marked record whose row this Mac's ledger does not
-//     hold is kept by the rollout: nothing here proves another ledger bills it;
+//     hold is kept by the rollout: nothing here proves another ledger bills it.
+//     Both sides carry the id, so where a client's report meets the serving
+//     Mac's, the client's copy is taken out there (gateway-settle.ts);
 //   * a transcript turn with no gateway row of its own is matched against a
 //     telemetry-origin row by `claim()`, which proves those tokens were already
 //     accounted for on the subscription side.
@@ -18,14 +20,16 @@
 // that request carried a Codex session id. A row without one (`session: false`,
 // a client that is not Codex) has no rollout to dedupe against, so it counts
 // directly; a row with one counts only when a rollout on this Mac claims it.
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { join } from "node:path";
 import { accountLabel, copilotAccountIn } from "./copilot";
 import { claudeAccount, claudeAccountIn, type SourceFile } from "./sources";
 import type { Event } from "./parse";
-import { PROVIDER_TYPES, providerMap, readGatewayConfig, resolveStateDirectory, vendorIn, type AuthDirectory, type GatewayVendor } from "./gateway-config";
+import { providerMap, readGatewayConfig, resolveStateDirectory, type AuthDirectory, type GatewayVendor } from "./gateway-config";
+import { callKey, dedupe, GATEWAY_ORIGIN, ledgerFiles, MARKER, readRows, TELEMETRY_ORIGIN, type LedgerRow } from "./gateway-ledger-files";
 
 export type { GatewayVendor };
+export { MARKER };
 
 export interface ClaimOptions {
   /**
@@ -66,47 +70,14 @@ export interface GatewayIndex {
   adopt?(calls: Iterable<BilledCall>): void;
   /** Applies a rollout's earlier decisions to this freshly loaded ledger, in their order; see `LedgerDecision`. */
   replay?(decisions: Iterable<LedgerDecision>): void;
+  /** When the ledger files were last read. */
+  readonly readAt?: number;
+  /** Reads the rows appended since then, so a call read after the ledger can still find its row. */
+  refresh?(): void;
 }
 
-/** A gateway-routed response carries this marker on its id; anything else is an ordinary provider call. */
-export const MARKER = "resp_gl_";
 /** How far apart the ledger's clock and the transcript's may be for one call. */
 export const CLAIM_WINDOW_MS = 30_000;
-const GATEWAY_ORIGIN = "gateway";
-const TELEMETRY_ORIGIN = "telemetry";
-
-interface LedgerRow {
-  at: number;
-  host: string;
-  requestId: string;
-  responseId: string;
-  model: string;
-  origin: string;
-  vendor: GatewayVendor;
-  /** The route id the gateway served the call through; it names the account the call was billed to. */
-  provider: string;
-  session?: boolean;
-  input: number; // gross input tokens, cache included, as the transcript reports them
-  cached: number;
-  cacheWrite: number;
-  output: number;
-  /** Reasoning tokens are a subset of output, so they are read but never added. */
-  reasoning: number;
-  nanoAiu: number | null;
-  nanoAiuStatus?: string;
-  claimed: boolean;
-  /** A rollout already billed this call (see `adopt`), so the ledger must not. */
-  rolloutBilled: boolean;
-}
-
-const num = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? value : 0;
-const str = (value: unknown): string => typeof value === "string" ? value : "";
-const flag = (value: unknown): boolean | undefined => typeof value === "boolean" ? value : undefined;
-
-function timestamp(raw: unknown): number {
-  if (typeof raw === "number") return Number.isFinite(raw) ? raw : NaN;
-  return typeof raw === "string" ? Date.parse(raw) : NaN;
-}
 
 /** A gateway-origin row the gateway marked: the record that carries the charge. */
 const billedRow = (row: LedgerRow): boolean => row.origin === GATEWAY_ORIGIN && row.responseId.startsWith(MARKER);
@@ -114,17 +85,28 @@ const billedRow = (row: LedgerRow): boolean => row.origin === GATEWAY_ORIGIN && 
 const matchable = (row: LedgerRow): boolean => billedRow(row) || (row.origin === TELEMETRY_ORIGIN && row.session === true);
 const usageKey = (model: string, input: number, output: number): string => `${model}\u0000${input}\u0000${output}`;
 
-/** The first index in `rows` (sorted by `at`) whose time is at least `from`. */
-function firstAtOrAfter(rows: LedgerRow[], from: number): number {
+/** The first index in `rows` (sorted by `at`) whose time is at least `from`, or after `from` when `after`. */
+function firstAtOrAfter(rows: LedgerRow[], from: number, after = false): number {
   let low = 0;
   let high = rows.length;
   while (low < high) {
     const mid = (low + high) >> 1;
-    if (rows[mid]!.at < from) low = mid + 1;
+    if (rows[mid]!.at < from || (after && rows[mid]!.at === from)) low = mid + 1;
     else high = mid;
   }
   return low;
 }
+
+/** Where the rows came from, so a later `refresh` reads only what was appended since. */
+interface LedgerSource {
+  usage: string;
+  sinceMs: number;
+  map: ReturnType<typeof providerMap>;
+  /** Bytes of each month file already read, up to its last complete line. */
+  read: Map<string, number>;
+}
+
+const streamKey = (vendor: GatewayVendor, account: string): string => `${vendor}\u0000${account}`;
 
 export class GatewayLedger implements GatewayIndex {
   private readonly rows: LedgerRow[];
@@ -138,20 +120,57 @@ export class GatewayLedger implements GatewayIndex {
   private readonly byResponse = new Map<string, LedgerRow>();
   /** Account labels, resolved once per load: each one reads a credential file. */
   private readonly labels = new Map<string, string>();
+  /** The rows each account stream bills, once `files` has made the streams. */
+  private readonly streams = new Map<string, LedgerRow[]>();
+  /** Every call the rows hold, by `callKey`. */
+  private readonly calls = new Set<string>();
+  private lastRead = Date.now();
 
-  private constructor(rows: LedgerRow[], stateDir: string, present: boolean, authDirectories: ReadonlyMap<string, AuthDirectory> = new Map()) {
+  private constructor(rows: LedgerRow[], stateDir: string, present: boolean, authDirectories: ReadonlyMap<string, AuthDirectory> = new Map(), private readonly source?: LedgerSource) {
     this.stateDir = stateDir;
     this.present = present;
     this.authDirectories = authDirectories;
     this.rows = rows.sort((a, b) => a.at - b.at); // oldest first, like a transcript
-    for (const row of this.rows) {
-      if (billedRow(row) && !this.byResponse.has(row.responseId)) this.byResponse.set(row.responseId, row);
-      if (!matchable(row)) continue;
-      const key = usageKey(row.model, row.input, row.output);
-      let bucket = this.buckets.get(key);
-      if (!bucket) this.buckets.set(key, (bucket = []));
-      bucket.push(row);
+    for (const row of this.rows) this.index(row);
+  }
+
+  private index(row: LedgerRow): void {
+    this.calls.add(callKey(row));
+    if (billedRow(row) && !this.byResponse.has(row.responseId)) this.byResponse.set(row.responseId, row);
+    if (!matchable(row)) return;
+    const key = usageKey(row.model, row.input, row.output);
+    let bucket = this.buckets.get(key);
+    if (!bucket) this.buckets.set(key, (bucket = []));
+    bucket.splice(firstAtOrAfter(bucket, row.at, true), 0, row);
+  }
+
+  /**
+   * The rows the gateway appended since the files were read. A read loads the ledger first and the rollouts after,
+   * and the gateway appends a call's row just after the response ends, so a rollout line can be newer than the
+   * ledger it is checked against; such a call asks for this before it is billed from the rollout. A new row joins
+   * the stream of its account; one whose account has no stream in this read is left out, and so is never covered.
+   */
+  refresh(): void {
+    const source = this.source;
+    if (!source || !this.streams.size) return;
+    this.lastRead = Date.now();
+    for (const file of ledgerFiles(source.usage, source.sinceMs - CLAIM_WINDOW_MS)) {
+      const { rows, end } = readRows(file, source.map, source.read.get(file) ?? 0);
+      source.read.set(file, end);
+      for (const row of rows) {
+        if (this.calls.has(callKey(row))) continue;
+        const stream = this.streams.get(streamKey(row.vendor, this.accountFor(row)));
+        if (!stream) continue;
+        this.rows.push(row);
+        stream.push(row);
+        this.index(row);
+      }
     }
+  }
+
+  /** When the ledger files were last read, by `load` or by `refresh`. */
+  get readAt(): number {
+    return this.lastRead;
   }
 
   /** Rows with this model and token counts within the claim window of `tsMs`, oldest first. */
@@ -225,6 +244,7 @@ export class GatewayLedger implements GatewayIndex {
       rows.push(row);
     }
     const primary = this.label(vendor);
+    for (const [account, rows] of byAccount) this.streams.set(streamKey(vendor, account), rows);
     return [...byAccount].map(([account, rows]) => ({
       path: join(this.stateDir, "usage"),
       // The usual account keeps the plain key; another account gets its own stream.
@@ -269,8 +289,13 @@ export class GatewayLedger implements GatewayIndex {
     const usage = dir ? join(dir, "usage") : "";
     if (!dir || !isDirectory(usage)) return new GatewayLedger([], dir ?? config.directory, false, config.authDirectories);
     const map = providerMap();
-    const rows = ledgerFiles(usage, opts.sinceMs - CLAIM_WINDOW_MS).flatMap((file) => readRows(file, map));
-    return new GatewayLedger(dedupe(rows), dir, true, config.authDirectories);
+    const source: LedgerSource = { usage, sinceMs: opts.sinceMs, map, read: new Map() };
+    const rows = ledgerFiles(usage, opts.sinceMs - CLAIM_WINDOW_MS).flatMap((file) => {
+      const { rows, end } = readRows(file, map);
+      source.read.set(file, end);
+      return rows;
+    });
+    return new GatewayLedger(dedupe(rows), dir, true, config.authDirectories, source);
   }
 
   /** Whether any telemetry row is waiting for a rollout to claim it, so reading rollouts can change a report. */
@@ -292,9 +317,11 @@ function* eventsFor(vendor: GatewayVendor, account: string, rows: LedgerRow[]): 
   for (const row of rows) {
     if (!counts(row)) continue;
     const { model, costUsd } = price(vendor, row);
-    const requestId = `${row.host}:${row.requestId}`;
+    const requestId = callKey(row);
     // The archive keeps how many calls a report took over from the rollouts; see `routedCalls`.
     yield { t: "routed", sessionId, id: requestId, ts: row.at };
+    // A client Mac's Codex report may hold this call too, when this Mac's gateway served it (gateway-settle.ts).
+    const gateway = billedRow(row) ? { gateway: { id: row.responseId.slice(MARKER.length), role: "billed" as const } } : {};
     yield {
       t: "api",
       sessionId,
@@ -310,6 +337,7 @@ function* eventsFor(vendor: GatewayVendor, account: string, rows: LedgerRow[]): 
       costUsd,
       sidechain: false,
       ts: row.at,
+      ...gateway,
     };
   }
 }
@@ -338,104 +366,6 @@ function isDirectory(path: string): boolean {
   } catch {
     return false;
   }
-}
-
-/** Month ledgers overlapping [sinceMs, now], oldest file first. */
-function ledgerFiles(usage: string, sinceMs: number): string[] {
-  const now = Date.now();
-  return safeReaddir(usage)
-    .filter((name) => /^usage-\d{4}-\d{2}\.jsonl$/.test(name))
-    .filter((name) => inWindow(name.slice(6, 13), sinceMs, now))
-    .sort()
-    .map((name) => join(usage, name));
-}
-
-// The gateway names its month files by UTC month (usage-YYYY-MM.jsonl), so the window is UTC too: east
-// of UTC the previous UTC month holds the first hours of the new local month.
-function inWindow(key: string, sinceMs: number, nowMs: number): boolean {
-  const [year, month] = key.split("-").map(Number);
-  const from = Date.UTC(year!, month! - 1, 1);
-  if (!Number.isFinite(from)) return false;
-  return Date.UTC(year!, month!, 1) > sinceMs && from <= nowMs;
-}
-
-function safeReaddir(dir: string): string[] {
-  try {
-    return readdirSync(dir);
-  } catch {
-    return [];
-  }
-}
-
-function readRows(path: string, map: Record<string, GatewayVendor>): LedgerRow[] {
-  let body: string;
-  try {
-    body = readFileSync(path, "utf8");
-  } catch {
-    return [];
-  }
-  const rows: LedgerRow[] = [];
-  for (const line of body.split("\n")) {
-    if (line[0] !== "{") continue;
-    let raw: unknown;
-    try {
-      raw = JSON.parse(line);
-    } catch {
-      continue; // a torn write at the tail; every later line is intact
-    }
-    const row = toRow(raw, map);
-    if (row) rows.push(row);
-  }
-  return rows;
-}
-
-/** Only these fields are read: a new ledger field stays out of reports. */
-function toRow(raw: unknown, map: Record<string, GatewayVendor>): LedgerRow | undefined {
-  const d = raw as Record<string, unknown> | null;
-  if (!d || typeof d !== "object") return undefined;
-  const origin = str(d.origin);
-  if (origin !== GATEWAY_ORIGIN && origin !== TELEMETRY_ORIGIN) return undefined;
-  const at = timestamp(d.at);
-  const requestId = str(d.requestId);
-  if (!Number.isFinite(at) || !requestId) return undefined;
-  const providerType = str(d.providerType);
-  // A row only matters when it names a subscription this ledger can bill. Its type says so; only an imported
-  // telemetry row may lack one, and then the provider name it carries decides.
-  const vendor = providerType ? vendorIn(PROVIDER_TYPES, providerType) : origin === TELEMETRY_ORIGIN ? vendorIn(map, str(d.provider)) : undefined;
-  if (!vendor) return undefined;
-  return {
-    at,
-    host: str(d.host),
-    requestId,
-    responseId: str(d.responseId),
-    model: str(d.model) || "unknown",
-    origin,
-    vendor,
-    provider: str(d.provider),
-    session: flag(d.session),
-    input: num(d.inputTokens),
-    cached: num(d.cachedTokens),
-    cacheWrite: num(d.cacheWriteTokens),
-    output: num(d.outputTokens),
-    reasoning: num(d.reasoningTokens),
-    nanoAiu: typeof d.nanoAiu === "number" && Number.isFinite(d.nanoAiu) ? d.nanoAiu : null,
-    nanoAiuStatus: d.nanoAiuStatus === undefined ? undefined : str(d.nanoAiuStatus),
-    claimed: false,
-    rolloutBilled: false,
-  };
-}
-
-// Two rows for one call — the gateway's and its telemetry echo — must not both
-// count, and the gateway's own record wins because it carries the charge.
-function dedupe(rows: LedgerRow[]): LedgerRow[] {
-  const byCall = new Map<string, LedgerRow>();
-  for (const row of rows) {
-    const key = `${row.host}:${row.requestId}`;
-    const keep = byCall.get(key);
-    if (keep && (keep.origin === GATEWAY_ORIGIN || row.origin !== GATEWAY_ORIGIN)) continue;
-    byCall.set(key, row);
-  }
-  return [...byCall.values()];
 }
 
 // Parsers hold the structural `GatewayIndex` contract above, so the ledger ships

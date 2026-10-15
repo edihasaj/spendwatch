@@ -1,5 +1,5 @@
 // Folds parse events into per-tool / per-prompt / per-model / per-project spend.
-import type { Event } from "./parse";
+import type { Event, GatewayMark } from "./parse";
 import type { Period } from "./periods";
 import { contextCost, estTokens, usageCost, type Usage } from "./pricing";
 import { mergeProjectRows } from "./projects";
@@ -19,7 +19,7 @@ interface StreamState {
   currentPromptKey?: string;
   toolUse: Map<string, { name: string; argChars: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string }>;
   results: Array<{ name: string; tokens: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string; error?: boolean; exit?: number }>;
-  usage: Map<string, { model?: string; usage: Usage; costUsd?: number; promptKey?: string; lastTs: number }>;
+  usage: Map<string, { model?: string; usage: Usage; costUsd?: number; promptKey?: string; lastTs: number; gateway?: GatewayMark }>;
   firstUserText?: string;
 }
 
@@ -73,6 +73,24 @@ export interface ModelRow {
   cacheWriteTok: number;
   cost: number;
 }
+/**
+ * A gateway-marked call a Codex report billed itself because no ledger on its Mac held the row: everything needed to
+ * take it back out of the report's totals and rows, and nothing about its content. See gateway-settle.ts.
+ */
+export interface UnconfirmedCall {
+  /** The gateway's request id without dashes: the part of `resp_gl_<id>` after the marker. */
+  id: string;
+  ts: number;
+  model: string;
+  account: string;
+  project: string;
+  tokens: number;
+  inTok: number;
+  outTok: number;
+  cacheReadTok: number;
+  cacheWriteTok: number;
+  cost: number;
+}
 export interface ReportPeriod {
   key: string;
   label: string;
@@ -103,6 +121,14 @@ export interface Report {
    * it once. The archive uses it to recognise the month the ledger takes over (see archive-ledger.ts).
    */
   ledger?: boolean;
+  /**
+   * Codex only: gateway-marked calls this report billed because no ledger on this Mac held their row, typically
+   * turns another Mac's gateway served. Where reports of several Macs meet, a call whose id a serving Mac's report
+   * billed is taken out of this report, so it is counted once, on the serving Mac. Absent when none.
+   */
+  gatewayUnconfirmed?: UnconfirmedCall[];
+  /** Claude and Copilot only: ids of the gateway-marked calls this report billed from this Mac's ledger. */
+  gatewayBilled?: string[];
   sessions: number;
   tools: ToolRow[];
   bash: ToolRow[];
@@ -188,7 +214,7 @@ export class Aggregator {
         s.model = e.model ?? s.model;
         if (!s.callIdx.has(e.requestId)) s.callIdx.set(e.requestId, s.nCalls++);
         // Streamed responses rewrite the same requestId with growing usage — keep latest.
-        s.usage.set(e.requestId, { model: e.model, usage: e.usage, costUsd: e.costUsd, promptKey: s.currentPromptKey, lastTs: e.ts });
+        s.usage.set(e.requestId, { model: e.model, usage: e.usage, costUsd: e.costUsd, promptKey: s.currentPromptKey, lastTs: e.ts, gateway: e.gateway });
         break;
       }
       case "tooluse": {
@@ -243,6 +269,8 @@ export class Aggregator {
     let observedCalls = 0;
     let routedCalls = 0;
     let sinceTs = Infinity;
+    const gatewayUnconfirmed: UnconfirmedCall[] = [];
+    const gatewayBilled: string[] = [];
 
     for (const s of this.streams.values()) {
       // Streams from parsers that never emit `observed` (Claude, Grok, pi) still
@@ -281,6 +309,11 @@ export class Aggregator {
         m.cacheReadTok += u.usage.cacheRead;
         m.cacheWriteTok += u.usage.cache5m + u.usage.cache1h;
         m.cost += cost;
+        if (u.gateway?.role === "billed") gatewayBilled.push(u.gateway.id);
+        else if (u.gateway) gatewayUnconfirmed.push({
+          id: u.gateway.id, ts: u.lastTs, model: mk, account: s.account, project: s.project, tokens,
+          inTok: u.usage.input, outTok: u.usage.output, cacheReadTok: u.usage.cacheRead, cacheWriteTok: u.usage.cache5m + u.usage.cache1h, cost,
+        });
         if (u.promptKey) {
           const p = this.promptRow(prompts, u.promptKey);
           if (p) {
@@ -372,6 +405,8 @@ export class Aggregator {
       apiCalls,
       observedCalls,
       ...(routedCalls ? { routedCalls } : {}),
+      ...(gatewayUnconfirmed.length ? { gatewayUnconfirmed } : {}),
+      ...(gatewayBilled.length ? { gatewayBilled } : {}),
       sessions: sessions.size,
       tools: by([...tools.values()], (t) => t.ctxCost),
       bash: by([...bash.values()], (t) => t.ctxCost),

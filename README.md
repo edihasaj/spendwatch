@@ -595,7 +595,7 @@ arrive with; a name mapped to anything but `claude` or `copilot` is dropped.
 | the ledger says | what spendwatch does |
 |---|---|
 | gateway-origin row with a `resp_gl_*` response id | counts the row; a rollout record with exactly that response id is dropped |
-| a rollout record with a `resp_gl_*` id that this Mac's ledger holds no row for | keeps it in Codex as `<model> (gateway-routed, not in this Mac's ledger)` and says so under the report (see *Several Macs*) |
+| a rollout record with a `resp_gl_*` id that this Mac's ledger holds no row for | keeps it in Codex as `<model> (gateway-routed, not in this Mac's ledger)`, says so under the report, and takes it out again wherever its report meets the serving Mac's (see *Several Macs*) |
 | telemetry row with `session: true` that a rollout claims — same model, same input and output tokens, within 30 seconds | counts the row once, and drops the rollout's copy |
 | telemetry row with `session: false` | counts the row directly: its request carried no Codex session id, so no rollout exists to dedupe against |
 | a rollout call with no response id (`token_count` only, from a Codex build without `token_usage_record`) that matches a billed gateway row the same way | counts the gateway row once, and drops the rollout's copy |
@@ -661,32 +661,49 @@ turn that arrives after the first tick is still recognised as routed, and a
 rollout Codex moves into `archived_sessions` while watched carries on from where
 it was read instead of being read again from the top. Each tick applies the same
 `--account` and `--project` filters as the first read, and the window stays open
-for everything written while `watch` runs. One race remains: if a routed call
-lands in the rollout one tick before the gateway appends its row, the rollout
-bills it (a record as `(gateway-routed, not in this Mac's ledger)`), and the row
-that arrives later is kept out of the ledger so that it is not billed again. That
-call then shows under Codex until `watch` is restarted, where a report would show
-it under Copilot or Claude.
+for everything written while `watch` runs.
 
-**Several Macs.** A routed turn is counted on the Mac whose gateway served it, by
-that Mac's Spendwatch, under the provider's account. Another Mac's rollouts drop a
-`resp_gl_*` call only when their own ledger holds its row, which is the case only
-when that Mac's own gateway served it. A Codex client whose turns another Mac's
-gateway served cannot prove that a ledger counted them, so it keeps them, labelled
-`(gateway-routed, not in this Mac's ledger)`, and says so under the report. Two
-consequences follow, and both are visible in the report rather than silent:
+The gateway appends a call's ledger row just after the response ends, so the
+rollout line can come first. A routed call with no row yet — a `resp_gl_*`
+record, or a `token_count` that could match a billed row — therefore waits for
+it instead of being billed at once: `watch` checks it against the ledger it
+reloads on each tick, and a report first reads the rows the gateway appended
+since the report loaded the ledger (rows of an account the ledger already had
+rows for). The call is billed from the rollout (a record as
+`(gateway-routed, not in this Mac's ledger)`) only when no row has come within
+the 30-second claim window, or when a report ends; a row that arrives later still
+does not bill it a second time. While it waits, `watch` shows the call in
+neither tab.
 
-- if the serving Mac also runs Spendwatch, those turns appear twice in a merged
-  report: under that Mac's Copilot or Claude tab, and under the client's Codex tab
-  with that label;
-- if it does not, the client's Codex tab is the only place they appear.
+**Several Macs.** A routed turn is counted once, on the Mac whose gateway served
+it, under the provider's account. A Codex client whose turns another Mac's
+gateway served cannot prove from its own files that a ledger counts them (the
+rollout records no serving host), so its own report keeps them, labelled
+`(gateway-routed, not in this Mac's ledger)`, says so under the report, and
+lists each such call by its gateway request id (the part of `resp_gl_<id>` after
+the marker) with its tokens, cost, model, account, project and time — nothing
+about its content. The serving Mac's Copilot or Claude report lists the ids it
+billed from its ledger. Wherever the two reports meet, the client's copy is taken
+out of its Codex totals, model, account, project and daily token rows, and the
+turn stays on the serving Mac:
 
-The rollout records no serving host, so Spendwatch cannot tell those cases apart
-on its own. A rollout that records only `token_count` is matched against this
-Mac's ledger by model, tokens and time; on any other Mac it is counted from the
-rollout, unlabelled, and the report says that such rollouts were found.
-`SPENDWATCH_GATEWAY_SOURCE`, the gateway root and the Spendwatch version should be
-the same on every Mac.
+- `report --input a.json,b.json`, in the text and HTML reports and their
+  "All machines" view, across every month the inputs hold;
+- the spend archive: the reports `report --sqlite` shows, the monthly history
+  and its projects, and `spendwatch tokens`. Each report is archived as its Mac
+  read it and settled when read back, so the fullest-read rules below never
+  compare figures that depend on which other Macs were collected.
+
+`report --json` passes the reports on as measured, so the collector that combines
+them can settle them against the others. A client turn that no report in the set
+billed stays in the client's Codex tab, so a serving Mac that does not run
+Spendwatch loses nothing. A client with `SPENDWATCH_GATEWAY_SOURCE=off` still
+lists its marked calls (under their plain model name), so they are settled the
+same way. A rollout that records only `token_count` carries no id: it is matched
+against this Mac's ledger by model, tokens and time, and on any other Mac it is
+counted from the rollout, unlabelled, and the report says that such rollouts were
+found. `SPENDWATCH_GATEWAY_SOURCE`, the gateway root and the Spendwatch version
+should be the same on every Mac.
 
 **The spend archive keeps routed turns in one source.** A month read with this
 Mac's ledger counts the routed turns it holds in the Claude and Copilot reports
@@ -762,6 +779,8 @@ There is no automatic device collection.
 - `src/codex.ts` — Codex rollout JSONL → same events
 - `src/gateway.ts` — subscription gateway ledger: dedupe, claims, coverage, and per-account rows
 - `src/gateway-config.ts` — where the gateway keeps its ledger, and which login each provider bills
+- `src/gateway-ledger-files.ts` — reading the ledger's month files into rows
+- `src/gateway-settle.ts` — counting a routed turn once where several Macs' reports meet
 - `src/grok.ts` — Grok ACP session updates → same events
 - `src/sources.ts` — agent registry: log locations, discovery, account detection, config roots
 - `src/aggregate.ts` — per-session fold → leaderboards + per-account + drill-down samples
