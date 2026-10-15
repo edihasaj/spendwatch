@@ -39,6 +39,11 @@ export interface SourceFile {
    * gateway ledger row). Asked on every poll, with `final` at the end of a read, when nothing may wait any longer.
    */
   settle?: (ctx: any, final: boolean) => Iterable<Event>;
+  /**
+   * For a file that yields all its events on every poll: what its events depend on. While it is unchanged the
+   * reader does not fold them again and reports no change, so an idle `watch` tick does not redraw.
+   */
+  version?: () => string;
 }
 
 export interface SourceStatus {

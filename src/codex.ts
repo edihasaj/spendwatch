@@ -100,8 +100,11 @@ function apiEvent(ctx: CodexCtx, requestId: string, model: string | undefined, u
 /** Bills a waiting call from the rollout: no ledger row turned up for it in time. */
 function billHere(ctx: CodexCtx, call: PendingCall): Event {
   const { model, input, output, ts, responseId } = call;
-  // A row that lands after this must not bill the call again; a reloaded ledger replays this (see gateway.ts).
-  (ctx.decisions ??= []).push({ kind: "billed", model, input, output, ts, ...(responseId ? { responseId } : {}) });
+  // A row that lands after this must not bill the call again: the ledger of this read keeps the call until a
+  // refresh finds its row, and a reloaded ledger replays it (see gateway.ts).
+  const decision: LedgerDecision = { kind: "billed", model, input, output, ts, ...(responseId ? { responseId } : {}) };
+  (ctx.decisions ??= []).push(decision);
+  ctx.gateway?.adopt?.([decision]);
   if (!marked(responseId)) return apiEvent(ctx, `c${ctx.callN++}`, call.billedModel, call.usage, ts);
   ctx.unconfirmed = (ctx.unconfirmed ?? 0) + 1;
   return apiEvent(ctx, responseId, `${call.billedModel ?? "unknown"} (${UNCONFIRMED})`, call.usage, ts, responseId.slice(MARKER.length));
@@ -177,6 +180,7 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
         const u = (p.info?.last_token_usage ?? {}) as any;
         const input = u.input_tokens ?? 0;
         const cached = u.cached_input_tokens ?? 0;
+        const cacheWrite = u.cache_write_input_tokens ?? 0;
         if (input || u.output_tokens) {
           // Every token_count with usage is one call the CLI actually made — the
           // count Codex's own status line would have shown, deduped or not.
@@ -186,7 +190,8 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
           const sig = countSignature(u, p.info?.total_token_usage);
           if (sig === ctx.lastCount) return; // a re-emission of the previous call
           ctx.lastCount = sig;
-          const usage: Usage = { input: Math.max(0, input - cached), output: u.output_tokens ?? 0, cacheRead: cached, cache5m: 0, cache1h: 0 };
+          // Gross `input` still feeds the ledger claims; the bill splits it, as a token_usage_record does.
+          const usage: Usage = { input: Math.max(0, input - cached - cacheWrite), output: u.output_tokens ?? 0, cacheRead: cached, cache5m: cacheWrite, cache1h: 0 };
           if (routes(ctx) && ctx.gateway) {
             (ctx.pending ??= []).push({ model: ctx.model ?? "unknown", billedModel: ctx.model, input, output: u.output_tokens ?? 0, ts, usage });
             yield* settleRouted(ctx);

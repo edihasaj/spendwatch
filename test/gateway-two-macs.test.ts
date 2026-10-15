@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Report } from "../src/aggregate";
 import { build, reportsByPeriod } from "../src/build";
@@ -10,6 +9,7 @@ import { loadMonthlySpend, writeMonthlySpend } from "../src/spend-history";
 import { loadArchivedReports } from "../src/spend-report-archive";
 import { tokenSummary } from "../src/token-summary";
 import { iso, line } from "./gateway-world";
+import { tempDir } from "./tmp";
 
 // One routed turn, two Macs: the client's Codex sent it through the serving Mac's gateway. The client has no ledger
 // of its own, so it keeps the turn, labelled; the serving Mac's ledger bills it on Copilot. Wherever the two Macs'
@@ -32,7 +32,7 @@ afterEach(() => {
 
 /** One Mac's September, read the way `report --json --label <mac>` reads it, with its day rows measured that evening. */
 function read(machine: string, files: { rollouts?: Record<string, string>; ledger?: string }): Report[] {
-  const root = mkdtempSync(join(tmpdir(), `spendwatch-${machine}-`));
+  const root = tempDir(`spendwatch-${machine}-`);
   const sessions = join(root, "codex", "sessions"); const state = join(root, "state");
   mkdirSync(sessions, { recursive: true }); mkdirSync(state, { recursive: true });
   for (const [name, body] of Object.entries(files.rollouts ?? {})) writeFileSync(join(sessions, name), body);
@@ -84,7 +84,7 @@ describe("a routed turn served by another Mac", () => {
   });
 
   test("is counted once in an archive holding both Macs' reports, in every view of it", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "spendwatch-two-macs-")), "spendwatch.db");
+    const path = join(tempDir("spendwatch-two-macs-"), "spendwatch.db");
     writeMonthlySpend(path, [...client(), ...serving()], { generatedAt: at(15, 20) });
 
     const reports = Object.fromEntries(loadArchivedReports(path).map((r) => [r.source, r]));
@@ -104,7 +104,7 @@ describe("a routed turn served by another Mac", () => {
   });
 
   test("is counted once when the collector renders both Macs' exports", () => {
-    const dir = mkdtempSync(join(tmpdir(), "spendwatch-two-macs-inputs-"));
+    const dir = tempDir("spendwatch-two-macs-inputs-");
     const files = { client: join(dir, "client.json"), studio: join(dir, "studio.json") };
     writeFileSync(files.client, JSON.stringify(client()));
     writeFileSync(files.studio, JSON.stringify(serving()));
@@ -124,7 +124,7 @@ describe("a routed turn served by another Mac", () => {
   });
 
   test("passes through `--json` as measured, so the next collector can settle it", () => {
-    const dir = mkdtempSync(join(tmpdir(), "spendwatch-two-macs-json-"));
+    const dir = tempDir("spendwatch-two-macs-json-");
     writeFileSync(join(dir, "client.json"), JSON.stringify(client()));
     writeFileSync(join(dir, "studio.json"), JSON.stringify(serving()));
     const out = Bun.spawnSync(["bun", join(ROOT, "src", "cli.ts"), "report", "--input", `${join(dir, "client.json")},${join(dir, "studio.json")}`, "--json"], {

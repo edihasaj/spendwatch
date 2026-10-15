@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { GatewayIndex } from "../src/gateway";
 import { apiEvents, claude, copilot, load, NOW, stateDir, telemetry, withEnv, type Row } from "./ledger-fixtures";
+import { tempDir } from "./tmp";
 
 // Which ledger rows are read, which a rollout may match, and which the ledger bills.
 
@@ -89,7 +89,7 @@ describe("a rollout record's response id", () => {
   });
 
   test("is not covered when this Mac has no ledger at all", () => {
-    const empty = mkdtempSync(join(tmpdir(), "spendwatch-no-usage-"));
+    const empty = tempDir("spendwatch-no-usage-");
     const index = GatewayIndex.load({ sinceMs: 0, stateDir: empty });
     expect([index.present, index.covers("resp_gl_g1")]).toEqual([false, false]);
     mkdirSync(join(empty, "usage"));
@@ -144,7 +144,7 @@ describe("the ledger files a window reads", () => {
 describe("a large ledger", () => {
   // About a month of routed calls on a busy serving Mac, and more: grouping must stay linear.
   function bigLedger(rows: number): string {
-    const dir = mkdtempSync(join(tmpdir(), "spendwatch-big-ledger-"));
+    const dir = tempDir("spendwatch-big-ledger-");
     mkdirSync(join(dir, "usage"));
     const base = Date.UTC(2026, 9, 2);
     const lines: string[] = [];
@@ -159,7 +159,7 @@ describe("a large ledger", () => {
   }
 
   test("groups 100,000 rows into account streams well under a second, and answers claims without scanning them", () => {
-    const config = join(mkdtempSync(join(tmpdir(), "spendwatch-big-config-")), "gateway.json");
+    const config = join(tempDir("spendwatch-big-config-"), "gateway.json");
     const dir = bigLedger(100_000);
     // A second Claude login, so rows are split across accounts as on a real serving Mac.
     writeFileSync(config, JSON.stringify({ version: 1, stateDirectory: dir, providers: [{ id: "claude-work", type: "claude-subscription", authDirectory: "claude-work" }] }));

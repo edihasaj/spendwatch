@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gatewayWorld, iso, line } from "./gateway-world";
+import { tempDir } from "./tmp";
 
 // The collector reads `report --months N --json` over SSH, so what that payload keeps is what the archive can ever see.
 const ROOT = join(import.meta.dir, "..");
@@ -34,7 +34,7 @@ describe("report --months N --json", () => {
 describe("report's footnotes", () => {
   /** A subscription_gateway rollout as `rollout` writes it, beside an empty ledger of this Mac. */
   function world(rollout: (now: number) => string): string {
-    const root = mkdtempSync(join(tmpdir(), "spendwatch-cli-notes-"));
+    const root = tempDir("spendwatch-cli-notes-");
     const sessions = join(root, "codex", "sessions"); const state = join(root, "state");
     mkdirSync(sessions, { recursive: true }); mkdirSync(join(state, "usage"), { recursive: true });
     writeFileSync(join(sessions, "rollout-2026-10-15T10-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"), rollout(Date.now()));

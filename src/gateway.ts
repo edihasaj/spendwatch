@@ -64,8 +64,9 @@ export interface GatewayIndex {
   /** True when this Mac's ledger holds the billed row of this marked response, so the ledger bills it. */
   covers?(responseId: string): boolean;
   /**
-   * Calls a rollout billed on an earlier watch tick, before the gateway had appended their ledger row.
-   * Their rows must not bill them again: the rollout's bill stands.
+   * Calls a rollout billed before the gateway had appended their ledger row (on an earlier watch tick, or earlier in
+   * this read). Their rows must not bill them again: the rollout's bill stands, also for a row that only lands
+   * after this, which `refresh` then matches.
    */
   adopt?(calls: Iterable<BilledCall>): void;
   /** Applies a rollout's earlier decisions to this freshly loaded ledger, in their order; see `LedgerDecision`. */
@@ -124,6 +125,10 @@ export class GatewayLedger implements GatewayIndex {
   private readonly streams = new Map<string, LedgerRow[]>();
   /** Every call the rows hold, by `callKey`. */
   private readonly calls = new Set<string>();
+  /** Calls a rollout billed that `adopt` has already seen, so offering one twice never marks a second row. */
+  private readonly adopted = new Set<BilledCall>();
+  /** The adopted calls no row has matched yet: a row `refresh` finds later is theirs. */
+  private readonly unmatched = new Set<BilledCall>();
   private lastRead = Date.now();
 
   private constructor(rows: LedgerRow[], stateDir: string, present: boolean, authDirectories: ReadonlyMap<string, AuthDirectory> = new Map(), private readonly source?: LedgerSource) {
@@ -154,6 +159,7 @@ export class GatewayLedger implements GatewayIndex {
     const source = this.source;
     if (!source || !this.streams.size) return;
     this.lastRead = Date.now();
+    let added = false;
     for (const file of ledgerFiles(source.usage, source.sinceMs - CLAIM_WINDOW_MS)) {
       const { rows, end } = readRows(file, source.map, source.read.get(file) ?? 0);
       source.read.set(file, end);
@@ -164,8 +170,21 @@ export class GatewayLedger implements GatewayIndex {
         this.rows.push(row);
         stream.push(row);
         this.index(row);
+        added = true;
       }
     }
+    // A rollout of this read may have billed a call before its row existed: the row is that call's, not a second bill.
+    if (added) for (const call of this.unmatched) if (this.take(call)) this.unmatched.delete(call);
+  }
+
+  /**
+   * What the ledger files held when last read, and how many of a stream's rows bill. Unchanged means nothing a
+   * `watch` tick would show has changed, so the reader need not fold the stream again.
+   */
+  private version(rows: LedgerRow[]): string {
+    let bytes = 0;
+    for (const end of this.source?.read.values() ?? []) bytes += end;
+    return `${bytes}:${rows.length}:${rows.filter(counts).length}`;
   }
 
   /** When the ledger files were last read, by `load` or by `refresh`. */
@@ -208,19 +227,30 @@ export class GatewayLedger implements GatewayIndex {
    */
   adopt(calls: Iterable<BilledCall>): void {
     for (const call of calls) {
-      if (call.responseId) {
-        const row = this.byResponse.get(call.responseId);
-        if (row) row.rolloutBilled = true;
-        continue;
-      }
-      let best: LedgerRow | undefined;
-      for (const row of this.near(call.model, call.input, call.output, call.ts)) {
-        // A claimed row's rollout copy was dropped: only the ledger bills that call.
-        if (row.rolloutBilled || row.claimed || !billedRow(row)) continue;
-        if (!best || Math.abs(row.at - call.ts) < Math.abs(best.at - call.ts)) best = row;
-      }
-      if (best) best.rolloutBilled = true;
+      if (this.adopted.has(call)) continue;
+      this.adopted.add(call);
+      // No row yet: the gateway may append it later in this read, and `refresh` matches it then.
+      if (!this.take(call)) this.unmatched.add(call);
     }
+  }
+
+  /** Marks the row of a call a rollout billed, so the ledger does not bill it too. False when no row is there yet. */
+  private take(call: BilledCall): boolean {
+    if (call.responseId) {
+      const row = this.byResponse.get(call.responseId);
+      if (!row) return false;
+      row.rolloutBilled = true;
+      return true;
+    }
+    let best: LedgerRow | undefined;
+    for (const row of this.near(call.model, call.input, call.output, call.ts)) {
+      // A claimed row's rollout copy was dropped: only the ledger bills that call.
+      if (row.rolloutBilled || row.claimed || !billedRow(row)) continue;
+      if (!best || Math.abs(row.at - call.ts) < Math.abs(best.at - call.ts)) best = row;
+    }
+    if (!best) return false;
+    best.rolloutBilled = true;
+    return true;
   }
 
   replay(decisions: Iterable<LedgerDecision>): void {
@@ -255,6 +285,7 @@ export class GatewayLedger implements GatewayIndex {
       parse: () => [],
       ctx: null,
       events: (): Generator<Event> => eventsFor(vendor, account === primary ? "" : account, rows),
+      version: () => this.version(rows),
     }));
   }
 

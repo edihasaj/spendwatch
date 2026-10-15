@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { build, reportsByPeriod } from "../src/build";
 import type { Period } from "../src/periods";
 import { rollingDays } from "../src/periods";
 import { iso, line } from "./gateway-world";
+import { tempDir } from "./tmp";
 
 // A rollout drops a gateway-marked call only when this Mac's ledger proves another record bills it. Every other
 // marked call stays in the Codex report, labelled, so no turn is ever counted nowhere.
@@ -26,7 +26,7 @@ const row = (over: Record<string, unknown>) => JSON.stringify({ v: 1, host: "stu
  * undefined leaves no usage directory at all.
  */
 function world(rollout: string, ledger?: Record<string, string>) {
-  const root = mkdtempSync(join(tmpdir(), "spendwatch-coverage-"));
+  const root = tempDir("spendwatch-coverage-");
   const sessions = join(root, "codex", "sessions"); const state = join(root, "state");
   mkdirSync(sessions, { recursive: true }); mkdirSync(state, { recursive: true });
   writeFileSync(join(sessions, "rollout-2026-10-15T10-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"), rollout);

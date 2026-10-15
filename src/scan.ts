@@ -34,6 +34,8 @@ export class IncrementalReader {
   private partial = new Map<string, string>();
   /** The parser state of each file, from the first time it was seen: the offset only makes sense with it. */
   private contexts = new Map<string, unknown>();
+  /** The `version` each events-backed file had when it was last folded. */
+  private versions = new Map<string, string>();
 
   constructor(private agg: EventSink) {}
 
@@ -50,9 +52,12 @@ export class IncrementalReader {
     const { path, project, source, account, parse } = file;
     const id = this.identity(file);
     if (file.events) {
+      const version = file.version?.();
+      if (version !== undefined && this.versions.get(id) === version) return 0;
       const fold = this.agg.stream(id, project, source, account);
       let count = 0;
       for (const event of file.events()) { fold(event); count++; }
+      if (version !== undefined) this.versions.set(id, version);
       return count;
     }
     let size: number;
@@ -114,9 +119,10 @@ export class IncrementalReader {
 
   /**
    * End of a read: a trailing line with no newline is parsed, and what the parser left undecided is decided now
-   * (see `SourceFile.settle`), because a report has no later tick to wait for.
+   * (see `SourceFile.settle`), because a report has no later tick to wait for. `watch` has later ticks, so its first
+   * read passes `final = false` and leaves a routed call younger than the claim window waiting for its ledger row.
    */
-  flush(file: SourceFile) {
+  flush(file: SourceFile, final = true) {
     if (file.events) return;
     const id = this.identity(file);
     const carry = this.partial.get(id);
@@ -128,7 +134,7 @@ export class IncrementalReader {
       for (const ev of file.parse(carry, ctx)) fold(ev);
       this.partial.set(id, "");
     }
-    this.settle(file, ctx, true);
+    this.settle(file, ctx, final);
   }
 }
 
