@@ -76,7 +76,6 @@ function seek(first: RowHolder, candidatesOf: (holder: RowHolder) => LedgerRow[]
       row.claimed = claimed;
       row.rolloutBilled = rolloutBilled;
       row.holder = holder;
-      step.vacated = undefined;
     }
     let advanced = false;
     while (step.next < step.rows.length) {
