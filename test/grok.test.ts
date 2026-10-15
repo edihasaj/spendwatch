@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Aggregator } from "../src/aggregate";
 import { IncrementalReader } from "../src/scan";
@@ -8,6 +7,7 @@ import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "../src/grok";
 import { defaultGrokRoots, discover, type SourceFile } from "../src/sources";
 import { grokAccountEmail } from "../src/accounts";
 import { priceFor, usageCost } from "../src/pricing";
+import { tempDir } from "./tmp";
 
 const SESS = "01a0167e-fd7f-7f92-89c5-39b750310e86";
 const CALL = "call-0ea107ae-0";
@@ -71,7 +71,7 @@ function entries(): string[] {
 }
 
 function fixture(): string {
-  const root = mkdtempSync(join(tmpdir(), "spendwatch-grok-"));
+  const root = tempDir("spendwatch-grok-");
   const file = join(root, "updates.jsonl");
   writeFileSync(file, entries().join("\n") + "\n");
   return file;
@@ -109,7 +109,7 @@ describe("grok parser", () => {
   });
 
   test("a failed tool call and a nonzero exit both count as errors", () => {
-    const root = mkdtempSync(join(tmpdir(), "spendwatch-grok-err-"));
+    const root = tempDir("spendwatch-grok-err-");
     const file = join(root, "updates.jsonl");
     writeFileSync(
       file,
@@ -134,7 +134,7 @@ describe("grok parser", () => {
   });
 
   test("later turns are billed on their own, not as a running total", () => {
-    const root = mkdtempSync(join(tmpdir(), "spendwatch-grok-turns-"));
+    const root = tempDir("spendwatch-grok-turns-");
     const file = join(root, "updates.jsonl");
     const turn = (input: number, output: number, cached: number) =>
       update({ sessionUpdate: "turn_completed", usage: { inputTokens: input, outputTokens: output, cachedReadTokens: cached, cacheCreationTokens: 0, modelUsage: { "grok-4.6": { inputTokens: input, outputTokens: output, cachedReadTokens: cached, cacheCreationTokens: 0 } } } });
@@ -167,7 +167,7 @@ describe("grok pricing", () => {
 
 describe("grok discovery", () => {
   test("finds updates.jsonl per session and reads the project from the encoded cwd", () => {
-    const home = mkdtempSync(join(tmpdir(), "spendwatch-grok-home-"));
+    const home = tempDir("spendwatch-grok-home-");
     const encoded = encodeURIComponent("/Users/edi/Projects/spendwatch").replace(/%2F/g, "%2F");
     const session = join(home, ".grok", "sessions", encoded, SESS);
     mkdirSync(session, { recursive: true });
@@ -194,7 +194,7 @@ describe("grok discovery", () => {
   });
 
   test("labels each grok home so duplicate accounts stay distinguishable", () => {
-    const home = mkdtempSync(join(tmpdir(), "spendwatch-grok-homes-"));
+    const home = tempDir("spendwatch-grok-homes-");
     for (const name of [".grok", ".grok-work"]) mkdirSync(join(home, name, "sessions"), { recursive: true });
     expect(defaultGrokRoots(home).map((r) => r.path)).toEqual([
       join(home, ".grok", "sessions"),

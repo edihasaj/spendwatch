@@ -1,17 +1,16 @@
 import {expect, test} from "bun:test";
 import {Database} from "bun:sqlite";
-import {mkdtempSync} from "node:fs";
 import {join} from "node:path";
-import {tmpdir} from "node:os";
 import {Aggregator, type Report} from "../src/aggregate";
 import {monthPeriod} from "../src/periods";
 import {writeMonthlySpend} from "../src/spend-history";
 import {TokenDayAccumulator} from "../src/token-days";
 import {tokenSummary} from "../src/token-summary";
+import { tempDir } from "./tmp";
 
 const now = Date.parse("2026-10-13T20:00:00Z");
 const options = {now, timeZone: "Europe/Belgrade", localModels: ["qwen3.8-flash-next"]};
-const path = () => join(mkdtempSync(join(tmpdir(), "token-summary-")), "data.db");
+const path = () => join(tempDir("token-summary-"), "data.db");
 function report(source: string, tokens = 100, model = "gpt-6.1-sol", month = "2026-10"): Report {
   return {source, period: monthPeriod(month), totalTokens: tokens, totalCost: 0, apiCalls: 1, sessions: 1,
     tools: [], bash: [], deep: [], targets: [], prompts: [], projects: [], accounts: [], sinceTs: now,
