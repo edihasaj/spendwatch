@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultCodexRoots, discover, pollOrder } from "../src/sources";
+import { tempDir } from "./tmp";
 
 // Minimal unsigned JWT: Codex reads the payload of auth.json's id_token only.
 function idToken(email: string, plan: string): string {
@@ -122,7 +123,7 @@ describe("gateway source", () => {
   const ROLLOUT = "rollout-2026-10-05T10-00-00-11111111-2222-3333-4444-555555555555.jsonl";
 
   function homeWith(structure: Record<string, string[]>): string {
-    const home = mkdtempSync(join(tmpdir(), "spendwatch-home-"));
+    const home = tempDir("spendwatch-home-");
     for (const [dir, files] of Object.entries(structure)) {
       mkdirSync(join(home, dir), { recursive: true });
       for (const file of files) writeFileSync(join(home, dir, file), "");
@@ -145,7 +146,7 @@ describe("gateway source", () => {
 
   /** A ledger with one billed call for each subscription. */
   function ledgerDir(): string {
-    const state = mkdtempSync(join(tmpdir(), "spendwatch-gateway-"));
+    const state = tempDir("spendwatch-gateway-");
     mkdirSync(join(state, "usage"), { recursive: true });
     const at = new Date();
     const month = `${at.getUTCFullYear()}-${String(at.getUTCMonth() + 1).padStart(2, "0")}`;
@@ -222,7 +223,7 @@ describe("gateway source", () => {
   test("says a ledger was read only when this Mac has one", () => {
     const home = homeWith({ ".claude/projects": [], ".codex/sessions": [] });
     // A gateway root with no usage directory: a client that sends its turns to another Mac's gateway.
-    const state = mkdtempSync(join(tmpdir(), "spendwatch-client-gateway-"));
+    const state = tempDir("spendwatch-client-gateway-");
     const config = join(home, "config.json");
     writeFileSync(config, JSON.stringify([
       { agent: "claude", path: join(home, ".claude", "projects") },

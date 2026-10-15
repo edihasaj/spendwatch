@@ -41,15 +41,21 @@ export function matchesProject(project: string, filter?: string): boolean {
  * first read and every `watch` tick ask the same question, so a filter holds for as long as the command runs.
  */
 export function readerFor(st: SourceStatus, f: SourceFile, a: BuildOptions): "report" | "claims" | undefined {
-  // Claude and Grok can pre-filter by project (it's in the dir name).
-  if ((st.id === "claude" || st.id === "grok") && !matchesProject(f.project, a.project)) return undefined;
+  // Claude and Grok can pre-filter by project (it's in the dir name). A gateway ledger file is not a project's
+  // transcript: its rows carry the project "gateway", and Copilot and Codex post-filter only their project lists.
+  if ((st.id === "claude" || st.id === "grok") && !f.key?.startsWith("gateway:") && !matchesProject(f.project, a.project)) return undefined;
   // A rollout a filter leaves out of the Codex report still has to claim what it shares with the ledger,
   // or the Claude and Copilot rows it vouches for would depend on which account was asked about.
   if (a.account && !f.account.toLowerCase().includes(a.account.toLowerCase())) return st.id === "codex" && st.ledger ? "claims" : undefined;
   return "report";
 }
 
-export function build(a: BuildOptions, periods: Period[]): Built {
+/**
+ * Reads every discovered file once. `watching` is for `watch`'s first read: its later ticks reload the ledger, so a
+ * routed call younger than the claim window is left waiting for its row instead of being billed from its rollout.
+ * A report has no later tick, so it settles every call at the end of its read.
+ */
+export function build(a: BuildOptions, periods: Period[], { watching = false }: { watching?: boolean } = {}): Built {
   const sinceMs = Math.min(...periods.map((period) => period.from));
   // Codex project lives inside the file, so don't pre-filter codex by project name.
   const statuses = discover({ sinceMs, agents: a.agents, project: undefined });
@@ -70,7 +76,7 @@ export function build(a: BuildOptions, periods: Period[]): Built {
       const reader = target === "report" ? slot.reader : target === "claims" ? claims : undefined;
       if (!reader) continue;
       reader.poll(f);
-      reader.flush(f);
+      reader.flush(f, !watching);
     }
   }
   return { statuses, readers, claims, periods };

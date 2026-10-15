@@ -1,8 +1,8 @@
 // A throwaway Codex + gateway world on disk, for tests that run a whole report over it.
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { rollingDays } from "../src/periods";
+import { tempDir } from "./tmp";
 
 export const line = (value: unknown) => JSON.stringify(value) + "\n";
 export const iso = (ms: number) => new Date(ms).toISOString();
@@ -14,7 +14,7 @@ export const iso = (ms: number) => new Date(ms).toISOString();
  *   - a plain Claude gateway row with no rollout of its own.
  */
 export function gatewayWorld(options: { codexAccount?: string; telemetry?: boolean } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "spendwatch-build-"));
+  const root = tempDir("spendwatch-build-");
   const now = Date.now();
   const sessions = join(root, "codex", "sessions", "2026", "10", "15");
   const state = join(root, "state");

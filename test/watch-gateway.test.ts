@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, renameSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Aggregator } from "../src/aggregate";
 import { build, pollWatched, watchPeriod, type BuildOptions, type Built } from "../src/build";
 import { discover } from "../src/sources";
+import { gatewayWorld } from "./gateway-world";
+import { tempDir } from "./tmp";
 
 // Watch mode finds every rollout again on each tick, so a routed turn that arrives later must still be
 // recognised as routed: the session_meta line that says so was read ticks ago.
@@ -26,7 +27,7 @@ const later = (w: { now: number }, ms: number) => setSystemTime(new Date(w.now +
 
 /** One watched gateway-routed rollout, driven the way `watch` drives it. */
 function watched(options: { records?: boolean; account?: string } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "spendwatch-watch-"));
+  const root = tempDir("spendwatch-watch-");
   const sessions = join(root, "home", ".codex", "sessions", "2026", "10", "15"); const state = join(root, "state");
   const archived = join(root, "home", ".codex", "archived_sessions"); const other = join(root, "home", ".codex-other", "sessions");
   mkdirSync(sessions, { recursive: true }); mkdirSync(archived, { recursive: true }); mkdirSync(other, { recursive: true }); mkdirSync(join(state, "usage"), { recursive: true });
@@ -49,7 +50,7 @@ function watched(options: { records?: boolean; account?: string } = {}) {
   let built: Built | undefined;
   // The first tick is the first read; every later one is what `watch` runs on its interval.
   const tick = () => {
-    if (!built) { built = build(a, [watchPeriod(now, 1)]); return 1; }
+    if (!built) { built = build(a, [watchPeriod(now, 1)], { watching: true }); return 1; }
     return pollWatched(built, discover({ sinceMs: now - 86_400_000 }), a);
   };
   const report = (id: string) => (built!.readers.get(id)!.sink as Aggregator).report();
@@ -150,6 +151,89 @@ describe("watch mode with a gateway ledger", () => {
     appendFileSync(w.rollout, done.slice(40));
     w.tick();
     expect(w.calls("codex")).toBe(2);
+  });
+});
+
+describe("the first read of watch", () => {
+  test("leaves a routed call younger than the claim window waiting, so a row that lands on the next tick bills it", () => {
+    const w = watched();
+    // The record is 2 seconds old when watch starts and its row is not written yet.
+    appendFileSync(w.rollout, record("resp_gl_2", w.now - 2000));
+    w.tick();
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 1]);
+    appendFileSync(w.ledger, ledgerRow("2", w.now - 2000));
+    w.tick();
+    // The ledger bills it; the rollout never billed it as an unconfirmed call.
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 2]);
+    expect(w.report("codex").models).toEqual([]);
+  });
+
+  test("bills a call older than the claim window from the rollout at once, when no row came", () => {
+    const w = watched();
+    appendFileSync(w.rollout, record("resp_gl_2", w.now - 40_000));
+    w.tick();
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([1, 1]);
+  });
+
+  test("leaves a token_count that could match a row waiting as well", () => {
+    const w = watched({ records: false });
+    appendFileSync(w.rollout, count(w.now - 2000, 200));
+    w.tick();
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 1]);
+    appendFileSync(w.ledger, ledgerRow("2", w.now - 2000));
+    w.tick();
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 2]);
+  });
+});
+
+describe("an idle watch tick with a gateway ledger", () => {
+  test("reports no change while nothing was appended, and a change when the gateway appends a row", () => {
+    const w = watched();
+    w.tick();
+    expect(w.tick()).toBe(0);
+    expect(w.tick()).toBe(0);
+    appendFileSync(w.ledger, ledgerRow("2", w.now - 1000));
+    expect(w.tick()).toBeGreaterThan(0);
+    expect(w.calls("copilot")).toBe(2);
+    expect(w.tick()).toBe(0);
+  });
+
+  test("reports no change for a ledger that bills Claude, Copilot and claimed telemetry rows", () => {
+    const world = gatewayWorld();
+    process.env.SPENDWATCH_CONFIG = world.config; delete process.env.SPENDWATCH_GATEWAY_SOURCE;
+    const a: BuildOptions = { top: 5 };
+    const built = build(a, [watchPeriod(world.now, 1)], { watching: true });
+    const tick = () => pollWatched(built, discover({ sinceMs: world.now - 86_400_000 }), a);
+    expect(tick()).toBe(0);
+    expect(tick()).toBe(0);
+    const calls = (id: string) => (built.readers.get(id)!.sink as Aggregator).report().apiCalls;
+    expect([calls("claude"), calls("copilot")]).toEqual([2, 1]);
+  });
+});
+
+describe("a watch tick that changes what the ledger bills without changing the ledger's rows", () => {
+  const telemetryRow = (id: string, at: number) => JSON.stringify({ v: 1, at: iso(at), host: "studio", requestId: id, responseId: "", provider: "copilot", model: "copilot/gpt", status: "completed", origin: "telemetry", session: true, inputTokens: 100, cachedTokens: 0, cacheWriteTokens: 0, outputTokens: 10, reasoningTokens: 0, nanoAiu: 1e9, nanoAiuStatus: "complete" }) + "\n";
+
+  test("shows an imported telemetry row once a rollout line claims it", () => {
+    const w = watched();
+    appendFileSync(w.ledger, telemetryRow("t1", w.now - 1000));
+    w.tick();
+    // A telemetry row that carries a session counts only once a rollout claims it.
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 1]);
+    appendFileSync(w.rollout, record("resp_plain", w.now - 1000));
+    expect(w.tick()).toBeGreaterThan(0);
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 2]);
+    expect(w.tick()).toBe(0);
+  });
+
+  test("shows a row the gateway rewrote in place", () => {
+    const w = watched();
+    w.tick();
+    expect(w.report("copilot").models.map((m) => m.model)).toEqual(["copilot/gpt"]);
+    // Same call, same row count; only the credits status changed.
+    writeFileSync(w.ledger, ledgerRow("1", w.now - 50_000).replace('"complete"', '"partial"'));
+    expect(w.tick()).toBeGreaterThan(0);
+    expect(w.report("copilot").models.map((m) => m.model)).toEqual(["copilot/gpt (partial credits)"]);
   });
 });
 

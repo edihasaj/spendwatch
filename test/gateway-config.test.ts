@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { gatewayConfigFile, installedConfigDirectory, readGatewayConfig, resolveStateDirectory } from "../src/gateway-config";
 import { withEnv } from "./ledger-fixtures";
+import { tempDir } from "./tmp";
 
 // What Spendwatch reads from the gateway's own config, and what it never does.
 
@@ -19,7 +20,7 @@ describe("the test environment", () => {
 
 describe("the gateway config file", () => {
   test("is the installed one unless SPENDWATCH_GATEWAY_CONFIG names another; the gateway's GATEWAY_CONFIG is ignored", () => {
-    const elsewhere = join(mkdtempSync(join(tmpdir(), "spendwatch-dev-gateway-")), "gateway.json");
+    const elsewhere = join(tempDir("spendwatch-dev-gateway-"), "gateway.json");
     const installed = join(installedConfigDirectory(), "gateway.json");
     expect(withEnv({ SPENDWATCH_GATEWAY_CONFIG: undefined, GATEWAY_CONFIG: elsewhere }, () => gatewayConfigFile())).toBe(installed);
     expect(withEnv({ SPENDWATCH_GATEWAY_CONFIG: elsewhere, GATEWAY_CONFIG: undefined }, () => gatewayConfigFile())).toBe(elsewhere);
@@ -34,7 +35,7 @@ describe("the gateway config file", () => {
 
 describe("the ledger home without a gateway config", () => {
   test("is the `state` directory beside where the config would be, only when that directory exists", () => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "spendwatch-unconfigured-")));
+    const dir = realpathSync(tempDir("spendwatch-unconfigured-"));
     const view = withEnv({ SPENDWATCH_GATEWAY_CONFIG: join(dir, "gateway.json") }, () => readGatewayConfig());
     expect(view.found).toBe(false);
     expect(resolveStateDirectory(view)).toBeUndefined();
@@ -45,7 +46,7 @@ describe("the ledger home without a gateway config", () => {
 
 describe("provider logins", () => {
   test("are read for Claude and Copilot subscriptions only, resolved against the config directory", () => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "spendwatch-providers-")));
+    const dir = realpathSync(tempDir("spendwatch-providers-"));
     writeFileSync(join(dir, "gateway.json"), JSON.stringify({ version: 1, providers: [
       { id: "claude-work", type: "claude-subscription", authDirectory: "claude-work" },
       { id: "copilot-work", type: "copilot-subscription", authDirectory: "/abs/copilot-work" },

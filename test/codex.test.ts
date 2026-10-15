@@ -91,6 +91,36 @@ describe("codex token_usage_record fields", () => {
   });
 });
 
+describe("codex token_count fallback", () => {
+  const withWrites = { input_tokens: 1000, cached_input_tokens: 400, cache_write_input_tokens: 100, output_tokens: 50 };
+
+  test("prices cache writes as cache writes and takes them out of input, as a record does", () => {
+    const [call] = apis(collect([meta(), count(withWrites)]));
+    expect(call!.usage).toEqual({ input: 500, output: 50, cacheRead: 400, cache5m: 100, cache1h: 0 });
+  });
+
+  test("a count without cache writes is unchanged, and writes larger than the input cannot make it negative", () => {
+    const [plain] = apis(collect([meta(), count({ input_tokens: 1000, cached_input_tokens: 400, output_tokens: 50 })]));
+    expect(plain!.usage).toEqual({ input: 600, output: 50, cacheRead: 400, cache5m: 0, cache1h: 0 });
+    const [odd] = apis(collect([meta(), count({ input_tokens: 100, cached_input_tokens: 80, cache_write_input_tokens: 50, output_tokens: 5 })]));
+    expect(odd!.usage.input).toBe(0);
+  });
+
+  test("a routed count still claims its ledger row by gross input, with the cache writes in it", () => {
+    const asked: number[] = [];
+    const ledger: GatewayIndex = { claim: (_model, input) => { asked.push(input); return false; } };
+    collect([meta("subscription_gateway"), count(withWrites)], newCodexCtx(ledger));
+    expect(asked).toEqual([1000]);
+  });
+
+  test("a routed count the ledger never held is billed from the rollout with its cache writes priced", () => {
+    const ctx = newCodexCtx({ claim: () => false });
+    // The line is older than the claim window, so no row is waited for.
+    const events = collect([meta("subscription_gateway"), count(withWrites)], ctx);
+    expect(apis(events).map((e) => e.usage)).toEqual([{ input: 500, output: 50, cacheRead: 400, cache5m: 100, cache1h: 0 }]);
+  });
+});
+
 describe("codex observed calls", () => {
   test("observed counts every call the CLI reported, repeats included", () => {
     const { report, events } = fold([
