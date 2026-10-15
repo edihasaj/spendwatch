@@ -550,7 +550,8 @@ Codex calls are read per response: one call for each `token_usage_record`
 rollouts written by a Codex build that has no record. A `token_count` that
 repeats the previous one is a re-emission, not a second call, so it is no longer
 billed twice. Cache writes (`cache_write_input_tokens`) come out of the input
-and are priced as cache writes instead of as plain input. Totals read before this
+and are priced as cache writes instead of as plain input, in a `token_count`
+fallback as well as in a record. Totals read before this
 change were higher by the repeats and priced the cache writes as input.
 
 Grok reports token usage once per prompt-turn, covering every model call its
@@ -635,7 +636,9 @@ ledger bills neither. A gateway row's subscription is read from its provider typ
 only an imported telemetry row without one is placed by its provider name.
 
 Gateway rows join the Claude and Copilot tabs — that is whose subscription paid —
-under the project `gateway`, and under the account the provider billed. A provider
+under the project `gateway`, and under the account the provider billed. `--project`
+narrows the project and prompt lists but never drops them from the Claude totals, as
+it never drops them from Copilot's or Codex's. A provider
 can sign in under its own `authDirectory`: a Claude provider's turns go to the
 account in `.claude.json` inside it, a Copilot provider's (its `COPILOT_HOME`) to
 `lastLoggedInUser.login` in its `config.json`. A provider without one goes to the
@@ -661,19 +664,24 @@ turn that arrives after the first tick is still recognised as routed, and a
 rollout Codex moves into `archived_sessions` while watched carries on from where
 it was read instead of being read again from the top. Each tick applies the same
 `--account` and `--project` filters as the first read, and the window stays open
-for everything written while `watch` runs.
+for everything written while `watch` runs. A tick that finds nothing new, in the
+rollouts or in the ledger, draws nothing: the ledger's rows are folded again only
+when its files, or the rows that bill, changed.
 
 The gateway appends a call's ledger row just after the response ends, so the
 rollout line can come first. A routed call with no row yet — a `resp_gl_*`
 record, or a `token_count` that could match a billed row — therefore waits for
 it instead of being billed at once: `watch` checks it against the ledger it
-reloads on each tick, and a report first reads the rows the gateway appended
-since the report loaded the ledger (rows of an account the ledger already had
-rows for). The call is billed from the rollout (a record as
+reloads on each tick, its first read included (a call younger than the claim
+window is left waiting there too), and a report first reads the rows the gateway
+appended since the report loaded the ledger (rows of an account the ledger
+already had rows for). The call is billed from the rollout (a record as
 `(gateway-routed, not in this Mac's ledger)`) only when no row has come within
-the 30-second claim window, or when a report ends; a row that arrives later still
-does not bill it a second time. While it waits, `watch` shows the call in
-neither tab.
+the 30-second claim window, or when a report ends. A row that arrives later still
+does not bill it a second time, in the same read as well: the ledger remembers
+the calls the rollouts of the read billed, and the row a later refresh finds for
+one of them is that call's, not a second bill. While it waits, `watch` shows the
+call in neither tab.
 
 **Several Macs.** A routed turn is counted once, on the Mac whose gateway served
 it, under the provider's account. A Codex client whose turns another Mac's
@@ -713,7 +721,10 @@ billed through it (`routed_calls`, in `spend_month` and `spend_report`):
 
 - a read that billed fewer routed calls never replaces one that billed more — the
   source switched off, a ledger month pruned after 13 months, or a rollout that
-  vouched for a telemetry row gone — and its daily token rows are left alone;
+  vouched for a telemetry row gone — and its daily token rows are left alone. So are
+  the daily rows of a read that billed more routed calls but observed fewer (a
+  rollout deleted while more turns became covered): the two reads place routed turns
+  in different sources, so their days are never merged;
 - the first time a month's Codex, Claude and Copilot reports take a read with
   routed calls while any of them holds a read without the ledger, they change
   together or not at all. All of them must offer a fuller read; a source the run

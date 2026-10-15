@@ -1,10 +1,10 @@
 // Shared ledger fixtures for the gateway tests: rows as the gateway writes them, filed by UTC month.
 import { expect } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Event } from "../src/parse";
 import { GatewayIndex, type GatewayLedger, type GatewayVendor } from "../src/gateway";
+import { tempDir } from "./tmp";
 
 export const NOW = Date.now();
 
@@ -19,7 +19,7 @@ export const monthKey = (ts: number): string => {
 
 /** A gateway state directory: each row filed under the month its `at` falls in. */
 export function stateDir(rows: Row[]): string {
-  const dir = mkdtempSync(join(tmpdir(), "spendwatch-gateway-"));
+  const dir = tempDir("spendwatch-gateway-");
   mkdirSync(join(dir, "usage"), { recursive: true });
   const months = new Map<string, string[]>();
   for (const row of rows) {

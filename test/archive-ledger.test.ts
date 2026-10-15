@@ -1,18 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Report } from "../src/aggregate";
 import { monthPeriod } from "../src/periods";
 import { loadMonthlySpend, writeMonthlySpend } from "../src/spend-history";
 import { loadArchivedReports } from "../src/spend-report-archive";
+import { tempDir } from "./tmp";
 
 // The archive keeps each source's fullest read. A read with this Mac's gateway ledger moves routed turns from the
 // Codex report into the Claude or Copilot report of the same month, so those sources must agree on where the
 // routed turns are: this file is about every way they could come to disagree.
 
-const dbPath = () => join(mkdtempSync(join(tmpdir(), "spendwatch-ledger-archive-")), "spendwatch.db");
+const dbPath = () => join(tempDir("spendwatch-ledger-archive-"), "spendwatch.db");
 
 function read(source: string, calls: number, extra: Partial<Report> = {}, month = "2026-10"): Report {
   return {

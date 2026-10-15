@@ -1,15 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Report } from "../src/aggregate";
 import { monthPeriod } from "../src/periods";
 import { loadMonthlySpend, writeMonthlySpend } from "../src/spend-history";
-import { loadArchivedReports } from "../src/spend-report-archive";
+import { archiveReport, initReportArchive, loadArchivedReports } from "../src/spend-report-archive";
+import { tempDir } from "./tmp";
 
 function dbPath(): string {
-  return join(mkdtempSync(join(tmpdir(), "spendwatch-months-")), "spendwatch.db");
+  return join(tempDir("spendwatch-months-"), "spendwatch.db");
 }
 
 function report(
@@ -288,6 +287,32 @@ describe("monthly spend archive", () => {
     // Fewer observed calls, and routed calls the stored read billed in Codex: the stored month wins, and its days go with its totals.
     expect(writeMonthlySpend(path, [codex(1_000, 20, true, [["2026-10-06", 1_000]])], { generatedAt: 2 }).rows).toBe(0);
     expect(storedDays(path)).toEqual([{ day: "2026-10-05", tokens: 26_000 }]);
+  });
+
+  test("a read that routed more calls but observed fewer leaves a month's days alone, as it leaves its totals", () => {
+    const path = dbPath();
+    const codex = (tokens: number, calls: number, routed: number, days: Array<[string, number]>): Report => ({
+      ...report("2026-10", "studio:codex", tokens, calls), observedCalls: calls, ledger: true, routedCalls: routed, tokenDays: dayRows("2026-10", days),
+    });
+    writeMonthlySpend(path, [codex(20_000, 900, 5, [["2026-10-05", 20_000]])], { generatedAt: 1 });
+    // A rollout was deleted (fewer calls observed) while more of the turns became covered by the ledger (more routed):
+    // the two reads put routed turns in different sources, so the archive keeps the stored one whole.
+    expect(writeMonthlySpend(path, [codex(18_000, 800, 9, [["2026-10-06", 18_000]])], { generatedAt: 2 }).rows).toBe(0);
+    expect(storedDays(path)).toEqual([{ day: "2026-10-05", tokens: 20_000 }]);
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(20_000);
+  });
+
+  test("names why a read was turned away: fewer calls, or routed turns placed in other sources", () => {
+    const db = new Database(":memory:");
+    initReportArchive(db);
+    const read = (calls: number, routed: number): Report => ({ ...report("2026-10", "studio:codex", 1_000, calls), observedCalls: calls, ledger: true, routedCalls: routed });
+    expect(archiveReport(db, read(900, 5), "studio:codex", 1)).toBe("accepted");
+    // Same routed calls, fewer observed: a partial re-read of the same month.
+    expect(archiveReport(db, read(800, 5), "studio:codex", 2)).toBe("fewer");
+    // Fewer routed calls, or more routed calls with fewer observed: the placements differ either way.
+    expect(archiveReport(db, read(1_000, 4), "studio:codex", 3)).toBe("placement");
+    expect(archiveReport(db, read(800, 9), "studio:codex", 4)).toBe("placement");
+    db.close();
   });
 
   test("a month whose every call was routed replaces the stale month that billed those turns", () => {

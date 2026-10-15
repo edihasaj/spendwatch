@@ -21,7 +21,7 @@ function useWorld(options: { codexAccount?: string; telemetry?: boolean } = {}) 
 
 // The sources with a gateway story; the idle ones (Grok, pi) report empty.
 const SOURCES = new Set(["claude", "codex", "copilot"]);
-const reports = (agents: string[] | undefined, extra: { account?: string } = {}) => {
+const reports = (agents: string[] | undefined, extra: { account?: string; project?: string } = {}) => {
   const w = useWorld({ codexAccount: extra.account ? "zzz-codex" : undefined });
   const options = { agents: agents ? new Set(agents) : undefined, top: 5, ...extra };
   const built = build(options, w.periods);
@@ -86,5 +86,27 @@ describe("a run limited to some agents", () => {
     // The Codex rollout belongs to another account and is not in the Codex report, but it still vouched for its row.
     expect(found.claude!.apiCalls).toBe(2);
     expect(found.codex?.apiCalls ?? 0).toBe(0);
+  });
+});
+
+describe("a run limited to one project", () => {
+  test("keeps the routed Claude rows in the Claude totals, as the Copilot and Codex reports keep theirs", () => {
+    const all = bySource(reports(undefined).reports);
+    const filtered = bySource(reports(undefined, { project: "zzz" }).reports);
+    // The ledger's rows are not a project's transcript: their project is "gateway", not a name to pre-filter by.
+    expect(filtered.claude!.apiCalls).toBe(all.claude!.apiCalls);
+    expect(filtered.claude!.totalTokens).toBe(all.claude!.totalTokens);
+    expect(filtered.claude!.totalCost).toBeCloseTo(all.claude!.totalCost, 12);
+    expect(filtered.copilot!.apiCalls).toBe(all.copilot!.apiCalls);
+    expect(filtered.codex!.apiCalls).toBe(all.codex!.apiCalls);
+    // Only the project lists are filtered afterwards.
+    expect(all.claude!.projects.map((p) => p.project)).toEqual(["gateway"]);
+    expect(filtered.claude!.projects).toEqual([]);
+  });
+
+  test("counts each routed Claude call once under the project that was asked for", () => {
+    const filtered = bySource(reports(undefined, { project: "gateway" }).reports);
+    expect(filtered.claude!.apiCalls).toBe(2);
+    expect(filtered.claude!.projects.map((p) => p.project)).toEqual(["gateway"]);
   });
 });
