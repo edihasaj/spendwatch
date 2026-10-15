@@ -108,15 +108,22 @@ function apiEvent(ctx: CodexCtx, requestId: string, model: string | undefined, u
   };
 }
 
-/** Bills a waiting call from the rollout: no ledger row turned up for it in time. */
-function billHere(ctx: CodexCtx, call: PendingCall): Event {
+/**
+ * Bills a waiting call from the rollout: no ledger row turned up for it in time. Nothing, for a copy of a marked
+ * response that another copy has already billed: a fork copies its parent's records, and one call is one bill.
+ */
+function billHere(ctx: CodexCtx, call: PendingCall): Event | undefined {
   const { model, input, output, ts, responseId } = call;
+  if (marked(responseId) && ctx.gateway?.billedBefore?.(responseId)) return undefined;
   // A row that lands after this must not bill the call again: the ledger of this read keeps the call until a
   // refresh finds its row, and a reloaded ledger replays it (see gateway.ts).
   const decision: LedgerDecision = { seq: nextDecisionSeq(), kind: "billed", model, input, output, ts, ...(responseId ? { responseId } : {}) };
   (ctx.decisions ??= []).push(decision);
   ctx.gateway?.adopt?.([decision]);
-  if (!marked(responseId)) return apiEvent(ctx, `c${ctx.callN++}`, call.billedModel, call.usage, ts);
+  // A record whose row this Mac's ledger holds, but under another call that cannot move (a token_count of the same
+  // size that stood on it first), is billed here as the plain call it is: the row bills that other call, and a copy
+  // that kept the gateway's id would be taken out where reports meet, against the very row that bills the other call.
+  if (!marked(responseId) || ctx.gateway?.holds?.(responseId)) return apiEvent(ctx, `c${ctx.callN++}`, call.billedModel, call.usage, ts);
   ctx.unconfirmed = (ctx.unconfirmed ?? 0) + 1;
   return apiEvent(ctx, responseId, `${call.billedModel ?? "unknown"} (${UNCONFIRMED})`, call.usage, ts, responseId.slice(MARKER.length));
 }
@@ -141,7 +148,8 @@ export function* settleRouted(ctx: CodexCtx, final = false, now = Date.now()): G
       const id = call.responseId ?? `count${(ctx.routedN = (ctx.routedN ?? 0) + 1)}`;
       yield { t: "routed", sessionId: ctx.sid, id, ts: call.ts };
     } else if (due(call)) {
-      yield billHere(ctx, call);
+      const event = billHere(ctx, call);
+      if (event) yield event;
     } else {
       ctx.pending.push(call);
     }
