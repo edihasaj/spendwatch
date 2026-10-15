@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { newCodexCtx, parseCodexLine, settleRouted } from "../src/codex";
 import { GatewayIndex } from "../src/gateway";
-import { copilotRow, iso, rng, routedLine } from "./fuzz-world";
+import { copilotRow, iso, onlySeed, rng, routedLine, seedCount } from "./fuzz-world";
 import { tempDir } from "./tmp";
 
 // The same promise as the watch fuzz, for one read (`report`): the ledger is loaded once, then the rollouts are read
@@ -77,7 +77,8 @@ describe("a report bills every routed call exactly once", () => {
   for (const [mode, ambiguous] of worlds) {
     test(`${mode}${ambiguous ? ", ambiguous token shapes" : ""}: ${SEEDS} seeded reads`, () => {
       const bad: unknown[] = [];
-      for (let seed = 1; seed <= SEEDS; seed++) {
+      const only = onlySeed();
+      for (let seed = only ?? 1; seed <= (only ?? seedCount(SEEDS)); seed++) {
         const out = read(seed, mode, ambiguous);
         if (out.codex + out.ledger !== CALLS) bad.push({ seed, ...out });
       }
