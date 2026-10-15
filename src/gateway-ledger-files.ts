@@ -69,7 +69,7 @@ function tokens(value: unknown): number | undefined {
 
 /** Credits in nano-AIU: a figure the ledger could not have written is no figure at all (the call is `unpriced`). */
 const credits = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : null;
+  typeof value === "number" && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : null; // NaN and ±Infinity fail both bounds
 const str = (value: unknown): string => typeof value === "string" ? value : "";
 const flag = (value: unknown): boolean | undefined => typeof value === "boolean" ? value : undefined;
 

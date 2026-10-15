@@ -27,7 +27,7 @@ import { claudeAccount, claudeAccountIn, type SourceFile } from "./sources";
 import type { Event } from "./parse";
 import { providerMap, readGatewayConfig, resolveStateDirectory, type AuthDirectory, type GatewayVendor } from "./gateway-config";
 import { callKey, dedupe, GATEWAY_ORIGIN, ledgerFiles, MARKER, readRows, TELEMETRY_ORIGIN, type LedgerRow, type RowHolder } from "./gateway-ledger-files";
-import { place, stayOn } from "./gateway-match";
+import { RowMatcher, stayOn } from "./gateway-match";
 import { billedRow, counts, eventsFor } from "./gateway-events";
 import { CLAIM_WINDOW_MS, type BilledCall, type ClaimOptions, type LedgerDecision } from "./gateway-decisions";
 
@@ -135,8 +135,8 @@ export class GatewayLedger implements GatewayIndex {
   private readonly adopted = new Set<BilledCall>();
   /** The marked responses among them: a second copy of one of these is not billed again. */
   private readonly billedIds = new Set<string>();
-  /** Rows no call can be moved off to reach a free row, for as long as the ledger gains no row (see gateway-match.ts). */
-  private readonly dead = new Set<LedgerRow>();
+  /** Gives calls their rows, and remembers the rows that lead nowhere until the ledger gains one (see gateway-match.ts). */
+  private readonly matcher = new RowMatcher();
   /** The adopted calls no row has matched yet: a row `refresh` finds later is theirs. */
   private readonly unmatched = new Set<BilledCall>();
   /** Earlier decisions handed to `replay` and not yet applied. */
@@ -159,7 +159,7 @@ export class GatewayLedger implements GatewayIndex {
   }
 
   private index(row: LedgerRow): void {
-    this.dead.clear();
+    this.matcher.rowsChanged();
     this.known.set(callKey(row), row);
     if (billedRow(row) && !this.byResponse.has(row.responseId)) this.byResponse.set(row.responseId, row);
     if (!matchable(row)) return;
@@ -272,7 +272,7 @@ export class GatewayLedger implements GatewayIndex {
    */
   claim(model: string, input: number, output: number, tsMs: number, options: ClaimOptions = {}): boolean {
     this.applyReplays();
-    return place({ kind: "claim", model, input, output, ts: tsMs, gatewayRows: !!options.gatewayRows, ...(options.onClaim ? { moved: options.onClaim } : {}) }, this.candidates, this.dead);
+    return this.matcher.place({ kind: "claim", model, input, output, ts: tsMs, gatewayRows: !!options.gatewayRows, ...(options.onClaim ? { moved: options.onClaim } : {}) }, this.candidates);
   }
 
   /** The rows a call could stand on, nearest in time first (the oldest first among equals). */
@@ -314,7 +314,7 @@ export class GatewayLedger implements GatewayIndex {
     if (!row) return false;
     // A record asked about again, as a call waiting for its row is, already stands on it.
     if (row.holder?.kind === "claim" && row.holder.responseId === responseId) return true;
-    return place({ kind: "claim", model: row.model, input: row.input, output: row.output, ts: row.at, gatewayRows: true, responseId, ...(moved ? { moved } : {}) }, this.candidates, this.dead);
+    return this.matcher.place({ kind: "claim", model: row.model, input: row.input, output: row.output, ts: row.at, gatewayRows: true, responseId, ...(moved ? { moved } : {}) }, this.candidates);
   }
 
   /**
@@ -350,8 +350,8 @@ export class GatewayLedger implements GatewayIndex {
     }
     // A claimed row's rollout copy was dropped: only the ledger bills that call, so it is not a row to take (unless
     // the call that claimed it can stand on another). A call with a response id takes the row of that id, and no other.
-    return place({ kind: "bill", model: call.model, input: call.input, output: call.output, ts: call.ts, gatewayRows: false,
-      ...(call.responseId ? { responseId: call.responseId } : {}), moved: (key) => { call.key = key; } }, this.candidates, this.dead);
+    return this.matcher.place({ kind: "bill", model: call.model, input: call.input, output: call.output, ts: call.ts, gatewayRows: false,
+      ...(call.responseId ? { responseId: call.responseId } : {}), moved: (key) => { call.key = key; } }, this.candidates);
   }
 
   replay(decisions: Iterable<LedgerDecision>): void {

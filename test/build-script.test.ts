@@ -21,8 +21,8 @@ describe("the build script", () => {
     stage(dir, ".old-00000000.bun-build");
     stage(dir, "notes.bun-build");
     mkdirSync(join(dir, "bin"));
-    expect(buildClean(dir, ["sh", "-c", "touch .new-00000000.bun-build bin/spendwatch"])).toBe(0);
-    expect(leftovers(dir)).toEqual([".old-00000000.bun-build", "notes.bun-build"]);
+    expect(buildClean(dir, ["sh", "-c", "touch .new-00000000.bun-build visible.bun-build bin/spendwatch"])).toBe(0);
+    expect(leftovers(dir)).toEqual([".old-00000000.bun-build", "notes.bun-build", "visible.bun-build"]);
     expect(existsSync(join(dir, "bin", "spendwatch"))).toBe(true);
   });
 

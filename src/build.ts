@@ -3,7 +3,7 @@ import { Aggregator, type Report } from "./aggregate";
 import { MonthlyAggregator } from "./monthly";
 import { rollingDays, type Period } from "./periods";
 import { primaryPeriod } from "./report-window";
-import { IncrementalReader } from "./scan";
+import { IncrementalReader, type Absent } from "./scan";
 import { discover, pollOrder, type SourceFile, type SourceStatus } from "./sources";
 
 /** The part of the command line that decides what is read and what is kept. */
@@ -110,7 +110,7 @@ export function pollWatched(built: Built, statuses: SourceStatus[], a: BuildOpti
   let changed = 0;
   // The files each reader is given this tick, and how it carries a kept file this discovery did not find again.
   const found = new Map<IncrementalReader, SourceFile[]>();
-  const carries = new Map<IncrementalReader, NonNullable<SourceStatus["carry"]>>();
+  const gone = new Map<IncrementalReader, Absent[]>();
   const readerOf = (st: SourceStatus, slot: Slot, f: SourceFile): IncrementalReader | undefined => {
     const target = readerFor(st, f, a);
     return target === "report" ? slot.reader : target === "claims" ? built.claims : undefined;
@@ -130,12 +130,9 @@ export function pollWatched(built: Built, statuses: SourceStatus[], a: BuildOpti
       else found.set(reader, [f]);
     }
     // A rollout that left the roots the config names (finished, and filed away) still has decisions the ledger must hold.
-    if (st.carry) for (const reader of [slot.reader, built.claims]) {
-      carries.set(reader, st.carry);
-      reader.renewAbsent(found.get(reader) ?? [], st.carry);
-    }
+    if (st.carry) for (const reader of [slot.reader, built.claims]) gone.set(reader, reader.renewAbsent(found.get(reader) ?? [], st.carry));
   }
-  for (const reader of carries.keys()) changed += reader.settleAbsent(found.get(reader) ?? []);
+  for (const [reader, absent] of gone) changed += reader.settleAbsent(absent);
   for (const st of pollOrder(statuses)) {
     const slot = built.readers.get(st.id);
     if (!slot) continue;

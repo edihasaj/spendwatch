@@ -203,7 +203,7 @@ export function collectCopilot(root: string, sinceMs: number, account?: string):
           let rows: UsageRow[];
           try { rows = usageOf(index); } catch { return undefined; }
           const version = `${Bun.hash(JSON.stringify(rows))}`;
-          if (unchanged) versions.set(session.id, version);
+          versions.set(session.id, version);
           return { version, events: eventsOf(rows) };
         },
       };
