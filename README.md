@@ -621,6 +621,17 @@ nothing for Codex), so `report --agents claude` shows the Claude spend of the fu
 report. An `--account` filter keeps the claims of the rollouts it leaves out as
 well.
 
+A claim takes the free row nearest in time to the call. A call is matched to a row
+by model, tokens and time alone, so alike calls and rows are interchangeable; when a
+call finds every alike row taken, the calls standing on them step to another free
+alike row (within their own 30 seconds, and as far as that chain goes) to leave it
+one. A marked record dropped on the strength of its row holds that row too, so a
+`token_count` of the same size cannot be dropped on it as well. So a call that
+another Mac's gateway served, and has no row here, may stand on a neighbour's row
+for a while, but never keeps a call without a row that a different arrangement would
+give one: each call with a row is billed once, in a report and in `watch`, whichever
+order the rows landed in and the rollouts were read.
+
 Rows are keyed by `<host>:<requestId>`, so one call recorded twice counts once
 and the gateway's own row wins the key: it is the row carrying the charge. A
 row without a request id names no call and is dropped. So is a row a gateway
@@ -671,7 +682,14 @@ can reload it on every tick.
 
 `watch` finds every rollout again on each tick and reloads the ledger, so it keeps
 each rollout's parser state between ticks, and replays on the reloaded ledger what
-the rollout already decided (rows it claimed, calls it billed itself): a routed
+the rollouts already decided (rows they claimed, calls they billed themselves).
+Every rollout's decisions are replayed together, before any rollout reads a new
+line, in the order they were made and each on the very row it held, so a rollout
+that is read first cannot take a row another rollout's earlier call holds, and a
+row that lands more than 30 seconds late still goes to the call it belongs to. The
+ledger and a native Copilot session store hand `watch` all their events on every
+tick, not only what is new, and each fold replaces the last one, so a row that stops
+billing (a rollout's own bill now covers it) stops counting. A routed
 turn that arrives after the first tick is still recognised as routed, and a
 rollout Codex moves into `archived_sessions` while watched carries on from where
 it was read instead of being read again from the top. Each tick applies the same
@@ -680,7 +698,12 @@ for everything written while `watch` runs. A tick that finds nothing new, in the
 rollouts, in the ledger or in a native Copilot session store, draws nothing: the
 ledger's rows are folded again only when its files (their lengths and modification
 times, so a row rewritten in place shows) or the rows that bill changed, and a
-Copilot session only when one of its rows, or a figure in one, changed.
+Copilot session only when one of its rows, or a figure in one, changed. A
+session's rows are read once per tick, and both the check for a change and the
+fold come from that one read. The table has no index on the session, so a store's
+sessions are read 50 at a time instead of with a scan each: a store of 1,000,000
+rows in 1,000 sessions is read in about two seconds, on the first read and on an
+idle tick alike.
 
 The gateway appends a call's ledger row just after the response ends, so the
 rollout line can come first. A routed call with no row yet — a `resp_gl_*`
@@ -810,6 +833,8 @@ There is no automatic device collection.
 - `src/parse.ts` — Claude JSONL → events; `commandPath()` deep shell breakdown
 - `src/codex.ts` — Codex rollout JSONL → same events
 - `src/gateway.ts` — subscription gateway ledger: dedupe, claims, coverage, and per-account rows
+- `src/gateway-events.ts` — which ledger rows bill, and the report events they become
+- `src/gateway-match.ts` — which row a rollout call stands on, and how alike calls trade rows
 - `src/gateway-config.ts` — where the gateway keeps its ledger, and which login each provider bills
 - `src/gateway-ledger-files.ts` — reading the ledger's month files into rows
 - `src/gateway-settle.ts` — counting a routed turn once where several Macs' reports meet
