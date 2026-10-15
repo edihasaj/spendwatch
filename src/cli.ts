@@ -7,7 +7,6 @@ import packageMetadata from "../package.json";
 import { addAccount, type AccountAddOptions, type AccountProvider } from "./accounts";
 import type { Report } from "./aggregate";
 import {runTokenCommand} from "./token-summary";
-import { rollingDays } from "./periods";
 import type { Period } from "./periods";
 import { groupImported, newestPopulated, primaryPeriod, resolvePeriods } from "./report-window";
 import { loadMonthlySpend, writeMonthlySpend } from "./spend-history";
@@ -31,8 +30,8 @@ import { labelReports, loadReports, type AccountGrouping } from "./reports";
 import { runRouteCommand } from "./route-cli";
 import { runRunCommand } from "./run-cli";
 import { runEvalCommand } from "./eval-cli";
-import { build, reportsByPeriod, reportsFrom } from "./build";
-import { discover, pollWatched } from "./sources";
+import { build, pollWatched, reportsByPeriod, reportsFrom, watchPeriod } from "./build";
+import { discover } from "./sources";
 import { reportOperationalError } from "./telemetry";
 
 interface Args {
@@ -275,13 +274,13 @@ multi-account:
 async function report(a: Args) {
   const periods = resolvePeriods(a, nowMs());
   const primary = primaryPeriod(periods);
-  const built = a.inputs.length ? { statuses: [], readers: new Map(), periods } : build(a, periods);
+  const built = a.inputs.length ? undefined : build(a, periods);
   // Imported reports are already aggregated, so the period each machine recorded
   // is the only truth about which month they belong to. `--label` stays a
   // local-export concern: those reports were labelled when they were written.
-  let byPeriod = a.inputs.length
-    ? groupImported(loadReports(a.inputs), primary)
-    : new Map([...reportsByPeriod(built, a)].map(([key, rows]) => [key, labelReports(rows, a.label)]));
+  let byPeriod = built
+    ? new Map([...reportsByPeriod(built, a)].map(([key, rows]) => [key, labelReports(rows, a.label)]))
+    : groupImported(loadReports(a.inputs), primary);
   if (!a.inputs.length && a.installationId) {
     byPeriod = new Map([...byPeriod].map(([key, rows]) => [key, rows.map((row) => ({ ...row, installationId: a.installationId }))]));
   }
@@ -323,10 +322,11 @@ async function report(a: Args) {
     const buf: string[] = [];
     if (live.length > 1) buf.push(renderOverview(reports));
     for (const r of live) buf.push(renderReport(r, { heading: false }));
-    // Footnotes for sources present but not parseable / no data.
-    for (const st of built.statuses) {
+    // Footnotes: why a present source reported nothing, and how a reporting source counted some of its calls.
+    for (const st of built?.statuses ?? []) {
       const had = live.some((r) => r.source === st.id);
       if (!had && st.note) buf.push(`\x1b[2m· ${st.id}: ${st.note}\x1b[0m`);
+      if (st.warning) buf.push(`\x1b[2m· ${st.id}: ${st.warning}\x1b[0m`);
     }
     process.stdout.write(buf.join("\n\n") + "\n");
   }
@@ -465,7 +465,7 @@ function watch(a: Args) {
   // Watch is a live tail, so it stays on a rolling window rather than resetting
   // to an empty screen at midnight on the first of the month.
   if (!a.daysExplicit) a.days = 1;
-  const built = build(a, [rollingDays(Date.now(), a.days)]);
+  const built = build(a, [watchPeriod(Date.now(), a.days)]);
   const sinceMs = Date.now() - a.days * 86400_000;
   const draw = () => {
     const reports = reportsFrom(built, a).filter((r) => r.apiCalls > 0);
@@ -476,7 +476,7 @@ function watch(a: Args) {
   };
   draw();
   setInterval(() => {
-    if (pollWatched(built.readers, discover({ sinceMs, agents: a.agents })) > 0) draw();
+    if (pollWatched(built, discover({ sinceMs, agents: a.agents }), a) > 0) draw();
   }, a.interval);
 }
 

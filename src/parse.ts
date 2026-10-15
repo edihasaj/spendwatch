@@ -50,7 +50,12 @@ export type Event =
   | { t: "toolresult"; sessionId: string; id: string; chars: number; error?: boolean; exit?: number; ts: number }
   | { t: "meta"; sessionId: string; project?: string; model?: string; ts: number }
   /** A call the agent observed, before any dedup — the CLI's own call count. */
-  | { t: "observed"; sessionId: string; ts: number };
+  | { t: "observed"; sessionId: string; ts: number }
+  /**
+   * A gateway-routed call whose bill this read assigned through the gateway ledger: a ledger row that billed it,
+   * or a rollout copy dropped because a ledger row bills it. `id` names the call within its stream.
+   */
+  | { t: "routed"; sessionId: string; id: string; ts: number };
 
 // "<command-name>/goal</command-name>...<command-args>x</command-args>..." -> "/goal x"
 export function cleanPromptText(text: string): string {

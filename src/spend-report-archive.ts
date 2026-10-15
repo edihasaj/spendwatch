@@ -25,33 +25,48 @@ export function initReportArchive(db: Database): void {
       measured_at INTEGER NOT NULL, PRIMARY KEY(source,time_zone,month)
     );
   `);
-  addObservedCallsColumn(db, "spend_report");
-  addLedgerColumn(db, "spend_report");
-}
-
-/** Whether the gateway ledger was read for the month; see {@link ledgerGuard}. */
-export function addLedgerColumn(db: Database, table: string): void {
-  const named = db.query<{ name: string }, [string, string]>(
-    "SELECT name FROM pragma_table_info(?) WHERE name = ?",
-  ).get(table, "ledger");
-  if (!named) db.exec(`ALTER TABLE ${table} ADD COLUMN ledger INTEGER`);
+  addArchiveColumns(db, "spend_report");
 }
 
 /**
- * An archived month read with the gateway ledger counted routed Copilot and Claude turns there and
- * dropped their copies from the Codex rollouts. A later read without the ledger (the source switched
- * off, or a config with no gateway root) would count those turns in Codex again while the other
- * sources keep their ledger rows, so that read can never replace the month. Reading the month with the
- * ledger again replaces it as usual.
+ * Archives predate these columns; ALTER is the only way to add them without a rebuild.
+ * - `observed_calls`: the calls the agent itself counted; see `fullerRead`.
+ * - `ledger`: whether this Mac's gateway ledger was read for the month (NULL on older rows: it was not).
+ * - `routed_calls`: the gateway-routed calls that read billed through the ledger (NULL on older rows: none).
  */
-export const ledgerGuard = (table: string) => `AND (excluded.ledger = 1 OR COALESCE(${table}.ledger, 0) = 0)`;
+export function addArchiveColumns(db: Database, table: string): void {
+  for (const column of ["observed_calls", "ledger", "routed_calls"]) {
+    const named = db.query<{ name: string }, [string, string]>(
+      "SELECT name FROM pragma_table_info(?) WHERE name = ?",
+    ).get(table, column);
+    if (!named) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} INTEGER`);
+  }
+}
 
-/** Archives predate this column; ALTER is the only way to add it without a rebuild. */
-export function addObservedCallsColumn(db: Database, table: string): void {
-  const named = db.query<{ name: string }, [string, string]>(
-    "SELECT name FROM pragma_table_info(?) WHERE name = ?",
-  ).get(table, "observed_calls");
-  if (!named) db.exec(`ALTER TABLE ${table} ADD COLUMN observed_calls INTEGER`);
+/**
+ * When an incoming read may replace the stored one. The fullest read wins, by the calls the agent observed, so
+ * a read of rotated transcripts never shrinks a month. And a read may not bill fewer routed calls through the
+ * gateway ledger than the stored one did: those calls were taken out of Codex and billed to Claude or Copilot
+ * there, and a read that routed fewer (the source switched off, a pruned ledger month, a rollout that vouched for
+ * a row gone) counts them in Codex again while the other source's stored row keeps them.
+ */
+export const fullerRead = (table: string) =>
+  `excluded.observed_calls >= COALESCE(${table}.observed_calls, ${table}.calls)` +
+  ` AND COALESCE(excluded.routed_calls, 0) >= COALESCE(${table}.routed_calls, 0)`;
+
+/**
+ * The archive source an installation's reports of `source` are stored under, without recording anything: undefined
+ * for an installation the archive has not seen, which has nothing stored yet. Mirrors `archiveSource`.
+ */
+export function storedArchiveSource(db: Database, source: string, installationId?: string): string | undefined {
+  const existing = db.query<{ installation_id: string; archive_source: string }, [string]>(
+    "SELECT installation_id, archive_source FROM spend_installation WHERE source = ? ORDER BY rowid",
+  ).all(source);
+  if (!existing.length) return source;
+  if (!installationId) return existing[0]!.archive_source;
+  const match = existing.find((row) => row.installation_id === installationId);
+  if (match) return match.archive_source;
+  return existing.length === 1 && existing[0]!.installation_id === "legacy" ? existing[0]!.archive_source : undefined;
 }
 
 /** Bind old unlabeled measurements to the first installation, without copying totals. */
@@ -81,25 +96,27 @@ export function archiveSource(db: Database, report: Report): string {
  * What happened to a report offered to the archive.
  * - "accepted": this read replaced the stored one.
  * - "fewer": the stored read saw more calls, so this one is a partial re-read of the same kind of month.
- * - "ledger": the stored and the incoming read differ in whether the gateway ledger was read, so their
- *   figures count the routed turns in different places and must never be blended.
+ * - "placement": the stored read billed more routed calls through the gateway ledger, so the two reads count
+ *   some routed turns in different sources and their figures must never be blended.
  */
-export type ArchiveOutcome = "accepted" | "fewer" | "ledger";
+export type ArchiveOutcome = "accepted" | "fewer" | "placement";
 
-export function archiveReport(db: Database, report: Report, source: string, generatedAt: number): ArchiveOutcome {
+/** `force` writes the report whatever is stored: the caller has already decided for the month's sources together. */
+export function archiveReport(db: Database, report: Report, source: string, generatedAt: number, force = false): ArchiveOutcome {
   const result = db.prepare(`
-    INSERT INTO spend_report(month, source, calls, observed_calls, ledger, report_json, updated_at)
-    VALUES (?,?,?,?,?,?,?)
+    INSERT INTO spend_report(month, source, calls, observed_calls, ledger, routed_calls, report_json, updated_at)
+    VALUES (?,?,?,?,?,?,?,?)
     ON CONFLICT(month, source) DO UPDATE SET
       calls = excluded.calls, observed_calls = excluded.observed_calls, ledger = excluded.ledger,
-      report_json = excluded.report_json, updated_at = excluded.updated_at
-    WHERE excluded.observed_calls >= COALESCE(spend_report.observed_calls, spend_report.calls) ${ledgerGuard("spend_report")}
-  `).run(report.period!.key, source, report.apiCalls, report.observedCalls ?? report.apiCalls, report.ledger ? 1 : 0, JSON.stringify(report), generatedAt);
+      routed_calls = excluded.routed_calls, report_json = excluded.report_json, updated_at = excluded.updated_at
+    WHERE ${force ? "1" : fullerRead("spend_report")}
+  `).run(report.period!.key, source, report.apiCalls, report.observedCalls ?? report.apiCalls, report.ledger ? 1 : 0,
+    report.routedCalls ?? 0, JSON.stringify(report), generatedAt);
   if (result.changes > 0) return "accepted";
-  const stored = db.query<{ ledger: number | null }, [string, string]>(
-    "SELECT ledger FROM spend_report WHERE month = ? AND source = ?",
+  const stored = db.query<{ routed: number }, [string, string]>(
+    "SELECT COALESCE(routed_calls, 0) AS routed FROM spend_report WHERE month = ? AND source = ?",
   ).get(report.period!.key, source);
-  return Boolean(stored?.ledger) === Boolean(report.ledger) ? "fewer" : "ledger";
+  return (report.routedCalls ?? 0) < (stored?.routed ?? 0) ? "placement" : "fewer";
 }
 
 /** Restore the fullest reports for every installation, merged under the original machine. */

@@ -3,62 +3,11 @@ import { mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Aggregator } from "../src/aggregate";
+import { accountLabel } from "../src/copilot";
 import { usageCost } from "../src/pricing";
-import type { Event } from "../src/parse";
-import { GatewayIndex, type GatewayLedger, type GatewayVendor } from "../src/gateway";
+import { GatewayIndex } from "../src/gateway";
 import { claudeAccount } from "../src/sources";
-
-const NOW = Date.now();
-
-type Row = Record<string, unknown>;
-type Api = Extract<Event, { t: "api" }>;
-
-// The month a row belongs to, in the gateway's own file naming: its UTC month.
-const monthKey = (ts: number): string => {
-  const at = new Date(ts);
-  return `${at.getUTCFullYear()}-${String(at.getUTCMonth() + 1).padStart(2, "0")}`;
-};
-
-/** A gateway state directory: each row filed under the month its `at` falls in. */
-function stateDir(rows: Row[]): string {
-  const dir = mkdtempSync(join(tmpdir(), "spendwatch-gateway-"));
-  mkdirSync(join(dir, "usage"), { recursive: true });
-  const months = new Map<string, string[]>();
-  for (const row of rows) {
-    const at = typeof row.at === "number" ? row.at : Date.parse(String(row.at));
-    const key = monthKey(at);
-    months.set(key, [...(months.get(key) ?? []), JSON.stringify({ v: 1, host: "studio", ...row })]);
-  }
-  for (const [key, lines] of months) writeFileSync(join(dir, "usage", `usage-${key}.jsonl`), lines.join("\n") + "\n");
-  return dir;
-}
-
-const load = (rows: Row[]): GatewayLedger => GatewayIndex.load({ sinceMs: 0, stateDir: stateDir(rows) });
-
-// A call the gateway billed on a Copilot subscription.
-const copilot = (over: Row = {}): Row => ({
-  at: NOW, requestId: "req-1", responseId: "resp_gl_1", origin: "gateway",
-  provider: "copilot", providerType: "copilot-subscription", model: "gpt-5.1-codex",
-  session: true, inputTokens: 1000, cachedTokens: 400, cacheWriteTokens: 100,
-  outputTokens: 50, reasoningTokens: 10, nanoAiu: 250_000_000, nanoAiuStatus: "complete", ...over,
-});
-
-// The same, on Claude's subscription, where the ledger reports no credit figure.
-const claude = (over: Row = {}): Row => ({
-  at: NOW, requestId: "req-1", responseId: "resp_gl_1", origin: "gateway",
-  provider: "claude", providerType: "claude-subscription", model: "claude-opus-5.5",
-  session: true, inputTokens: 1000, cachedTokens: 400, cacheWriteTokens: 100,
-  outputTokens: 50, reasoningTokens: 0, ...over,
-});
-
-function apiEvents(index: GatewayLedger, vendor: GatewayVendor): Api[] {
-  const files = index.files(vendor);
-  if (!files.length) return [];
-  expect(files[0]).toMatchObject({ key: `gateway:${vendor}`, project: "gateway", source: vendor });
-  const events = [...files[0]!.events!()];
-  expect(events[0]).toMatchObject({ t: "meta", project: "gateway" });
-  return events.filter((e): e is Api => e.t === "api");
-}
+import { apiEvents, claude, copilot, load, monthKey, NOW, stateDir, telemetry, withEnv, type Api, type Row } from "./ledger-fixtures";
 
 describe("gateway ledger", () => {
   test("bills a Copilot gateway call with its credits and the ledger's cache split", () => {
@@ -84,8 +33,9 @@ describe("gateway ledger", () => {
       expect(readdirSync(join(dir, "usage"))).toEqual(["usage-2026-09.jsonl"]);
       const rows = apiEvents(GatewayIndex.load({ sinceMs: since, stateDir: dir }), "copilot");
       expect(rows.map((r) => r.requestId)).toEqual(["studio:edge"]);
-      // The other side of the boundary: a window that starts after October's first hour needs no September file.
-      expect(apiEvents(GatewayIndex.load({ sinceMs: Date.UTC(2026, 9, 1, 0, 0, 1), stateDir: dir }), "copilot")).toEqual([]);
+      // The other side of the boundary: a window that starts after October's first minute — past the claim
+      // window a rollout line may stand from its row — needs no September file.
+      expect(apiEvents(GatewayIndex.load({ sinceMs: Date.UTC(2026, 9, 1, 0, 1, 0), stateDir: dir }), "copilot")).toEqual([]);
     } finally {
       if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous;
     }
@@ -194,19 +144,6 @@ describe("gateway ledger", () => {
     const index = load([claude({ requestId: "new" }), claude({ requestId: "old", at: earlier.getTime() })]);
     expect(apiEvents(index, "claude").map((r) => r.requestId)).toEqual(["studio:old", "studio:new"]);
   });
-});
-
-/** Runs `body` with these variables set (undefined removes one), then puts every one back. */
-function withEnv<T>(env: Record<string, string | undefined>, body: () => T): T {
-  const saved = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
-  for (const [key, value] of Object.entries(env)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-  try { return body(); }
-  finally { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
-}
-
-// An imported telemetry row, as the gateway writes it: no response id, no provider type, credits copied across.
-const telemetry = (over: Row = {}): Row => copilot({
-  origin: "telemetry", providerType: undefined, responseId: "", session: false, ...over,
 });
 
 describe("telemetry-origin Copilot rows", () => {
@@ -338,6 +275,40 @@ describe("the account a Claude row is billed to", () => {
     // One stream per account, and the usual account keeps the plain key.
     expect(new Set(files.map((f) => f.key)).size).toBe(3);
     expect(files.find((f) => f.account === claudeAccount())!.key).toBe("gateway:claude");
+  });
+});
+
+describe("the account a Copilot row is billed to", () => {
+  function twoLogins() {
+    const config = realpathSync(mkdtempSync(join(tmpdir(), "spendwatch-copilot-")));
+    // A COPILOT_HOME the CLI signed in under: its config.json opens with comment lines, which JSON does not allow.
+    mkdirSync(join(config, "copilot-work"), { recursive: true });
+    writeFileSync(join(config, "copilot-work", "config.json"), "// User settings belong in settings.json.\n// This file is managed automatically.\n"
+      + JSON.stringify({ lastLoggedInUser: { host: "https://github.com", login: "octo-work" }, loggedInUsers: [] }, null, 2));
+    mkdirSync(join(config, "copilot-bare"), { recursive: true });
+    const state = stateDir([
+      copilot({ requestId: "main", provider: "copilot" }),
+      copilot({ requestId: "work", provider: "copilot-work", responseId: "resp_gl_work" }),
+      copilot({ requestId: "bare", provider: "copilot-bare", responseId: "resp_gl_bare" }),
+    ]);
+    writeFileSync(join(config, "gateway.json"), JSON.stringify({ version: 1, stateDirectory: state, providers: [
+      { id: "copilot", type: "copilot-subscription" },
+      { id: "copilot-work", type: "copilot-subscription", authDirectory: "copilot-work" },
+      { id: "copilot-bare", type: "copilot-subscription", authDirectory: "copilot-bare" },
+    ] }));
+    return withEnv({ SPENDWATCH_GATEWAY_CONFIG: join(config, "gateway.json"), SPENDWATCH_GATEWAY_STATE: undefined }, () => GatewayIndex.load({ sinceMs: 0 }));
+  }
+
+  test("follows the provider's own authDirectory, its COPILOT_HOME, instead of the default account", () => {
+    const files = twoLogins().files("copilot");
+    expect(files.map((f) => f.account).sort()).toEqual([accountLabel(), "copilot-bare", "octo-work"].sort());
+    const byAccount = Object.fromEntries(files.map((f) => [f.account, [...f.events!()].filter((e) => e.t === "api").map((e) => (e as Api).requestId)]));
+    expect(byAccount["octo-work"]).toEqual(["studio:work"]);
+    // No login recorded: named after the directory, never folded into the default account.
+    expect(byAccount["copilot-bare"]).toEqual(["studio:bare"]);
+    expect(byAccount[accountLabel()]).toEqual(["studio:main"]);
+    expect(files.find((f) => f.account === "octo-work")!.key).toBe("gateway:copilot:octo-work");
+    expect(files.find((f) => f.account === accountLabel())!.key).toBe("gateway:copilot");
   });
 });
 
