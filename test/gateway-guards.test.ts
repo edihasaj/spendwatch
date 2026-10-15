@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CLAIM_WINDOW_MS, GatewayIndex } from "../src/gateway";
 import { readRows } from "../src/gateway-ledger-files";
-import { apiEvents, copilot, load, NOW, stateDir, telemetry } from "./ledger-fixtures";
+import { accountLabel } from "../src/copilot";
+import { apiEvents, claude, copilot, load, NOW, stateDir, telemetry, withEnv } from "./ledger-fixtures";
+import { tempDir } from "./tmp";
 
 // Guards the ledger documents, each pinned from both sides: a change that loosens or drops one must fail a test.
 
@@ -107,5 +109,20 @@ describe("a row the ledger already holds", () => {
     appendFileSync(file, row("g2", NOW - 5000) + row("g2", NOW - 5000));
     ledger.refresh();
     expect(ids()).toEqual(["g1", "g2"]);
+  });
+});
+
+describe("the login directory a provider names", () => {
+  test("is read only for a row of the vendor the provider is a subscription of", () => {
+    const config = realpathSync(tempDir("spendwatch-auth-vendor-"));
+    mkdirSync(join(config, "shared"), { recursive: true });
+    writeFileSync(join(config, "shared", ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "claude-login@example.com" } }));
+    // A route id the gateway config types as a Claude subscription with its own login, though a row names it as Copilot's.
+    const state = stateDir([copilot({ requestId: "odd", provider: "shared" }), claude({ requestId: "right", provider: "shared", responseId: "resp_gl_right" })]);
+    writeFileSync(join(config, "gateway.json"), JSON.stringify({ version: 1, stateDirectory: state, providers: [{ id: "shared", type: "claude-subscription", authDirectory: "shared" }] }));
+    const ledger = withEnv({ SPENDWATCH_GATEWAY_CONFIG: join(config, "gateway.json"), SPENDWATCH_GATEWAY_STATE: undefined }, () => GatewayIndex.load({ sinceMs: 0 }));
+    // The Copilot row is billed to the signed-in Copilot login, never to a directory that is not a COPILOT_HOME.
+    expect(ledger.files("copilot").map((file) => file.account)).toEqual([accountLabel()]);
+    expect(ledger.files("claude").map((file) => file.account)).toEqual(["claude-login@example.com"]);
   });
 });

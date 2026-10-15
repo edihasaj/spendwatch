@@ -255,7 +255,7 @@ sources:
   pi       ~/.pi/agent/sessions/*/*.jsonl        (token usage ✓)
   omp      ~/.omp/agent/sessions/*/*.jsonl       (oh-my-pi, token usage ✓)
   copilot  ~/.copilot/session-store.db           (token usage ✓)
-  gemini   ~/.gemini                             (when present)
+  gemini   ~/.gemini                             (when present, or a gemini root of an explicit config)
   gateway  <gateway state>/usage/*.jsonl         (subscription ledger; SPENDWATCH_GATEWAY_SOURCE=off to skip)
 
 multi-account:
