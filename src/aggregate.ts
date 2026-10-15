@@ -91,6 +91,11 @@ export interface Report {
   apiCalls: number;
   /** Calls as the agent counted them. Absent on reports written before this existed. */
   observedCalls?: number;
+  /**
+   * True when the gateway ledger was read for this report, so routed turns were counted from it once.
+   * The archive never lets a read without the ledger replace a month that was read with it.
+   */
+  ledger?: boolean;
   sessions: number;
   tools: ToolRow[];
   bash: ToolRow[];

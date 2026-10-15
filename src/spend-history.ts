@@ -3,7 +3,7 @@
 import { Database } from "bun:sqlite";
 import type { Report } from "./aggregate";
 import { monthLabel } from "./periods";
-import { addObservedCallsColumn, archivedSourceLabels, archiveReport, archiveSource, initReportArchive } from "./spend-report-archive";
+import { addLedgerColumn, addObservedCallsColumn, archivedSourceLabels, archiveReport, archiveSource, initReportArchive, ledgerGuard } from "./spend-report-archive";
 import {archiveTokenDays} from "./token-days";
 
 const SCHEMA = `
@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS spend_month (
   cost REAL NOT NULL,
   calls INTEGER NOT NULL,
   observed_calls INTEGER,
+  ledger INTEGER,
   sessions INTEGER NOT NULL,
   first_ts INTEGER,
   updated_at INTEGER NOT NULL,
@@ -68,7 +69,8 @@ export interface MonthlySpend {
  * only rewritten when the incoming run saw at least as many calls as the one
  * already stored. Session files rotate away, so re-reading July next year finds
  * less of it than today — the archive should keep the fullest measurement it
- * ever made, while still accepting a genuine correction upward.
+ * ever made, while still accepting a genuine correction upward. A month read with the
+ * gateway ledger is also never replaced by a read without it: see ledgerGuard.
  */
 export function writeMonthlySpend(
   path: string,
@@ -81,14 +83,15 @@ export function writeMonthlySpend(
     db.exec(SCHEMA);
     initReportArchive(db);
     addObservedCallsColumn(db, "spend_month");
+    addLedgerColumn(db, "spend_month");
     const upsert = db.prepare(`
-      INSERT INTO spend_month(month, source, tokens, cost, calls, observed_calls, sessions, first_ts, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?)
+      INSERT INTO spend_month(month, source, tokens, cost, calls, observed_calls, ledger, sessions, first_ts, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(month, source) DO UPDATE SET
         tokens = excluded.tokens, cost = excluded.cost, calls = excluded.calls,
-        observed_calls = excluded.observed_calls,
+        observed_calls = excluded.observed_calls, ledger = excluded.ledger,
         sessions = excluded.sessions, first_ts = excluded.first_ts, updated_at = excluded.updated_at
-      WHERE excluded.observed_calls >= COALESCE(spend_month.observed_calls, spend_month.calls)
+      WHERE excluded.observed_calls >= COALESCE(spend_month.observed_calls, spend_month.calls) ${ledgerGuard("spend_month")}
     `);
     // A source rewrites its own project rows wholesale, so a project that went
     // quiet disappears from the month instead of lingering at a stale total.
@@ -114,6 +117,7 @@ export function writeMonthlySpend(
           report.totalCost,
           report.apiCalls,
           report.observedCalls ?? report.apiCalls,
+          report.ledger ? 1 : 0,
           report.sessions,
           report.sinceTs || null,
           opts.generatedAt,

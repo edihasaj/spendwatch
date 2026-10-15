@@ -567,6 +567,7 @@ JSON) retargets the provider names a telemetry row can arrive with.
 | gateway-origin row with a `resp_gl_*` response id | counts the row; the rollout's copy of that turn is dropped |
 | telemetry row for a session turn a rollout claims — same model, same input and output tokens, within 30 seconds | counts the row once, and drops the rollout's copy |
 | telemetry row with `session: false` | counts the row; the gateway never saw a response of its own |
+| a rollout call with no response id (`token_count` only, from a Codex build without `token_usage_record`) that matches a billed gateway row the same way | counts the gateway row once, and drops the rollout's copy |
 | an unmarked gateway row, or a telemetry row nothing claimed | leaves it to the transcript, which already bills it |
 
 Rows are keyed by `<host>:<requestId>`, so one call recorded twice counts once
@@ -583,6 +584,22 @@ this ledger bills neither.
 Gateway rows join the Claude and Copilot tabs — that is whose subscription paid —
 under the project `gateway`. Rollouts are always read before the ledger, because
 a transcript can only give up a turn it has already asked the ledger about.
+
+The gateway names its month files by UTC month, so spendwatch picks the files a
+window needs in UTC too; in a zone east of UTC the previous UTC month's file holds
+the first hours of the new local month. `watch` keeps each rollout's parser state
+between ticks, so a routed turn that arrives after the first tick is still
+recognised as routed.
+
+**Turning the ledger off rewrites history, unless you archive.** A month read with
+the ledger counts routed turns in the Claude and Copilot tabs and drops them from
+Codex. Read without it (`SPENDWATCH_GATEWAY_SOURCE=off`, or a config with no
+`gateway` root), the same month counts them in Codex too, while an archive that
+already holds the ledger's Claude and Copilot rows would count them again. The
+spend archives therefore record whether the ledger was read (`ledger` on
+`spend_month` and `spend_report`) and refuse to replace a month that was read with
+it by a read without it. Reading that month with the ledger again replaces it as
+usual. An archive written before this column is treated as read without the ledger.
 
 ## What to automate
 

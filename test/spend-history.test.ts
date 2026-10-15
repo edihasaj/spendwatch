@@ -248,6 +248,33 @@ describe("monthly spend archive", () => {
     ]);
   });
 
+  test("a month read with the gateway ledger is never replaced by a read without it", () => {
+    const path = dbPath();
+    const codex = (tokens: number, ledger: boolean): Report => ({ ...report("2026-10", "studio:codex", tokens, 900), observedCalls: 900, ...(ledger ? { ledger: true } : {}) });
+    // With the ledger, routed turns are counted there and dropped from the rollouts: 20,000 tokens.
+    writeMonthlySpend(path, [codex(20_000, true)], { generatedAt: 1 });
+    // The gateway source was switched off: the same 900 observed calls now include the routed turns again.
+    expect(writeMonthlySpend(path, [codex(26_000, false)], { generatedAt: 2 }).rows).toBe(0);
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(20_000);
+    expect(loadArchivedReports(path)[0]!.totalTokens).toBe(20_000);
+    // Reading the month with the ledger again replaces it as usual, and the guard survives a rewrite.
+    expect(writeMonthlySpend(path, [codex(21_000, true)], { generatedAt: 3 }).rows).toBeGreaterThan(0);
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(21_000);
+    expect(writeMonthlySpend(path, [codex(26_000, false)], { generatedAt: 4 }).rows).toBe(0);
+  });
+
+  test("a month first read without the ledger takes the ledger read, and archives from before the column still load", () => {
+    const path = dbPath();
+    const old = new Database(path);
+    old.exec(`CREATE TABLE spend_month (month TEXT NOT NULL, source TEXT NOT NULL, tokens INTEGER NOT NULL, cost REAL NOT NULL, calls INTEGER NOT NULL,
+      sessions INTEGER NOT NULL, first_ts INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY (month, source));
+      CREATE TABLE spend_report (month TEXT NOT NULL, source TEXT NOT NULL, calls INTEGER NOT NULL, report_json TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (month, source));`);
+    old.close();
+    writeMonthlySpend(path, [{ ...report("2026-09", "studio:codex", 26_000, 900), observedCalls: 900 }], { generatedAt: 1 });
+    expect(writeMonthlySpend(path, [{ ...report("2026-09", "studio:codex", 20_000, 900), observedCalls: 900, ledger: true }], { generatedAt: 2 }).rows).toBeGreaterThan(0);
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(20_000);
+  });
+
   test("rolling-window reports are not filed as a month", () => {
     const path = dbPath();
     const rolling = { ...report("2026-08", "studio:claude", 8_000), period: undefined };
