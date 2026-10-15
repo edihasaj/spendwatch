@@ -88,6 +88,21 @@ describe("decisions replayed on a ledger", () => {
     expect(claim.key).toBe("studio:t");
   });
 
+  test("a claim that may take a billed row keeps the billed row it held, though another is nearer", () => {
+    const { ledger } = open([billed("held", NOW), billed("nearer", NOW + 500)]);
+    const claim = decision({ ts: NOW + 400, key: "studio:held" });
+    ledger.replay([claim]);
+    expect(bills(ledger).sort()).toEqual(["studio:held", "studio:nearer"]);
+    expect(claim.key).toBe("studio:held");
+  });
+
+  test("a call a rollout billed is known to the ledger as soon as it is handed over", () => {
+    const { ledger } = open([echo("t", NOW)]);
+    expect(ledger.billedBefore("resp_gl_x")).toBe(false);
+    ledger.replay([decision({ kind: "billed", ts: NOW, responseId: "resp_gl_x" })]);
+    expect(ledger.billedBefore("resp_gl_x")).toBe(true);
+  });
+
   test("a claim goes back to a row only while the row is free", () => {
     const { ledger } = open([echo("t1", NOW), echo("t2", NOW + 1_000)]);
     ledger.replay([decision({ ts: NOW, gatewayRows: false, key: "studio:t1", seq: 1 }), decision({ ts: NOW + 500, gatewayRows: false, key: "studio:t1", seq: 2 })]);
