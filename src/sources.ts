@@ -40,10 +40,17 @@ export interface SourceFile {
    */
   settle?: (ctx: any, final: boolean) => Iterable<Event>;
   /**
-   * For a file that yields all its events on every poll: what its events depend on. While it is unchanged the
-   * reader does not fold them again and reports no change, so an idle `watch` tick does not redraw.
+   * For a file that yields all its events on every poll (they replace the last poll's, they are not appended to
+   * them): what its events depend on. While it is unchanged the reader does not fold them again and reports no
+   * change, so an idle `watch` tick does not redraw.
    */
   version?: () => string;
+  /**
+   * For a file that yields all its events on every poll and finds out what they depend on by reading them (a SQLite
+   * store): one read gives both, so a poll reads the file once. It stands in for `version` and `events` together.
+   * `undefined` says the file cannot be read now: nothing is folded and the next poll tries again.
+   */
+  snapshot?: () => { version: string; events: Iterable<Event> } | undefined;
 }
 
 export interface SourceStatus {
@@ -289,11 +296,15 @@ function collectCodex(dir: string, account: string, sinceMs: number, gateway?: G
     if (!path.includes("rollout-")) continue;
     if (!mtimeOk(path, sinceMs)) continue;
     const ctx = newCodexCtx(gateway);
+    let renewed = false;
     // A rollout keeps its identity when Codex moves it into archived_sessions, so a watching reader carries on
     // from its offset instead of reading the file again as a new one.
     files.push({ path, key: `codex:${basename(path)}`, project: "?", source: "codex", account: acct, parse: parseCodexLine, ctx,
       settle: (kept: CodexCtx, final: boolean) => settleRouted(kept, final),
       renew: (kept: CodexCtx) => {
+        // Once per discovery: what the kept state decided since is already known to this ledger.
+        if (renewed) return;
+        renewed = true;
         kept.gateway = ctx.gateway;
         // The reloaded ledger has not seen what this rollout already did: rows it claimed, and calls it billed
         // before their rows existed.

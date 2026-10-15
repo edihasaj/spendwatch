@@ -31,6 +31,27 @@ export interface LedgerRow {
   claimed: boolean;
   /** A rollout already billed this call (see `GatewayLedger.adopt`), so the ledger must not. */
   rolloutBilled: boolean;
+  /** The rollout call standing on this row, whose claim or bill set one of the two flags above (see gateway-match.ts). */
+  holder?: RowHolder;
+}
+
+/**
+ * A rollout call that stands on a ledger row: it claimed it (the call's own copy was dropped, so the row bills it) or
+ * billed itself (so the row must not). A call is matched to a row only by model, tokens and time, so which of several
+ * alike rows is its own is a guess; the ledger moves a call to another alike row when that gives a call with none a row.
+ */
+export interface RowHolder {
+  kind: "claim" | "bill";
+  model: string;
+  input: number;
+  output: number;
+  ts: number;
+  /** A claim only: whether it may stand on the ledger's billed rows too (a token_count has no response id to compare). */
+  gatewayRows: boolean;
+  /** The marked response id the call recorded, which names its row exactly (no other row will do). */
+  responseId?: string;
+  /** Told the `callKey` of the row the call stands on, and again whenever it moves to another. */
+  moved?: (key: string) => void;
 }
 
 /** One call, however many rows record it. */
