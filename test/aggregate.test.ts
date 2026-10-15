@@ -44,6 +44,15 @@ function makeFixture(): { file: string } {
 }
 
 describe("claude aggregate from fixture", () => {
+  test("sources that never emit observed events count the calls they folded", () => {
+    const { file } = makeFixture();
+    const agg = new Aggregator();
+    new IncrementalReader(agg).poll(claudeFile(file));
+    // Claude has no repeated-event noise to see through, so observed calls are its billed ones: an archive of
+    // a Claude-only month would otherwise freeze at zero observed calls.
+    expect(agg.report()).toMatchObject({ apiCalls: 2, observedCalls: 2 });
+  });
+
   test("exact costs, tool ctx cost, prompt attribution", () => {
     const { file } = makeFixture();
     const agg = new Aggregator();

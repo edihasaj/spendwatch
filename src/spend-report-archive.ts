@@ -77,7 +77,16 @@ export function archiveSource(db: Database, report: Report): string {
   return storageSource;
 }
 
-export function archiveReport(db: Database, report: Report, source: string, generatedAt: number): boolean {
+/**
+ * What happened to a report offered to the archive.
+ * - "accepted": this read replaced the stored one.
+ * - "fewer": the stored read saw more calls, so this one is a partial re-read of the same kind of month.
+ * - "ledger": the stored and the incoming read differ in whether the gateway ledger was read, so their
+ *   figures count the routed turns in different places and must never be blended.
+ */
+export type ArchiveOutcome = "accepted" | "fewer" | "ledger";
+
+export function archiveReport(db: Database, report: Report, source: string, generatedAt: number): ArchiveOutcome {
   const result = db.prepare(`
     INSERT INTO spend_report(month, source, calls, observed_calls, ledger, report_json, updated_at)
     VALUES (?,?,?,?,?,?,?)
@@ -86,7 +95,11 @@ export function archiveReport(db: Database, report: Report, source: string, gene
       report_json = excluded.report_json, updated_at = excluded.updated_at
     WHERE excluded.observed_calls >= COALESCE(spend_report.observed_calls, spend_report.calls) ${ledgerGuard("spend_report")}
   `).run(report.period!.key, source, report.apiCalls, report.observedCalls ?? report.apiCalls, report.ledger ? 1 : 0, JSON.stringify(report), generatedAt);
-  return result.changes > 0;
+  if (result.changes > 0) return "accepted";
+  const stored = db.query<{ ledger: number | null }, [string, string]>(
+    "SELECT ledger FROM spend_report WHERE month = ? AND source = ?",
+  ).get(report.period!.key, source);
+  return Boolean(stored?.ledger) === Boolean(report.ledger) ? "fewer" : "ledger";
 }
 
 /** Restore the fullest reports for every installation, merged under the original machine. */

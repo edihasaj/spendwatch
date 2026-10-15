@@ -5,9 +5,8 @@ import { writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import packageMetadata from "../package.json";
 import { addAccount, type AccountAddOptions, type AccountProvider } from "./accounts";
-import { Aggregator, type Report } from "./aggregate";
+import type { Report } from "./aggregate";
 import {runTokenCommand} from "./token-summary";
-import { MonthlyAggregator } from "./monthly";
 import { rollingDays } from "./periods";
 import type { Period } from "./periods";
 import { groupImported, newestPopulated, primaryPeriod, resolvePeriods } from "./report-window";
@@ -32,8 +31,8 @@ import { labelReports, loadReports, type AccountGrouping } from "./reports";
 import { runRouteCommand } from "./route-cli";
 import { runRunCommand } from "./run-cli";
 import { runEvalCommand } from "./eval-cli";
-import { IncrementalReader } from "./scan";
-import { discover, pollOrder, pollWatched, type SourceStatus } from "./sources";
+import { build, reportsByPeriod, reportsFrom } from "./build";
+import { discover, pollWatched } from "./sources";
 import { reportOperationalError } from "./telemetry";
 
 interface Args {
@@ -273,74 +272,6 @@ multi-account:
   return a;
 }
 
-function matchesProject(project: string, filter?: string): boolean {
-  return !filter || project.toLowerCase().includes(filter.toLowerCase());
-}
-
-type Sink = Aggregator | MonthlyAggregator;
-
-interface Built {
-  statuses: SourceStatus[];
-  readers: Map<string, { reader: IncrementalReader; sink: Sink; status: SourceStatus }>;
-  periods: Period[];
-}
-
-function build(a: Args, periods: Period[]): Built {
-  const sinceMs = Math.min(...periods.map((period) => period.from));
-  // Codex project lives inside the file, so don't pre-filter codex by project name.
-  const statuses = discover({ sinceMs, agents: a.agents, project: undefined });
-  const readers = new Map<string, { reader: IncrementalReader; sink: Sink; status: SourceStatus }>();
-  for (const st of statuses) {
-    const sink: Sink = periods.length === 1 && !periods[0]!.month
-      ? new Aggregator(periods[0])
-      : new MonthlyAggregator(periods);
-    readers.set(st.id, { reader: new IncrementalReader(sink), sink, status: st });
-  }
-  // Rollouts are read first: a gateway row can only be dropped or backfilled
-  // after the transcript it duplicates has already claimed it.
-  for (const st of pollOrder(statuses)) {
-    const slot = readers.get(st.id)!;
-    for (const f of st.files) {
-      // Claude and Grok can pre-filter by project (it's in the dir name).
-      if ((st.id === "claude" || st.id === "grok") && !matchesProject(f.project, a.project)) continue;
-      if (a.account && !f.account.toLowerCase().includes(a.account.toLowerCase())) continue;
-      slot.reader.poll(f);
-      slot.reader.flush(f);
-    }
-  }
-  return { statuses, readers, periods };
-}
-
-function applyFilters(r: Report, a: Args): Report {
-  // Post-filter projects for codex/gemini (project known only after parse).
-  if (a.project) {
-    r.prompts = r.prompts.filter((p) => matchesProject(p.project, a.project));
-    r.projects = r.projects.filter((p) => matchesProject(p.project, a.project));
-  }
-  if (a.account) r.accounts = r.accounts.filter((ac) => ac.account.toLowerCase().includes(a.account!.toLowerCase()));
-  return r;
-}
-
-/** One entry per period, in the order the periods were resolved (oldest first). */
-function reportsByPeriod(built: Built, a: Args): Map<string, Report[]> {
-  const out = new Map<string, Report[]>(built.periods.map((period) => [period.key, []]));
-  for (const { sink, status } of built.readers.values()) {
-    if (!status.parseable) continue;
-    // A report remembers that the ledger was read, so the archive can refuse to undo it later.
-    const tag = (report: Report): Report => applyFilters(status.ledger ? { ...report, ledger: true } : report, a);
-    if (sink instanceof MonthlyAggregator) {
-      for (const [key, report] of sink.reports(a.top)) out.get(key)?.push(tag(report));
-    } else {
-      out.get(built.periods[0]!.key)?.push(tag(sink.report(a.top)));
-    }
-  }
-  return out;
-}
-
-function reportsFrom(built: Built, a: Args): Report[] {
-  return reportsByPeriod(built, a).get(primaryPeriod(built.periods).key) ?? [];
-}
-
 async function report(a: Args) {
   const periods = resolvePeriods(a, nowMs());
   const primary = primaryPeriod(periods);
@@ -375,7 +306,7 @@ async function report(a: Args) {
     const payload = a.inputs.length
       ? [...byPeriod.values()].flat()
       : periods.length > 1
-        ? [...byPeriod.values()].flat().filter((report) => report.apiCalls > 0)
+        ? [...byPeriod.values()].flat().filter((report) => (report.observedCalls ?? report.apiCalls) > 0)
         : reports;
     // Wait for slow consumers such as SSH to drain large reports before exit.
     await new Promise<void>((resolve, reject) => {
