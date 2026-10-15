@@ -36,13 +36,26 @@ export interface LedgerRow {
 /** One call, however many rows record it. */
 export const callKey = (row: LedgerRow): string => `${row.host}:${row.requestId}`;
 
-const num = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? value : 0;
+/**
+ * A token count. The gateway writes whole numbers from 0 up, so a number outside that (negative, fractional, infinite,
+ * beyond what a double counts exactly) is not a count it wrote: `undefined`, and the row is dropped rather than
+ * billed. A field that is missing or not a number at all reads as 0.
+ */
+function tokens(value: unknown): number | undefined {
+  if (typeof value !== "number") return 0;
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/** Credits in nano-AIU: a figure the ledger could not have written is no figure at all (the call is `unpriced`). */
+const credits = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : null;
 const str = (value: unknown): string => typeof value === "string" ? value : "";
 const flag = (value: unknown): boolean | undefined => typeof value === "boolean" ? value : undefined;
 
+/** Milliseconds since the epoch, or NaN when the value is no time a `Date` can hold (a number past ±8.64e15 too). */
 function timestamp(raw: unknown): number {
-  if (typeof raw === "number") return Number.isFinite(raw) ? raw : NaN;
-  return typeof raw === "string" ? Date.parse(raw) : NaN;
+  const ms = typeof raw === "number" ? raw : typeof raw === "string" ? Date.parse(raw) : NaN;
+  return new Date(ms).getTime();
 }
 
 /** Month ledgers overlapping [sinceMs, now], oldest file first. */
@@ -75,14 +88,19 @@ function safeReaddir(dir: string): string[] {
 /**
  * The rows of one month file from byte `from` on, and where the next read starts: after the last complete line. A
  * line the gateway is still appending is read again next time, whole; a row it holds twice is deduped by `callKey`.
+ * `mtime` is the file's modification time at that read (undefined when it could not be opened): a row the gateway
+ * rewrites in place keeps the file's length, and this is what shows it.
  */
-export function readRows(path: string, map: Record<string, GatewayVendor>, from = 0): { rows: LedgerRow[]; end: number } {
+export function readRows(path: string, map: Record<string, GatewayVendor>, from = 0): { rows: LedgerRow[]; end: number; mtime?: number } {
   let body: Buffer;
+  let mtime: number | undefined;
   try {
     const fd = openSync(path, "r");
     try {
-      const size = fstatSync(fd).size;
-      if (size <= from) return { rows: [], end: size < from ? 0 : from };
+      const stat = fstatSync(fd);
+      const size = stat.size;
+      mtime = stat.mtimeMs;
+      if (size <= from) return { rows: [], end: size < from ? 0 : from, mtime };
       body = Buffer.alloc(size - from);
       let read = 0;
       while (read < body.length) {
@@ -110,7 +128,7 @@ export function readRows(path: string, map: Record<string, GatewayVendor>, from 
     if (row) rows.push(row);
   }
   const lastLine = body.lastIndexOf(10);
-  return { rows, end: lastLine < 0 ? from : from + lastLine + 1 };
+  return { rows, end: lastLine < 0 ? from : from + lastLine + 1, mtime };
 }
 
 /** Only these fields are read: a new ledger field stays out of reports. */
@@ -122,6 +140,14 @@ function toRow(raw: unknown, map: Record<string, GatewayVendor>): LedgerRow | un
   const at = timestamp(d.at);
   const requestId = str(d.requestId);
   if (!Number.isFinite(at) || !requestId) return undefined;
+  // A count the gateway could not have written drops the row: billing it would add or subtract tokens it never spent.
+  const input = tokens(d.inputTokens);
+  const output = tokens(d.outputTokens);
+  const cached = tokens(d.cachedTokens);
+  const cacheWrite = tokens(d.cacheWriteTokens);
+  const reasoning = tokens(d.reasoningTokens);
+  if (input === undefined || output === undefined || cached === undefined || cacheWrite === undefined || reasoning === undefined) return undefined;
+  if (input + output > Number.MAX_SAFE_INTEGER) return undefined;
   const providerType = str(d.providerType);
   // A row only matters when it names a subscription this ledger can bill. Its type says so; only an imported
   // telemetry row may lack one, and then the provider name it carries decides.
@@ -137,12 +163,13 @@ function toRow(raw: unknown, map: Record<string, GatewayVendor>): LedgerRow | un
     vendor,
     provider: str(d.provider),
     session: flag(d.session),
-    input: num(d.inputTokens),
-    cached: num(d.cachedTokens),
-    cacheWrite: num(d.cacheWriteTokens),
-    output: num(d.outputTokens),
-    reasoning: num(d.reasoningTokens),
-    nanoAiu: typeof d.nanoAiu === "number" && Number.isFinite(d.nanoAiu) ? d.nanoAiu : null,
+    input,
+    // Cache reads and writes are part of the gross input, so together they can never exceed it.
+    cached: Math.min(cached, input),
+    cacheWrite: Math.min(cacheWrite, input - Math.min(cached, input)),
+    output,
+    reasoning,
+    nanoAiu: credits(d.nanoAiu),
     nanoAiuStatus: d.nanoAiuStatus === undefined ? undefined : str(d.nanoAiuStatus),
     claimed: false,
     rolloutBilled: false,
