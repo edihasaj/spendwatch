@@ -37,7 +37,7 @@
     "report": "bun src/cli.ts report",
     "watch": "bun src/cli.ts watch",
     "test": "bun test",
-    "build": "bun build src/cli.ts --compile --outfile bin/spendwatch"
+    "build": "bun scripts/build.ts"
   },
   "dependencies": {
     "web-push": "^3.6.7"
