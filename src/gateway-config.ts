@@ -1,7 +1,7 @@
 // Where the subscription gateway keeps its files, read the way the gateway reads them.
 //
-// Spendwatch only ever reads three things from the gateway's own config: the state directory that holds
-// the usage ledger, and the `authDirectory` of each Claude subscription provider (the Claude account a
+// Spendwatch only ever reads two kinds of thing from the gateway's own config: the state directory that holds
+// the usage ledger, and the `authDirectory` of each Claude or Copilot subscription provider (the account a
 // turn was billed to). Everything else in that file is ignored, and nothing from it is ever logged.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -14,6 +14,11 @@ export const PROVIDER_TYPES: Record<string, GatewayVendor> = {
   "copilot-subscription": "copilot",
   "claude-subscription": "claude",
 };
+
+/** The vendor a name stands for in one of these tables; a name an object inherits (`toString`) is not one. */
+export function vendorIn(table: Record<string, GatewayVendor>, name: string): GatewayVendor | undefined {
+  return Object.hasOwn(table, name) ? table[name] : undefined;
+}
 
 const str = (value: unknown): string => typeof value === "string" ? value : "";
 
@@ -46,14 +51,22 @@ export interface GatewayConfigView {
   found: boolean;
   /** Raw `stateDirectory` key, if any. */
   stateDirectory: string;
-  /** Claude subscription provider id → its Claude config directory, for providers that set one. */
-  claudeDirectories: Map<string, string>;
+  /**
+   * Subscription provider id → the login directory it bills through, for providers that set `authDirectory`:
+   * a `CLAUDE_CONFIG_DIR` for Claude, a `COPILOT_HOME` for Copilot. Resolved as the gateway resolves it.
+   */
+  authDirectories: Map<string, AuthDirectory>;
+}
+
+export interface AuthDirectory {
+  vendor: GatewayVendor;
+  directory: string;
 }
 
 export function readGatewayConfig(): GatewayConfigView {
   const file = gatewayConfigFile();
   const directory = dirname(file);
-  const none: GatewayConfigView = { directory, found: false, stateDirectory: "", claudeDirectories: new Map() };
+  const none: GatewayConfigView = { directory, found: false, stateDirectory: "", authDirectories: new Map() };
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(file, "utf8"));
@@ -62,19 +75,19 @@ export function readGatewayConfig(): GatewayConfigView {
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return none;
   const config = raw as Record<string, unknown>;
-  const claudeDirectories = new Map<string, string>();
+  const authDirectories = new Map<string, AuthDirectory>();
   if (Array.isArray(config.providers)) {
     for (const provider of config.providers as unknown[]) {
       const entry = provider as Record<string, unknown> | null;
       if (!entry || typeof entry !== "object") continue;
       const id = str(entry.id);
       const authDirectory = str(entry.authDirectory);
-      if (id && authDirectory && PROVIDER_TYPES[str(entry.type)] === "claude") {
-        claudeDirectories.set(id, resolve(directory, authDirectory));
-      }
+      // Only a subscription this ledger bills names an account; any other provider's login is not ours to read.
+      const vendor = vendorIn(PROVIDER_TYPES, str(entry.type));
+      if (id && authDirectory && vendor) authDirectories.set(id, { vendor, directory: resolve(directory, authDirectory) });
     }
   }
-  return { directory, found: true, stateDirectory: str(config.stateDirectory), claudeDirectories };
+  return { directory, found: true, stateDirectory: str(config.stateDirectory), authDirectories };
 }
 
 /**
@@ -104,7 +117,7 @@ export function providerMap(): Record<string, GatewayVendor> {
       ? Object.entries(JSON.parse(raw) as Record<string, unknown>)
       : raw.split(",").map((entry) => {
         const at = entry.indexOf("=");
-        return at < 0 ? [entry, ""] : [entry.slice(0, at), entry.slice(at + 1)] as [string, unknown];
+        return at < 0 ? [entry.trim(), ""] : [entry.slice(0, at).trim(), entry.slice(at + 1).trim()] as [string, unknown];
       });
   } catch {
     return map;

@@ -1,10 +1,10 @@
 // Reads the discovered sources into reports: the pass `report` and `watch` share, apart from the CLI.
 import { Aggregator, type Report } from "./aggregate";
 import { MonthlyAggregator } from "./monthly";
-import type { Period } from "./periods";
+import { rollingDays, type Period } from "./periods";
 import { primaryPeriod } from "./report-window";
 import { IncrementalReader } from "./scan";
-import { discover, pollOrder, type SourceStatus } from "./sources";
+import { discover, pollOrder, type SourceFile, type SourceStatus } from "./sources";
 
 /** The part of the command line that decides what is read and what is kept. */
 export interface BuildOptions {
@@ -19,11 +19,34 @@ type Sink = Aggregator | MonthlyAggregator;
 export interface Built {
   statuses: SourceStatus[];
   readers: Map<string, { reader: IncrementalReader; sink: Sink; status: SourceStatus }>;
+  /** Reads the rollouts a filter leaves out, for their gateway claims only; it reports nothing. */
+  claims: IncrementalReader;
   periods: Period[];
+}
+
+/**
+ * The window `watch` reads: the last `days` days, and everything written while it runs. A window that ended when
+ * the command started would drop every line the agents write afterwards, which is all `watch` is for.
+ */
+export function watchPeriod(nowMs: number, days: number): Period {
+  return { ...rollingDays(nowMs, days), to: Number.POSITIVE_INFINITY };
 }
 
 export function matchesProject(project: string, filter?: string): boolean {
   return !filter || project.toLowerCase().includes(filter.toLowerCase());
+}
+
+/**
+ * Where a discovered file is read: into its source's report, only for its gateway claims, or not at all. The
+ * first read and every `watch` tick ask the same question, so a filter holds for as long as the command runs.
+ */
+export function readerFor(st: SourceStatus, f: SourceFile, a: BuildOptions): "report" | "claims" | undefined {
+  // Claude and Grok can pre-filter by project (it's in the dir name).
+  if ((st.id === "claude" || st.id === "grok") && !matchesProject(f.project, a.project)) return undefined;
+  // A rollout a filter leaves out of the Codex report still has to claim what it shares with the ledger,
+  // or the Claude and Copilot rows it vouches for would depend on which account was asked about.
+  if (a.account && !f.account.toLowerCase().includes(a.account.toLowerCase())) return st.id === "codex" && st.ledger ? "claims" : undefined;
+  return "report";
 }
 
 export function build(a: BuildOptions, periods: Period[]): Built {
@@ -37,25 +60,39 @@ export function build(a: BuildOptions, periods: Period[]): Built {
       : new MonthlyAggregator(periods);
     readers.set(st.id, { reader: new IncrementalReader(sink), sink, status: st });
   }
-  // A rollout a filter leaves out of the Codex report still has to claim what it shares with the ledger,
-  // or the Claude and Copilot rows it vouches for would depend on which account was asked about.
   const claims = new IncrementalReader(new Aggregator());
   // Rollouts are read first: a gateway row can only be dropped or backfilled
   // after the transcript it duplicates has already claimed it.
   for (const st of pollOrder(statuses)) {
     const slot = readers.get(st.id)!;
     for (const f of st.files) {
-      // Claude and Grok can pre-filter by project (it's in the dir name).
-      if ((st.id === "claude" || st.id === "grok") && !matchesProject(f.project, a.project)) continue;
-      if (a.account && !f.account.toLowerCase().includes(a.account.toLowerCase())) {
-        if (st.id === "codex" && st.ledger) { claims.poll(f); claims.flush(f); }
-        continue;
-      }
-      slot.reader.poll(f);
-      slot.reader.flush(f);
+      const target = readerFor(st, f, a);
+      const reader = target === "report" ? slot.reader : target === "claims" ? claims : undefined;
+      if (!reader) continue;
+      reader.poll(f);
+      reader.flush(f);
     }
   }
-  return { statuses, readers, periods };
+  return { statuses, readers, claims, periods };
+}
+
+/**
+ * One watch tick: re-read what each newly discovered file appended since the last tick, into the reader the
+ * first read chose for it, with the same filters. Every reader keeps its parsers' state between ticks.
+ * Returns the bytes (or ledger events) consumed.
+ */
+export function pollWatched(built: Built, statuses: SourceStatus[], a: BuildOptions): number {
+  let changed = 0;
+  for (const st of pollOrder(statuses)) {
+    const slot = built.readers.get(st.id);
+    if (!slot) continue;
+    for (const f of st.files) {
+      const target = readerFor(st, f, a);
+      const reader = target === "report" ? slot.reader : target === "claims" ? built.claims : undefined;
+      if (reader) changed += reader.poll(f);
+    }
+  }
+  return changed;
 }
 
 export function applyFilters(r: Report, a: BuildOptions): Report {
@@ -75,7 +112,7 @@ export function reportsByPeriod(built: Built, a: BuildOptions): Map<string, Repo
     if (!status.parseable) continue;
     // A source read only so its rollouts could claim ledger rows reports nothing of its own.
     if (status.claimOnly) continue;
-    // A report remembers that the ledger was read, so the archive can refuse to undo it later.
+    // A report remembers that this Mac's ledger was read, so the archive can tell the month the ledger takes over.
     const tag = (report: Report): Report => applyFilters(status.ledger ? { ...report, ledger: true } : report, a);
     if (sink instanceof MonthlyAggregator) {
       for (const [key, report] of sink.reports(a.top)) out.get(key)?.push(tag(report));

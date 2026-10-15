@@ -102,8 +102,20 @@ export class IncrementalReader {
     const id = this.identity(file);
     const carry = this.partial.get(id);
     if (!carry) return;
+    // A line the agent is still writing is not a line yet. `watch` keeps polling after this first read, and the
+    // next poll must see the rest of it joined to its start, not a torn fragment followed by an orphan tail.
+    if (!wholeJson(carry)) return;
     const fold = this.agg.stream(id, file.project, file.source, file.account);
     for (const ev of file.parse(carry, this.context(file))) fold(ev);
     this.partial.set(id, "");
+  }
+}
+
+function wholeJson(line: string): boolean {
+  try {
+    JSON.parse(line);
+    return true;
+  } catch {
+    return false;
   }
 }

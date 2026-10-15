@@ -2,12 +2,17 @@
 // Emits the same Event model as the Claude parser so both feed one Aggregator.
 import { cmdParts, type Event } from "./parse";
 import { projectFromCwd } from "./projects";
-import type { BilledCall, GatewayIndex } from "./gateway";
+import { MARKER, type GatewayIndex, type LedgerDecision } from "./gateway";
 
 export interface CodexCtx {
   model?: string;
   /** Where session_meta says the turn was billed, e.g. "openai" or "subscription_gateway". */
   modelProvider?: string;
+  /**
+   * The id of the file's own session_meta, its first. A forked rollout copies its parent's session_meta after
+   * its own, and that one describes the parent thread: its provider, model and id must not replace these.
+   */
+  ownSession?: string;
   project?: string;
   sid: string; // per-file session id (from session_meta), for accurate session counts
   promptN: number;
@@ -17,15 +22,18 @@ export interface CodexCtx {
   records?: boolean;
   /** Usage of the previous token_count, to drop exact repeats. */
   lastCount?: string;
-  /** Present when gateway-routed calls must be deduped against another ledger. */
+  /** The gateway ledger of this Mac, present whenever the gateway source is on (possibly with no rows). */
   gateway?: GatewayIndex;
-  /** Drop gateway-marked responses (resp_gl_*) outright instead of claiming them. */
-  skipMarked?: boolean;
   /**
-   * Routed token_count calls this rollout billed because the ledger held no matching row when they were read.
-   * Watch reloads the ledger on every tick, and a row that lands later must not bill the call a second time.
+   * Routed calls this rollout handed to the ledger (a claimed row) or billed itself (no row when read), in order.
+   * Watch reloads the ledger on every tick: the new ledger replays these, so a row that lands later does not
+   * bill a call a second time, and a claim is not taken again by another call.
    */
-  billed?: BilledCall[];
+  decisions?: LedgerDecision[];
+  /** Gateway-marked responses this Mac's ledger holds no row for; kept, labelled, and reported in a note. */
+  unconfirmed?: number;
+  /** Numbers the routed token_count calls, which have no id of their own. */
+  routedN?: number;
 }
 
 let codexFallback = 0;
@@ -33,23 +41,43 @@ export function newCodexCtx(gateway?: GatewayIndex): CodexCtx {
   return { sid: `codex-${codexFallback++}`, promptN: 0, callN: 0, callName: new Map(), gateway };
 }
 
-// True when this call was already counted by the subscription gateway, so the
-// rollout's own record of it must not be billed again. Only the provider named
-// in session_meta can route, so anything else keeps its events.
-// `claimOnly` is for token_count, which has no response id to check.
-function routed(
+/** The model label of a gateway-marked call that this Mac's ledger cannot vouch for. */
+export const UNCONFIRMED = "gateway-routed, not in this Mac's ledger";
+
+// Where a rollout call is billed:
+//   "rollout"     — here, as an ordinary call;
+//   "ledger"      — by a ledger row on this Mac, so the rollout's copy is dropped;
+//   "unconfirmed" — here, labelled: the gateway marked it as billed on a subscription, but this Mac's ledger
+//                   holds no row for it (another Mac's gateway served it, its month was pruned, or the row had
+//                   not been written when the ledger was read), and dropping it would lose it if no ledger
+//                   anywhere counts it.
+// Only the provider named in session_meta can route, so anything else keeps its events.
+// `countOnly` is for token_count, which has no response id to check.
+type Billing = "rollout" | "ledger" | "unconfirmed";
+
+function billing(
   ctx: CodexCtx,
   call: { responseId?: string; input: number; output: number; ts: number },
-  claimOnly = false,
-): boolean {
-  if (ctx.modelProvider !== "subscription_gateway") return false;
-  if (!claimOnly && ctx.skipMarked && call.responseId?.startsWith("resp_gl_")) return true;
-  // A token_count has no response id for skipMarked to read, so it may also take the ledger's billed row.
+  countOnly = false,
+): Billing {
+  if (ctx.modelProvider !== "subscription_gateway" || !ctx.gateway) return "rollout";
   const model = ctx.model ?? "unknown";
-  const taken = ctx.gateway?.claim(model, call.input, call.output, call.ts, claimOnly ? { gatewayRows: true } : undefined) === true;
+  const { input, output, ts } = call;
+  if (!countOnly && call.responseId?.startsWith(MARKER)) {
+    if (ctx.gateway.covers?.(call.responseId)) return "ledger";
+    ctx.unconfirmed = (ctx.unconfirmed ?? 0) + 1;
+    (ctx.decisions ??= []).push({ kind: "billed", model, input, output, ts, responseId: call.responseId });
+    return "unconfirmed";
+  }
+  // A token_count has no response id to compare, so it may also take the ledger's billed row.
+  const gatewayRows = countOnly;
+  if (ctx.gateway.claim(model, input, output, ts, { gatewayRows })) {
+    (ctx.decisions ??= []).push({ kind: "claimed", model, input, output, ts, gatewayRows });
+    return "ledger";
+  }
   // No row yet: this rollout bills the call, and remembers it for a ledger that is loaded later.
-  if (claimOnly && ctx.gateway && !taken) (ctx.billed ??= []).push({ model, input: call.input, output: call.output, ts: call.ts });
-  return taken;
+  if (countOnly) (ctx.decisions ??= []).push({ kind: "billed", model, input, output, ts });
+  return "rollout";
 }
 
 // Same last+total usage twice in a row means a re-emission of one call, not a
@@ -75,6 +103,9 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
   
   switch (d.type) {
     case "session_meta": {
+      const id = typeof p.id === "string" ? p.id : "";
+      if (ctx.ownSession !== undefined && id !== ctx.ownSession) return; // the parent's meta in a fork
+      ctx.ownSession = id;
       if (p.cwd) ctx.project = projectFromCwd(p.cwd);
       if (p.model) ctx.model = p.model;
       if (p.model_provider) ctx.modelProvider = p.model_provider;
@@ -105,7 +136,11 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
           const sig = countSignature(u, p.info?.total_token_usage);
           if (sig === ctx.lastCount) return; // a re-emission of the previous call
           ctx.lastCount = sig;
-          if (routed(ctx, { input, output: u.output_tokens ?? 0, ts }, true)) return;
+          if (billing(ctx, { input, output: u.output_tokens ?? 0, ts }, true) === "ledger") {
+            ctx.routedN = (ctx.routedN ?? 0) + 1;
+            yield { t: "routed", sessionId: ctx.sid, id: `count${ctx.routedN}`, ts };
+            return;
+          }
           yield {
             t: "api",
             sessionId: ctx.sid,
@@ -140,15 +175,19 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
       ctx.records = true;
       const u = (p.usage ?? p.info ?? p) as any;
       const input = u.input_tokens ?? 0;
-      const cached = u.cached_input_tokens ?? u.cache_read_input_tokens ?? 0;
-      const cacheWrite = u.cache_write_input_tokens ?? u.cache_creation_input_tokens ?? 0;
+      const cached = u.cached_input_tokens ?? 0;
+      const cacheWrite = u.cache_write_input_tokens ?? 0;
       const responseId = typeof p.response_id === "string" && p.response_id ? p.response_id : `r${ctx.callN++}`;
-      if (routed(ctx, { responseId, input, output: u.output_tokens ?? 0, ts })) return;
+      const billed = billing(ctx, { responseId, input, output: u.output_tokens ?? 0, ts });
+      if (billed === "ledger") {
+        yield { t: "routed", sessionId: ctx.sid, id: responseId, ts };
+        return;
+      }
       yield {
         t: "api",
         sessionId: ctx.sid,
         requestId: responseId,
-        model: ctx.model,
+        model: billed === "unconfirmed" ? `${ctx.model ?? "unknown"} (${UNCONFIRMED})` : ctx.model,
         usage: {
           input: Math.max(0, input - cached - cacheWrite),
           output: u.output_tokens ?? 0,

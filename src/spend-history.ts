@@ -3,7 +3,8 @@
 import { Database } from "bun:sqlite";
 import type { Report } from "./aggregate";
 import { monthLabel } from "./periods";
-import { addLedgerColumn, addObservedCallsColumn, archivedSourceLabels, archiveReport, archiveSource, initReportArchive, ledgerGuard } from "./spend-report-archive";
+import { planLedgerMonths } from "./archive-ledger";
+import { addArchiveColumns, archivedSourceLabels, archiveReport, archiveSource, fullerRead, initReportArchive } from "./spend-report-archive";
 import {archiveTokenDays} from "./token-days";
 
 const SCHEMA = `
@@ -15,6 +16,7 @@ CREATE TABLE IF NOT EXISTS spend_month (
   calls INTEGER NOT NULL,
   observed_calls INTEGER,
   ledger INTEGER,
+  routed_calls INTEGER,
   sessions INTEGER NOT NULL,
   first_ts INTEGER,
   updated_at INTEGER NOT NULL,
@@ -69,8 +71,10 @@ export interface MonthlySpend {
  * only rewritten when the incoming run saw at least as many calls as the one
  * already stored. Session files rotate away, so re-reading July next year finds
  * less of it than today — the archive should keep the fullest measurement it
- * ever made, while still accepting a genuine correction upward. A month read with the
- * gateway ledger is also never replaced by a read without it: see ledgerGuard.
+ * ever made, while still accepting a genuine correction upward. A read that billed fewer
+ * routed calls through the gateway ledger never replaces one that billed more (see
+ * `fullerRead`), and the month the ledger takes over moves its sources together (see
+ * `planLedgerMonths`).
  */
 export function writeMonthlySpend(
   path: string,
@@ -82,16 +86,15 @@ export function writeMonthlySpend(
     db.exec("PRAGMA journal_mode = WAL;");
     db.exec(SCHEMA);
     initReportArchive(db);
-    addObservedCallsColumn(db, "spend_month");
-    addLedgerColumn(db, "spend_month");
-    const upsert = db.prepare(`
-      INSERT INTO spend_month(month, source, tokens, cost, calls, observed_calls, ledger, sessions, first_ts, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)
+    addArchiveColumns(db, "spend_month");
+    const upsert = (force: boolean) => db.prepare(`
+      INSERT INTO spend_month(month, source, tokens, cost, calls, observed_calls, ledger, routed_calls, sessions, first_ts, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(month, source) DO UPDATE SET
         tokens = excluded.tokens, cost = excluded.cost, calls = excluded.calls,
-        observed_calls = excluded.observed_calls, ledger = excluded.ledger,
+        observed_calls = excluded.observed_calls, ledger = excluded.ledger, routed_calls = excluded.routed_calls,
         sessions = excluded.sessions, first_ts = excluded.first_ts, updated_at = excluded.updated_at
-      WHERE excluded.observed_calls >= COALESCE(spend_month.observed_calls, spend_month.calls) ${ledgerGuard("spend_month")}
+      WHERE ${force ? "1" : fullerRead("spend_month")}
     `);
     // A source rewrites its own project rows wholesale, so a project that went
     // quiet disappears from the month instead of lingering at a stale total.
@@ -103,18 +106,24 @@ export function writeMonthlySpend(
     const months = new Set<string>();
     let rows = 0;
     const tx = db.transaction(() => {
+      // Decided before anything is written: the sources of a month the ledger takes over move together.
+      const together = planLedgerMonths(db, reports);
       for (const report of reports) {
         // A month whose every call was routed to the gateway bills nothing here but still observed calls:
         // it has to replace a stale row that counted those turns, so observed calls decide, not billed ones.
         if (!report.period?.month || (report.observedCalls ?? report.apiCalls) <= 0) continue;
+        const verdict = together.get(report);
+        // Left out with its month's other sources: nothing of it is written, its days included.
+        if (verdict === "reject") continue;
+        const force = verdict === "accept";
         const source = archiveSource(db, report);
         // The full report decides first: its acceptance says whether this run
         // really saw the whole month, which picks the daily detail's mode.
-        const outcome = archiveReport(db, report, source, opts.generatedAt);
-        // Days from a read with the ledger and a read without it count the routed turns in different
-        // places: maxing one into the other would count them twice, so such a read leaves the days alone.
-        if (outcome !== "ledger") archiveTokenDays(db, report, source, outcome === "accepted" ? "replace" : "merge");
-        const result = upsert.run(
+        const outcome = archiveReport(db, report, source, opts.generatedAt, force);
+        // Days from reads that bill routed turns in different sources must not be maxed into each other, or
+        // those turns would count twice; such a read leaves the days alone.
+        if (outcome !== "placement") archiveTokenDays(db, report, source, outcome === "accepted" ? "replace" : "merge");
+        const result = upsert(force).run(
           report.period.key,
           source,
           Math.round(report.totalTokens),
@@ -122,6 +131,7 @@ export function writeMonthlySpend(
           report.apiCalls,
           report.observedCalls ?? report.apiCalls,
           report.ledger ? 1 : 0,
+          report.routedCalls ?? 0,
           report.sessions,
           report.sinceTs || null,
           opts.generatedAt,

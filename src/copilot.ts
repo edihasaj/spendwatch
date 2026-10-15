@@ -1,7 +1,7 @@
 // Read only the CLI's usage ledger. Session transcripts and credentials stay local.
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { homedir, platform } from "node:os";
 import { projectFromCwd } from "./projects";
 import type { Event } from "./parse";
@@ -55,6 +55,22 @@ export function accountLabel(): string {
     const text = readFileSync(join(homedir(), ".config/gh/hosts.yml"), "utf8");
     return text.match(/^\s+user:\s*([A-Za-z0-9-]+)\s*$/m)?.[1] ?? "default";
   } catch { return "default"; }
+}
+
+/**
+ * The Copilot login under one `COPILOT_HOME`, which a gateway provider names as its `authDirectory`: the CLI
+ * records it as `lastLoggedInUser.login` in that directory's `config.json`. A directory with no login is named by
+ * the directory itself, never mistaken for the default account, whose turns are billed elsewhere.
+ */
+export function copilotAccountIn(directory: string): string {
+  try {
+    // The CLI heads its config with `//` comment lines, which JSON does not allow.
+    const text = readFileSync(join(directory, "config.json"), "utf8")
+      .split("\n").filter((line) => !line.trimStart().startsWith("//")).join("\n");
+    const login: unknown = JSON.parse(text)?.lastLoggedInUser?.login;
+    if (typeof login === "string" && login.trim()) return login.trim();
+  } catch {}
+  return basename(directory) || "default";
 }
 
 function timestamp(raw: string): number {
