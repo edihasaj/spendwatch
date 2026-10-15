@@ -94,32 +94,42 @@ export function collectCopilot(root: string, sinceMs: number, account?: string):
         AND julianday(u.created_at) >= julianday(?)
       ) ORDER BY s.id
     `).all(new Date(sinceMs).toISOString());
+    // Every read of a session's usage opens the store afresh: the CLI keeps writing to it while Spendwatch watches.
+    const usageOf = (sessionId: string): UsageRow[] => {
+      const reader = new Database(path, { readonly: true, create: false });
+      try {
+        return reader.query<UsageRow, [string]>(`
+          SELECT id, model, ${selection}, created_at
+          FROM assistant_usage_events WHERE session_id=? ORDER BY id
+        `).all(sessionId);
+      } finally { reader.close(); }
+    };
     return sessions.map((session): SourceFile => {
       const seen = new Map<number, string>();
       const project = session.cwd ? projectFromCwd(session.cwd) : "?";
+      let unreadable = 0;
       return {
         path, key: `copilot-session:${session.id}`, project, source: "copilot", account: account ?? accountLabel(),
         parse: () => [], ctx: null,
+        // What the session's events depend on, so a `watch` tick that finds the session unchanged folds nothing and
+        // draws nothing. A finalized charge updates a row in place, so the whole row counts, not only how many there are.
+        version: () => {
+          try { return `${Bun.hash(JSON.stringify(usageOf(session.id)))}`; } catch { return `unreadable:${unreadable++}`; }
+        },
         events: function* (): Generator<Event> {
-          const reader = new Database(path, { readonly: true, create: false });
-          try {
-            const rows = reader.query<UsageRow, [string]>(`
-              SELECT id, model, ${selection}, created_at
-              FROM assistant_usage_events WHERE session_id=? ORDER BY id
-            `).all(session.id);
-            yield { t: "meta", sessionId: session.id, project, ts: 0 };
-            for (const row of rows) {
-              const signature = JSON.stringify(row);
-              if (seen.get(row.id) === signature) continue;
-              const ts = timestamp(row.created_at);
-              if (!Number.isFinite(ts)) continue;
-              const nano = row.total_nano_aiu;
-              yield { t: "api", sessionId: session.id, requestId: String(row.id), model: row.model,
-                usage: copilotUsage(row), costUsd: nano !== null && Number.isFinite(nano) && nano >= 0 ? nano / 100_000_000_000 : undefined,
-                sidechain: false, ts };
-              seen.set(row.id, signature);
-            }
-          } finally { reader.close(); }
+          const rows = usageOf(session.id);
+          yield { t: "meta", sessionId: session.id, project, ts: 0 };
+          for (const row of rows) {
+            const signature = JSON.stringify(row);
+            if (seen.get(row.id) === signature) continue;
+            const ts = timestamp(row.created_at);
+            if (!Number.isFinite(ts)) continue;
+            const nano = row.total_nano_aiu;
+            yield { t: "api", sessionId: session.id, requestId: String(row.id), model: row.model,
+              usage: copilotUsage(row), costUsd: nano !== null && Number.isFinite(nano) && nano >= 0 ? nano / 100_000_000_000 : undefined,
+              sidechain: false, ts };
+            seen.set(row.id, signature);
+          }
         },
       };
     });
