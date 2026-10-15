@@ -33,7 +33,7 @@ import { runRouteCommand } from "./route-cli";
 import { runRunCommand } from "./run-cli";
 import { runEvalCommand } from "./eval-cli";
 import { IncrementalReader } from "./scan";
-import { discover, pollOrder, type SourceStatus } from "./sources";
+import { discover, pollOrder, pollWatched, type SourceStatus } from "./sources";
 import { reportOperationalError } from "./telemetry";
 
 interface Args {
@@ -326,10 +326,12 @@ function reportsByPeriod(built: Built, a: Args): Map<string, Report[]> {
   const out = new Map<string, Report[]>(built.periods.map((period) => [period.key, []]));
   for (const { sink, status } of built.readers.values()) {
     if (!status.parseable) continue;
+    // A report remembers that the ledger was read, so the archive can refuse to undo it later.
+    const tag = (report: Report): Report => applyFilters(status.ledger ? { ...report, ledger: true } : report, a);
     if (sink instanceof MonthlyAggregator) {
-      for (const [key, report] of sink.reports(a.top)) out.get(key)?.push(applyFilters(report, a));
+      for (const [key, report] of sink.reports(a.top)) out.get(key)?.push(tag(report));
     } else {
-      out.get(built.periods[0]!.key)?.push(applyFilters(sink.report(a.top), a));
+      out.get(built.periods[0]!.key)?.push(tag(sink.report(a.top)));
     }
   }
   return out;
@@ -543,13 +545,7 @@ function watch(a: Args) {
   };
   draw();
   setInterval(() => {
-    let changed = 0;
-    for (const st of pollOrder(discover({ sinceMs, agents: a.agents }))) {
-      const slot = built.readers.get(st.id);
-      if (!slot) continue;
-      for (const f of st.files) changed += slot.reader.poll(f);
-    }
-    if (changed > 0) draw();
+    if (pollWatched(built.readers, discover({ sinceMs, agents: a.agents })) > 0) draw();
   }, a.interval);
 }
 

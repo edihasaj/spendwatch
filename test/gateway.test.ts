@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Aggregator } from "../src/aggregate";
@@ -12,10 +12,10 @@ const NOW = Date.now();
 type Row = Record<string, unknown>;
 type Api = Extract<Event, { t: "api" }>;
 
-// The month a row belongs to, in the gateway's own file naming.
+// The month a row belongs to, in the gateway's own file naming: its UTC month.
 const monthKey = (ts: number): string => {
   const at = new Date(ts);
-  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}`;
+  return `${at.getUTCFullYear()}-${String(at.getUTCMonth() + 1).padStart(2, "0")}`;
 };
 
 /** A gateway state directory: each row filed under the month its `at` falls in. */
@@ -69,6 +69,25 @@ describe("gateway ledger", () => {
     expect(row!.usage).toEqual({ input: 500, output: 50, cacheRead: 400, cache5m: 100, cache1h: 0 });
     expect(row!.model).toBe("gpt-5.1-codex");
     expect(row!.costUsd).toBeCloseTo(250_000_000 / 1e11, 12);
+  });
+
+  test("reads the UTC month file that holds the first hours of a local month east of UTC", () => {
+    const previous = process.env.TZ;
+    process.env.TZ = "Europe/Berlin";
+    try {
+      // 01:00 on 1 October in Berlin is still September in UTC, where the gateway files it.
+      const at = Date.UTC(2026, 8, 30, 23, 0, 0);
+      const since = new Date(2026, 9, 1).getTime();
+      expect(new Date(since).toISOString()).toBe("2026-09-30T22:00:00.000Z");
+      const dir = stateDir([copilot({ at, requestId: "edge", responseId: "resp_gl_edge" })]);
+      expect(readdirSync(join(dir, "usage"))).toEqual(["usage-2026-09.jsonl"]);
+      const rows = apiEvents(GatewayIndex.load({ sinceMs: since, stateDir: dir }), "copilot");
+      expect(rows.map((r) => r.requestId)).toEqual(["studio:edge"]);
+      // The other side of the boundary: a window that starts after October's first hour needs no September file.
+      expect(apiEvents(GatewayIndex.load({ sinceMs: Date.UTC(2026, 9, 1, 0, 0, 1), stateDir: dir }), "copilot")).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous;
+    }
   });
 
   test("labels a Copilot row whose credits were partial or never arrived", () => {
@@ -142,6 +161,17 @@ describe("gateway ledger", () => {
     // telemetry, so an unmarked row stays out of the report either way.
     expect(index.claim("gpt-5.1-codex", 1000, 50, NOW)).toBe(false);
     expect(apiEvents(index, "copilot")).toEqual([]);
+  });
+
+  test("a token_count may take a billed gateway row once, and the ledger still bills it", () => {
+    const index = load([copilot({ requestId: "g1", responseId: "resp_gl_g1" })]);
+    // A line with a response id is decided by that id; only a count with nothing to compare asks for billed rows.
+    expect(index.claim("gpt-5.1-codex", 1000, 50, NOW)).toBe(false);
+    expect(index.claim("gpt-5.1-codex", 1000, 55, NOW, { gatewayRows: true })).toBe(false);
+    expect(index.claim("gpt-5.1-codex", 1000, 50, NOW + 31_000, { gatewayRows: true })).toBe(false);
+    expect(index.claim("gpt-5.1-codex", 1000, 50, NOW, { gatewayRows: true })).toBe(true);
+    expect(index.claim("gpt-5.1-codex", 1000, 50, NOW, { gatewayRows: true })).toBe(false); // one claim per row
+    expect(apiEvents(index, "copilot").map((r) => r.requestId)).toEqual(["studio:g1"]);
   });
 
   test("reads the ledger home from SPENDWATCH_GATEWAY_STATE", () => {

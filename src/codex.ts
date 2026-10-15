@@ -39,7 +39,8 @@ function routed(
 ): boolean {
   if (ctx.modelProvider !== "subscription_gateway") return false;
   if (!claimOnly && ctx.skipMarked && call.responseId?.startsWith("resp_gl_")) return true;
-  return ctx.gateway?.claim(ctx.model ?? "unknown", call.input, call.output, call.ts) === true;
+  // A token_count has no response id for skipMarked to read, so it may also take the ledger's billed row.
+  return ctx.gateway?.claim(ctx.model ?? "unknown", call.input, call.output, call.ts, claimOnly ? { gatewayRows: true } : undefined) === true;
 }
 
 // Same last+total usage twice in a row means a re-emission of one call, not a
