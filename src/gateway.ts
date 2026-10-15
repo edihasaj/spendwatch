@@ -171,7 +171,6 @@ export class GatewayLedger implements GatewayIndex {
 
   /** Takes a row out of the lookups, for the row that replaces it. */
   private unindex(row: LedgerRow): void {
-    this.dead.clear();
     if (this.byResponse.get(row.responseId) === row) this.byResponse.delete(row.responseId);
     const bucket = this.buckets.get(usageKey(row.model, row.input, row.output));
     const at = bucket?.indexOf(row) ?? -1;
@@ -290,7 +289,7 @@ export class GatewayLedger implements GatewayIndex {
     }
     // A claim on a billed row adds no bill (the row bills either way); a claim on a telemetry row makes it bill. A
     // token_count whose own row has not landed yet would otherwise take a history row nearby and bill the call twice.
-    const rank = (row: LedgerRow): number => holder.kind === "claim" && holder.gatewayRows && row.origin === TELEMETRY_ORIGIN ? 1 : 0;
+    const rank = (row: LedgerRow): number => row.origin === TELEMETRY_ORIGIN ? 1 : 0;
     return rows.sort((a, b) => rank(a) - rank(b) || Math.abs(a.at - holder.ts) - Math.abs(b.at - holder.ts));
   };
 
