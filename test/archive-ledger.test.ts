@@ -97,6 +97,26 @@ describe("the month the gateway ledger takes over", () => {
     expect(stored(path)).toEqual(both({ "studio:codex": 90, "studio:claude": 50, "studio:copilot": 10 }));
   });
 
+  test("refuses a read that routes fewer calls than Codex stored, though it observes as many, and moves nothing", () => {
+    const path = dbPath();
+    writeMonthlySpend(path, [read("studio:codex", 100), read("studio:copilot", 50)], { generatedAt: 1 });
+    // Codex takes the ledger over alone: it routed 10 of its 100 calls. Copilot routed none and keeps its own read,
+    // taken without the ledger.
+    writeMonthlySpend(path, [
+      read("studio:codex", 90, { observedCalls: 100, ledger: true, routedCalls: 10 }),
+      read("studio:copilot", 50),
+    ], { generatedAt: 2 });
+    const settled = both({ "studio:codex": 90, "studio:copilot": 50 });
+    expect(stored(path)).toEqual(settled);
+    // A later read sees as many calls but routes 8 (a pruned ledger month): thinner in the one way that matters, so
+    // Codex refuses it, and Copilot, which would take the 8 on top of its read without the ledger, must wait with it.
+    writeMonthlySpend(path, [
+      read("studio:codex", 92, { observedCalls: 100, ledger: true, routedCalls: 8 }),
+      read("studio:copilot", 58, { ledger: true, routedCalls: 8 }),
+    ], { generatedAt: 3 });
+    expect(stored(path)).toEqual(settled);
+  });
+
   test("takes over a month whose every Codex call was routed, together with Copilot", () => {
     const path = dbPath();
     writeMonthlySpend(path, [read("studio:codex", 50), read("studio:copilot", 5)], { generatedAt: 1 });

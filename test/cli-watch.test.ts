@@ -27,7 +27,9 @@ test("watch's first screen leaves a routed call waiting for its ledger row, and 
   delete env.SPENDWATCH_GATEWAY_SOURCE; delete env.SPENDWATCH_GATEWAY_STATE;
   const child = Bun.spawn(["bun", join(ROOT, "src", "cli.ts"), "watch", "--interval", "100"], { cwd: ROOT, env, stdout: "pipe", stderr: "ignore" });
   let output = "";
-  const reading = (async () => { for await (const chunk of child.stdout) output += Buffer.from(chunk).toString("utf8"); })();
+  // One decoder for the whole stream: a character split between two chunks is not two replacement characters.
+  const decoder = new TextDecoder();
+  const reading = (async () => { for await (const chunk of child.stdout) output += decoder.decode(chunk, { stream: true }); })();
   const screens = () => output.split(SCREEN).length - 1;
   const until = async (done: () => boolean) => { for (const deadline = Date.now() + 15_000; !done() && Date.now() < deadline;) await Bun.sleep(25); };
   try {
@@ -40,6 +42,12 @@ test("watch's first screen leaves a routed call waiting for its ledger row, and 
     appendFileSync(ledger, row("g2", now - 2000));
     await until(() => screens() >= 2);
     expect(screens()).toBeGreaterThanOrEqual(2);
+    // Each screen ends with the marker line, so the text between the first two is the second screen.
+    const [firstScreen, secondScreen] = output.split(SCREEN);
+    expect(firstScreen).toContain("Copilot");
+    expect(firstScreen).toContain("1 API calls");
+    expect(secondScreen).toContain("Copilot");
+    expect(secondScreen).toContain("2 API calls");
     await Bun.sleep(400);
     expect(output).not.toContain("not in this Mac's ledger");
     // Nothing changes from here on, so watch leaves the screen alone instead of repainting it on every tick.

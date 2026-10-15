@@ -508,6 +508,12 @@ subscription spend, so they only add noise to a $ leaderboard. This applies to
 `report`/`watch` and to `capacity-current`/`limits`. Set
 `SPENDWATCH_INCLUDE_FREE=1` to include them.
 
+`SPENDWATCH_CLAUDE_ACCOUNT` and `SPENDWATCH_COPILOT_ACCOUNT` name the Claude and
+Copilot account outright, for every transcript and gateway row that has no
+account of its own, instead of reading the signed-in login from
+`~/.claude.json` or the `gh` user from `~/.config/gh/hosts.yml`. The test suite
+sets both, so it never reads a real login.
+
 For custom locations or explicit labels, create
 `~/.config/spendwatch/config.json` (or `$SPENDWATCH_CONFIG`). Explicit config
 roots replace automatic discovery:
@@ -616,14 +622,20 @@ report. An `--account` filter keeps the claims of the rollouts it leaves out as
 well.
 
 Rows are keyed by `<host>:<requestId>`, so one call recorded twice counts once
-and the gateway's own row wins the key: it is the row carrying the charge.
+and the gateway's own row wins the key: it is the row carrying the charge. A
+row without a request id names no call and is dropped. So is a row a gateway
+could not have written: a token count that is negative, fractional, infinite or
+beyond what a double holds exactly (an input and output that together pass it
+too), or a time no date can hold. A count that is missing or is not a number
+(`"5000"`, `true`) reads as 0, and cache reads and writes are capped at the input
+they are part of.
 Copilot rows are labelled as they were billed:
 
 | label | the row |
 |---|---|
 | `<model>` | credits complete |
 | `<model> (partial credits)` | fewer credits arrived than the call cost |
-| `<model> (unpriced)` | none arrived, or the figure was negative |
+| `<model> (unpriced)` | none arrived, or the figure was negative or beyond what a double holds exactly |
 | `<model> (telemetry backfill)` | from the telemetry import, with credits |
 | `<model> (telemetry backfill, partial credits)` | from the telemetry import, with partial credits |
 | `<model> (telemetry backfill, unpriced)` | from the telemetry import, with no credit figure |
@@ -665,8 +677,10 @@ rollout Codex moves into `archived_sessions` while watched carries on from where
 it was read instead of being read again from the top. Each tick applies the same
 `--account` and `--project` filters as the first read, and the window stays open
 for everything written while `watch` runs. A tick that finds nothing new, in the
-rollouts or in the ledger, draws nothing: the ledger's rows are folded again only
-when its files, or the rows that bill, changed.
+rollouts, in the ledger or in a native Copilot session store, draws nothing: the
+ledger's rows are folded again only when its files (their lengths and modification
+times, so a row rewritten in place shows) or the rows that bill changed, and a
+Copilot session only when one of its rows, or a figure in one, changed.
 
 The gateway appends a call's ledger row just after the response ends, so the
 rollout line can come first. A routed call with no row yet — a `resp_gl_*`
@@ -674,8 +688,15 @@ record, or a `token_count` that could match a billed row — therefore waits for
 it instead of being billed at once: `watch` checks it against the ledger it
 reloads on each tick, its first read included (a call younger than the claim
 window is left waiting there too), and a report first reads the rows the gateway
-appended since the report loaded the ledger (rows of an account the ledger
-already had rows for). The call is billed from the rollout (a record as
+appended since the report loaded the ledger, before it bills any call from the
+rollout: when the report ends, and also when a call has waited out its claim
+window while a long read was still going. Such a row joins the account stream
+it belongs to if the ledger already had rows for that account; a row of an
+account it had none for is left out and never covers a rollout call, and a
+gateway row for a call the ledger held only as the telemetry echo replaces the
+echo, as a fresh load would. This is the same whichever `--agents` were asked
+for, so a run limited to Codex bills the same Codex calls as the full one. The
+call is billed from the rollout (a record as
 `(gateway-routed, not in this Mac's ledger)`) only when no row has come within
 the 30-second claim window, or when a report ends. A row that arrives later still
 does not bill it a second time, in the same read as well: the ledger remembers

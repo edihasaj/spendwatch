@@ -99,6 +99,8 @@ function shortEmail(email?: string): string | undefined {
 // Claude account: <home>/.claude.json (or <root>/../.claude.json) → oauthAccount.emailAddress
 // Exported for the gateway ledger, whose Claude rows belong to the same account.
 export function claudeAccount(projectsDir = join(homedir(), ".claude", "projects")): string {
+  // Names the account outright, as `SPENDWATCH_COPILOT_ACCOUNT` does for Copilot (the tests use both, to read no real login).
+  if (process.env.SPENDWATCH_CLAUDE_ACCOUNT) return process.env.SPENDWATCH_CLAUDE_ACCOUNT;
   const candidates = [join(homedir(), ".claude.json"), join(dirname(dirname(projectsDir)), ".claude.json"), join(dirname(projectsDir) + ".json")];
   for (const c of candidates) {
     try {
@@ -427,11 +429,14 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
       note: present && !all.length ? "no readable per-request usage for this period" : undefined });
   }
 
-  // Gemini CLI — ~/.gemini (logs/telemetry); structure TBD.
+  // Gemini CLI — ~/.gemini (logs/telemetry); structure TBD. Like every other agent, an explicit config names where
+  // its logs live, so a run with one never looks in the home directory for it.
   if (want("gemini")) {
-    const dir = join(homedir(), ".gemini");
-    const present = existsSync(dir);
-    out.push({ id: "gemini", present, parseable: present, note: present ? undefined : "not installed", files: present ? [...walkJsonl(dir)].filter((p) => mtimeOk(p, opts.sinceMs)).map((path) => ({ path, project: "?", source: "gemini", account: "default", parse: () => [], ctx: null })) : [] });
+    const roots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "gemini") : [{ agent: "gemini", path: join(homedir(), ".gemini") }];
+    const present = roots.some((r) => existsSync(r.path));
+    const files = roots.flatMap((r) => existsSync(r.path) ? [...walkJsonl(r.path)].filter((p) => mtimeOk(p, opts.sinceMs)) : [])
+      .map((path): SourceFile => ({ path, project: "?", source: "gemini", account: "default", parse: () => [], ctx: null }));
+    out.push({ id: "gemini", present, parseable: present, note: present ? undefined : "not installed", files });
   }
 
   return out;
