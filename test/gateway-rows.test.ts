@@ -128,12 +128,16 @@ describe("a call a rollout billed before its row existed", () => {
 
 describe("the ledger files a window reads", () => {
   test("include the month before a window that starts on a UTC month boundary, for its last half minute", () => {
-    // A call at 23:59:50 on 31 October sits in October's file; its rollout line lands in November.
-    const dir = stateDir([telemetry({ requestId: "edge", at: Date.UTC(2026, 9, 31, 23, 59, 50), session: true })]);
-    const november = GatewayIndex.load({ sinceMs: Date.UTC(2026, 10, 1), stateDir: dir });
-    expect(november.claim("gpt-5.1-codex", 1000, 50, Date.UTC(2026, 10, 1, 0, 0, 5))).toBe(true);
-    // A window that starts later than the claim window reaches does not read October at all.
-    expect(GatewayIndex.load({ sinceMs: Date.UTC(2026, 10, 1, 0, 1), stateDir: dir }).hasClaimable()).toBe(false);
+    // East of UTC, so a window bounded by local months would end October's file an hour too early.
+    withEnv({ TZ: "Europe/Berlin" }, () => {
+      expect(new Date(Date.UTC(2026, 10, 1)).getHours()).toBe(1);
+      // A call at 23:59:50 on 31 October sits in October's file; its rollout line lands in November.
+      const dir = stateDir([telemetry({ requestId: "edge", at: Date.UTC(2026, 9, 31, 23, 59, 50), session: true })]);
+      const november = GatewayIndex.load({ sinceMs: Date.UTC(2026, 10, 1), stateDir: dir });
+      expect(november.claim("gpt-5.1-codex", 1000, 50, Date.UTC(2026, 10, 1, 0, 0, 5))).toBe(true);
+      // A window that starts later than the claim window reaches does not read October at all.
+      expect(GatewayIndex.load({ sinceMs: Date.UTC(2026, 10, 1, 0, 1), stateDir: dir }).hasClaimable()).toBe(false);
+    });
   });
 });
 

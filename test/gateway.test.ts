@@ -25,10 +25,11 @@ describe("gateway ledger", () => {
     const previous = process.env.TZ;
     process.env.TZ = "Europe/Berlin";
     try {
-      // 01:00 on 1 October in Berlin is still September in UTC, where the gateway files it.
-      const at = Date.UTC(2026, 8, 30, 23, 0, 0);
-      const since = new Date(2026, 9, 1).getTime();
-      expect(new Date(since).toISOString()).toBe("2026-09-30T22:00:00.000Z");
+      // 01:30 on 1 October in Berlin is still September in UTC, where the gateway files it. The window starts an
+      // hour into the local month, well past the claim window, so only UTC month bounds reach the September file.
+      const at = Date.UTC(2026, 8, 30, 23, 30, 0);
+      const since = new Date(2026, 9, 1, 1, 0).getTime();
+      expect(new Date(since).toISOString()).toBe("2026-09-30T23:00:00.000Z");
       const dir = stateDir([copilot({ at, requestId: "edge", responseId: "resp_gl_edge" })]);
       expect(readdirSync(join(dir, "usage"))).toEqual(["usage-2026-09.jsonl"]);
       const rows = apiEvents(GatewayIndex.load({ sinceMs: since, stateDir: dir }), "copilot");

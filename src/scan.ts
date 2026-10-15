@@ -2,6 +2,7 @@
 import { readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import type { EventSink } from "./monthly";
+import type { Event } from "./parse";
 import type { SourceFile } from "./sources";
 
 // Recursively yield every *.jsonl under a directory.
@@ -44,7 +45,7 @@ export class IncrementalReader {
     return file.key ?? file.path;
   }
 
-  /** Read new bytes from a file into the aggregator. Returns bytes consumed. */
+  /** Read new bytes from a file into the aggregator. Returns bytes consumed, plus events settled with no new bytes. */
   poll(file: SourceFile): number {
     const { path, project, source, account, parse } = file;
     const id = this.identity(file);
@@ -63,7 +64,9 @@ export class IncrementalReader {
     let off = this.offsets.get(id) ?? 0;
     // A file found again keeps its first context: a new one has not seen the lines before the offset.
     const ctx = this.context(file);
-    if (size <= off) return 0;
+    // What earlier lines left undecided may be decidable now, against what this discovery found (a reloaded ledger).
+    const settled = this.settle(file, ctx, false);
+    if (size <= off) return settled;
     const fd = openSync(path, "r");
     let consumed = 0;
     try {
@@ -85,7 +88,20 @@ export class IncrementalReader {
     } finally {
       closeSync(fd);
     }
-    return consumed;
+    return consumed + settled;
+  }
+
+  private settle(file: SourceFile, ctx: unknown, final: boolean): number {
+    if (!file.settle) return 0;
+    // The stream opens only for an event: an empty file must not become a session.
+    let fold: ((event: Event) => void) | undefined;
+    let count = 0;
+    for (const event of file.settle(ctx, final)) {
+      fold ??= this.agg.stream(this.identity(file), file.project, file.source, file.account);
+      fold(event);
+      count++;
+    }
+    return count;
   }
 
   private context(file: SourceFile): unknown {
@@ -96,18 +112,23 @@ export class IncrementalReader {
     return kept;
   }
 
-  /** Flush a trailing line with no newline (end-of-scan for report mode). */
+  /**
+   * End of a read: a trailing line with no newline is parsed, and what the parser left undecided is decided now
+   * (see `SourceFile.settle`), because a report has no later tick to wait for.
+   */
   flush(file: SourceFile) {
     if (file.events) return;
     const id = this.identity(file);
     const carry = this.partial.get(id);
-    if (!carry) return;
+    const ctx = this.context(file);
     // A line the agent is still writing is not a line yet. `watch` keeps polling after this first read, and the
     // next poll must see the rest of it joined to its start, not a torn fragment followed by an orphan tail.
-    if (!wholeJson(carry)) return;
-    const fold = this.agg.stream(id, file.project, file.source, file.account);
-    for (const ev of file.parse(carry, this.context(file))) fold(ev);
-    this.partial.set(id, "");
+    if (carry && wholeJson(carry)) {
+      const fold = this.agg.stream(id, file.project, file.source, file.account);
+      for (const ev of file.parse(carry, ctx)) fold(ev);
+      this.partial.set(id, "");
+    }
+    this.settle(file, ctx, true);
   }
 }
 
