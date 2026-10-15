@@ -89,6 +89,16 @@ export function build(a: BuildOptions, periods: Period[], { watching = false }: 
  */
 export function pollWatched(built: Built, statuses: SourceStatus[], a: BuildOptions): number {
   let changed = 0;
+  // This tick's ledger is new, and has to give each rollout's earlier decisions back their rows before any rollout
+  // makes a new one: a rollout read first would otherwise take a row another rollout's earlier call held.
+  for (const st of pollOrder(statuses)) {
+    const slot = built.readers.get(st.id);
+    if (!slot) continue;
+    for (const f of st.files) {
+      const target = readerFor(st, f, a);
+      (target === "report" ? slot.reader : target === "claims" ? built.claims : undefined)?.renew(f);
+    }
+  }
   for (const st of pollOrder(statuses)) {
     const slot = built.readers.get(st.id);
     if (!slot) continue;

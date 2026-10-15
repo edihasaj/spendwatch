@@ -161,6 +161,11 @@ export class Aggregator {
     return ts < this.period.from || ts >= this.period.to;
   }
 
+  /** Forgets everything a file's stream folded, for a file whose events are a snapshot that replaces the last one. */
+  reset(fileKey: string): void {
+    this.streams.delete(fileKey);
+  }
+
   stream(fileKey: string, project: string, source = "claude", account = "default"): (e: Event) => void {
     let s = this.streams.get(fileKey);
     if (!s) {
