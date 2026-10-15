@@ -29,50 +29,12 @@ import { providerMap, readGatewayConfig, resolveStateDirectory, type AuthDirecto
 import { callKey, dedupe, GATEWAY_ORIGIN, ledgerFiles, MARKER, readRows, TELEMETRY_ORIGIN, type LedgerRow, type RowHolder } from "./gateway-ledger-files";
 import { place, stayOn } from "./gateway-match";
 import { billedRow, counts, eventsFor } from "./gateway-events";
+import { CLAIM_WINDOW_MS, type BilledCall, type ClaimOptions, type LedgerDecision } from "./gateway-decisions";
 
 export type { GatewayVendor };
+export type { BilledCall, ClaimOptions, LedgerDecision } from "./gateway-decisions";
+export { CLAIM_WINDOW_MS, nextDecisionSeq } from "./gateway-decisions";
 export { MARKER };
-
-export interface ClaimOptions {
-  /**
-   * Also match the ledger's own billed rows (marked `resp_gl_*`). Only for a transcript line that
-   * carries no response id to compare, such as a token_count: with an id, `covers` already decides.
-   */
-  gatewayRows?: boolean;
-  /**
-   * Told the `callKey` of the row a successful claim took, and again whenever the ledger moves the claim to another
-   * alike row (see gateway-match.ts), so a later ledger can be asked for the row the claim ended on.
-   */
-  onClaim?: (key: string) => void;
-}
-
-/** A call a rollout billed itself because the ledger held no row for it when the line was read. */
-export interface BilledCall {
-  model: string;
-  input: number;
-  output: number;
-  ts: number;
-  /** The gateway's marked response id, when the rollout recorded one. */
-  responseId?: string;
-  /** The `callKey` of the row this call was matched to, once matched (a call with a response id matches by that id). */
-  key?: string;
-}
-
-/**
- * What a rollout decided about one routed call, in the order it decided: it claimed a ledger row, or billed the
- * call itself. `watch` loads a fresh ledger on every tick and replays these, so the new ledger agrees with what
- * the reports already hold.
- */
-export type LedgerDecision =
-  | { seq?: number; kind: "claimed"; model: string; input: number; output: number; ts: number; gatewayRows: boolean; responseId?: string; key?: string }
-  | ({ seq?: number; kind: "billed" } & BilledCall);
-
-let decisionSeq = 0;
-/**
- * The place of a decision among all of them, across rollouts: a ledger that replays several rollouts' decisions
- * applies them in the order they were made, which is the order the one ledger of the earlier read saw them in.
- */
-export const nextDecisionSeq = (): number => decisionSeq++;
 
 export interface GatewayIndex {
   /** Returns true when this usage has already been recorded elsewhere. */
@@ -86,6 +48,16 @@ export interface GatewayIndex {
    * a claim.
    */
   vouch?(responseId: string, moved?: (key: string) => void): boolean;
+  /**
+   * True when this Mac's ledger holds the billed row of this marked response, whichever call stands on it. A record
+   * that no row could be given still knows whether its own row is here: a row another call stands on bills that call.
+   */
+  holds?(responseId: string): boolean;
+  /**
+   * True when a rollout already billed this marked response itself (or is waiting to): a fork copies its parent's
+   * records, and the one call must not be billed from each copy.
+   */
+  billedBefore?(responseId: string): boolean;
   /**
    * Calls a rollout billed before the gateway had appended their ledger row (on an earlier watch tick, or earlier in
    * this read). Their rows must not bill them again: the rollout's bill stands, also for a row that only lands
@@ -103,9 +75,6 @@ export interface GatewayIndex {
   /** Reads the rows appended since then, so a call read after the ledger can still find its row. */
   refresh?(): void;
 }
-
-/** How far apart the ledger's clock and the transcript's may be for one call. */
-export const CLAIM_WINDOW_MS = 30_000;
 
 /** A row a transcript can match by model, tokens and time. */
 const matchable = (row: LedgerRow): boolean => billedRow(row) || (row.origin === TELEMETRY_ORIGIN && row.session === true);
@@ -164,6 +133,10 @@ export class GatewayLedger implements GatewayIndex {
   private readonly known = new Map<string, LedgerRow>();
   /** Calls a rollout billed that `adopt` has already seen, so offering one twice never marks a second row. */
   private readonly adopted = new Set<BilledCall>();
+  /** The marked responses among them: a second copy of one of these is not billed again. */
+  private readonly billedIds = new Set<string>();
+  /** Rows no call can be moved off to reach a free row, for as long as the ledger gains no row (see gateway-match.ts). */
+  private readonly dead = new Set<LedgerRow>();
   /** The adopted calls no row has matched yet: a row `refresh` finds later is theirs. */
   private readonly unmatched = new Set<BilledCall>();
   /** Earlier decisions handed to `replay` and not yet applied. */
@@ -186,6 +159,7 @@ export class GatewayLedger implements GatewayIndex {
   }
 
   private index(row: LedgerRow): void {
+    this.dead.clear();
     this.known.set(callKey(row), row);
     if (billedRow(row) && !this.byResponse.has(row.responseId)) this.byResponse.set(row.responseId, row);
     if (!matchable(row)) return;
@@ -197,6 +171,7 @@ export class GatewayLedger implements GatewayIndex {
 
   /** Takes a row out of the lookups, for the row that replaces it. */
   private unindex(row: LedgerRow): void {
+    this.dead.clear();
     if (this.byResponse.get(row.responseId) === row) this.byResponse.delete(row.responseId);
     const bucket = this.buckets.get(usageKey(row.model, row.input, row.output));
     const at = bucket?.indexOf(row) ?? -1;
@@ -298,7 +273,7 @@ export class GatewayLedger implements GatewayIndex {
    */
   claim(model: string, input: number, output: number, tsMs: number, options: ClaimOptions = {}): boolean {
     this.applyReplays();
-    return place({ kind: "claim", model, input, output, ts: tsMs, gatewayRows: !!options.gatewayRows, ...(options.onClaim ? { moved: options.onClaim } : {}) }, this.candidates);
+    return place({ kind: "claim", model, input, output, ts: tsMs, gatewayRows: !!options.gatewayRows, ...(options.onClaim ? { moved: options.onClaim } : {}) }, this.candidates, this.dead);
   }
 
   /** The rows a call could stand on, nearest in time first (the oldest first among equals). */
@@ -313,7 +288,10 @@ export class GatewayLedger implements GatewayIndex {
       if (holder.kind === "claim" ? row.origin === GATEWAY_ORIGIN && !holder.gatewayRows : !billedRow(row)) continue;
       rows.push(row);
     }
-    return rows.sort((a, b) => Math.abs(a.at - holder.ts) - Math.abs(b.at - holder.ts));
+    // A claim on a billed row adds no bill (the row bills either way); a claim on a telemetry row makes it bill. A
+    // token_count whose own row has not landed yet would otherwise take a history row nearby and bill the call twice.
+    const rank = (row: LedgerRow): number => holder.kind === "claim" && holder.gatewayRows && row.origin === TELEMETRY_ORIGIN ? 1 : 0;
+    return rows.sort((a, b) => rank(a) - rank(b) || Math.abs(a.at - holder.ts) - Math.abs(b.at - holder.ts));
   };
 
   covers(responseId: string): boolean {
@@ -322,13 +300,22 @@ export class GatewayLedger implements GatewayIndex {
     return !!row && !row.rolloutBilled;
   }
 
+  holds(responseId: string): boolean {
+    return this.byResponse.has(responseId);
+  }
+
+  billedBefore(responseId: string): boolean {
+    this.applyReplays();
+    return this.billedIds.has(responseId);
+  }
+
   vouch(responseId: string, moved?: (key: string) => void): boolean {
     this.applyReplays();
     const row = this.byResponse.get(responseId);
     if (!row) return false;
     // A record asked about again, as a call waiting for its row is, already stands on it.
     if (row.holder?.kind === "claim" && row.holder.responseId === responseId) return true;
-    return place({ kind: "claim", model: row.model, input: row.input, output: row.output, ts: row.at, gatewayRows: true, responseId, ...(moved ? { moved } : {}) }, this.candidates);
+    return place({ kind: "claim", model: row.model, input: row.input, output: row.output, ts: row.at, gatewayRows: true, responseId, ...(moved ? { moved } : {}) }, this.candidates, this.dead);
   }
 
   /**
@@ -341,10 +328,15 @@ export class GatewayLedger implements GatewayIndex {
     this.applyReplays();
     for (const call of calls) {
       if (this.adopted.has(call)) continue;
-      this.adopted.add(call);
+      this.record(call);
       // No row yet: the gateway may append it later in this read, and `refresh` matches it then.
       if (!this.take(call)) this.unmatched.add(call);
     }
+  }
+
+  private record(call: BilledCall): void {
+    this.adopted.add(call);
+    if (call.responseId) this.billedIds.add(call.responseId);
   }
 
   /** Marks the row of a call a rollout billed, so the ledger does not bill it too. False when no row is there yet. */
@@ -360,7 +352,7 @@ export class GatewayLedger implements GatewayIndex {
     // A claimed row's rollout copy was dropped: only the ledger bills that call, so it is not a row to take (unless
     // the call that claimed it can stand on another). A call with a response id takes the row of that id, and no other.
     return place({ kind: "bill", model: call.model, input: call.input, output: call.output, ts: call.ts, gatewayRows: false,
-      ...(call.responseId ? { responseId: call.responseId } : {}), moved: (key) => { call.key = key; } }, this.candidates);
+      ...(call.responseId ? { responseId: call.responseId } : {}), moved: (key) => { call.key = key; } }, this.candidates, this.dead);
   }
 
   replay(decisions: Iterable<LedgerDecision>): void {
@@ -395,14 +387,17 @@ export class GatewayLedger implements GatewayIndex {
     if (!row) return false;
     const moved = (key: string): void => { decision.key = key; };
     if (decision.kind === "claimed") {
-      if (!matchable(row) || (row.origin === GATEWAY_ORIGIN && !decision.gatewayRows)) return false;
+      // A claim that may take a billed row looks again each time: a history row it holds is only the nearest it could
+      // find while its own row had not landed, and the billed row it now has is the better one (see `candidates`).
+      // A claim that may not take a billed row names one only where it took the echo this row replaced (`supersede`).
+      if (!matchable(row) || (decision.gatewayRows && row.origin === TELEMETRY_ORIGIN)) return false;
       return stayOn(row, { kind: "claim", model: decision.model, input: decision.input, output: decision.output, ts: decision.ts, gatewayRows: decision.gatewayRows,
         ...(decision.responseId ? { responseId: decision.responseId } : {}), moved });
     }
-    if (!billedRow(row) || this.adopted.has(decision)) return false;
+    if (!billedRow(row)) return false;
     if (!stayOn(row, { kind: "bill", model: decision.model, input: decision.input, output: decision.output, ts: decision.ts, gatewayRows: false,
       ...(decision.responseId ? { responseId: decision.responseId } : {}), moved })) return false;
-    this.adopted.add(decision);
+    this.record(decision);
     return true;
   }
 

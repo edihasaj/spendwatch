@@ -1,6 +1,6 @@
 // Shared ledger fixtures for the gateway tests: rows as the gateway writes them, filed by UTC month.
 import { expect } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Event } from "../src/parse";
 import { GatewayIndex, type GatewayLedger, type GatewayVendor } from "../src/gateway";
@@ -32,6 +32,17 @@ export function stateDir(rows: Row[]): string {
 }
 
 export const load = (rows: Row[]): GatewayLedger => GatewayIndex.load({ sinceMs: 0, stateDir: stateDir(rows) });
+
+/** A ledger loaded from rows, with the state directory it came from and a way to append the rows the gateway writes later. */
+export function openLedger(rows: Row[]) {
+  const dir = stateDir(rows);
+  const file = join(dir, "usage", readdirSync(join(dir, "usage"))[0]!);
+  return {
+    dir,
+    ledger: GatewayIndex.load({ sinceMs: 0, stateDir: dir }),
+    append: (row: Row): void => appendFileSync(file, JSON.stringify({ v: 1, host: "studio", ...row }) + "\n"),
+  };
+}
 
 // A call the gateway billed on a Copilot subscription.
 export const copilot = (over: Row = {}): Row => ({
