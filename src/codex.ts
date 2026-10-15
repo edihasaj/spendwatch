@@ -1,8 +1,9 @@
 // Parses Codex CLI rollout JSONL (~/.codex/sessions/**/rollout-*.jsonl).
 // Emits the same Event model as the Claude parser so both feed one Aggregator.
 import { cmdParts, type Event } from "./parse";
+import type { Usage } from "./pricing";
 import { projectFromCwd } from "./projects";
-import { MARKER, type GatewayIndex, type LedgerDecision } from "./gateway";
+import { CLAIM_WINDOW_MS, MARKER, type GatewayIndex, type LedgerDecision } from "./gateway";
 
 export interface CodexCtx {
   model?: string;
@@ -34,6 +35,26 @@ export interface CodexCtx {
   unconfirmed?: number;
   /** Numbers the routed token_count calls, which have no id of their own. */
   routedN?: number;
+  /**
+   * Routed calls the ledger may still bill, oldest first: the gateway appends a row just after the response ends,
+   * so the rollout line can be read before it. `settleRouted` decides them once a reloaded ledger holds their row,
+   * once they are older than the claim window, or when the read ends.
+   */
+  pending?: PendingCall[];
+}
+
+/** A routed call that waits for its ledger row; see `CodexCtx.pending`. */
+interface PendingCall {
+  /** The marked response id, for a token_usage_record; a token_count has none. */
+  responseId?: string;
+  /** The model the ledger row would carry, for a claim. */
+  model: string;
+  /** The model the rollout bills the call under if no row turns up. */
+  billedModel?: string;
+  input: number;
+  output: number;
+  ts: number;
+  usage: Usage;
 }
 
 let codexFallback = 0;
@@ -44,40 +65,69 @@ export function newCodexCtx(gateway?: GatewayIndex): CodexCtx {
 /** The model label of a gateway-marked call that this Mac's ledger cannot vouch for. */
 export const UNCONFIRMED = "gateway-routed, not in this Mac's ledger";
 
-// Where a rollout call is billed:
-//   "rollout"     — here, as an ordinary call;
-//   "ledger"      — by a ledger row on this Mac, so the rollout's copy is dropped;
-//   "unconfirmed" — here, labelled: the gateway marked it as billed on a subscription, but this Mac's ledger
-//                   holds no row for it (another Mac's gateway served it, its month was pruned, or the row had
-//                   not been written when the ledger was read), and dropping it would lose it if no ledger
-//                   anywhere counts it.
-// Only the provider named in session_meta can route, so anything else keeps its events.
-// `countOnly` is for token_count, which has no response id to check.
-type Billing = "rollout" | "ledger" | "unconfirmed";
+// Where a routed rollout call is billed. Only the provider named in session_meta routes, so every other rollout
+// keeps its events. A routed call is:
+//   - dropped, when a ledger row on this Mac bills it: the marked row with its response id, a telemetry row it
+//     claims, or for a token_count (no id to compare) a billed row with the same model, tokens and time;
+//   - kept, when no row does. A marked call is labelled `<model> (UNCONFIRMED)` and keeps its id, so that where its
+//     report meets the serving Mac's, that Mac's ledger bills it and this copy is taken out (gateway-settle.ts).
+// The gateway writes its row just after the response ends, so a marked record or a token_count waits in `pending`
+// for a row until it is older than the claim window (watch decides it on a later tick, against a reloaded ledger),
+// or the read ends. An unmarked record can only match a telemetry row, which the gateway imported once, so it is
+// decided at once.
+const routes = (ctx: CodexCtx): boolean => ctx.modelProvider === "subscription_gateway";
+const marked = (responseId?: string): responseId is string => !!responseId?.startsWith(MARKER);
 
-function billing(
-  ctx: CodexCtx,
-  call: { responseId?: string; input: number; output: number; ts: number },
-  countOnly = false,
-): Billing {
-  if (ctx.modelProvider !== "subscription_gateway" || !ctx.gateway) return "rollout";
-  const model = ctx.model ?? "unknown";
-  const { input, output, ts } = call;
-  if (!countOnly && call.responseId?.startsWith(MARKER)) {
-    if (ctx.gateway.covers?.(call.responseId)) return "ledger";
-    ctx.unconfirmed = (ctx.unconfirmed ?? 0) + 1;
-    (ctx.decisions ??= []).push({ kind: "billed", model, input, output, ts, responseId: call.responseId });
-    return "unconfirmed";
-  }
+/** True when a row on this Mac bills the call now; a claim is remembered for the next reloaded ledger. */
+function ledgerBills(ctx: CodexCtx, call: PendingCall): boolean {
+  const gateway = ctx.gateway;
+  if (!gateway) return false;
+  if (marked(call.responseId)) return !!gateway.covers?.(call.responseId);
   // A token_count has no response id to compare, so it may also take the ledger's billed row.
-  const gatewayRows = countOnly;
-  if (ctx.gateway.claim(model, input, output, ts, { gatewayRows })) {
-    (ctx.decisions ??= []).push({ kind: "claimed", model, input, output, ts, gatewayRows });
-    return "ledger";
+  const gatewayRows = call.responseId === undefined;
+  if (!gateway.claim(call.model, call.input, call.output, call.ts, { gatewayRows })) return false;
+  (ctx.decisions ??= []).push({ kind: "claimed", model: call.model, input: call.input, output: call.output, ts: call.ts, gatewayRows });
+  return true;
+}
+
+function apiEvent(ctx: CodexCtx, requestId: string, model: string | undefined, usage: Usage, ts: number, gatewayId?: string): Event {
+  return {
+    t: "api", sessionId: ctx.sid, requestId, model, usage, sidechain: false, ts,
+    ...(gatewayId ? { gateway: { id: gatewayId, role: "unconfirmed" as const } } : {}),
+  };
+}
+
+/** Bills a waiting call from the rollout: no ledger row turned up for it in time. */
+function billHere(ctx: CodexCtx, call: PendingCall): Event {
+  const { model, input, output, ts, responseId } = call;
+  // A row that lands after this must not bill the call again; a reloaded ledger replays this (see gateway.ts).
+  (ctx.decisions ??= []).push({ kind: "billed", model, input, output, ts, ...(responseId ? { responseId } : {}) });
+  if (!marked(responseId)) return apiEvent(ctx, `c${ctx.callN++}`, call.billedModel, call.usage, ts);
+  ctx.unconfirmed = (ctx.unconfirmed ?? 0) + 1;
+  return apiEvent(ctx, responseId, `${call.billedModel ?? "unknown"} (${UNCONFIRMED})`, call.usage, ts, responseId.slice(MARKER.length));
+}
+
+/**
+ * Decides the waiting routed calls, in order: those a row on this Mac now bills are dropped, those older than the
+ * claim window (or all of them, when `final`) are billed here, and the rest keep waiting. `watch` calls this on every
+ * tick with the reloaded ledger; a read calls it with `final` when the file ends.
+ */
+export function* settleRouted(ctx: CodexCtx, final = false, now = Date.now()): Generator<Event> {
+  const waiting = ctx.pending;
+  if (!waiting?.length) return;
+  // A read about to bill calls newer than its ledger lets the ledger catch up first: their rows may have landed since.
+  if (final && waiting.some((call) => call.ts >= (ctx.gateway?.readAt ?? Infinity) - CLAIM_WINDOW_MS)) ctx.gateway?.refresh?.();
+  ctx.pending = [];
+  for (const call of waiting) {
+    if (ledgerBills(ctx, call)) {
+      const id = call.responseId ?? `count${(ctx.routedN = (ctx.routedN ?? 0) + 1)}`;
+      yield { t: "routed", sessionId: ctx.sid, id, ts: call.ts };
+    } else if (final || !(now - call.ts <= CLAIM_WINDOW_MS)) {
+      yield billHere(ctx, call);
+    } else {
+      ctx.pending.push(call);
+    }
   }
-  // No row yet: this rollout bills the call, and remembers it for a ledger that is loaded later.
-  if (countOnly) (ctx.decisions ??= []).push({ kind: "billed", model, input, output, ts });
-  return "rollout";
 }
 
 // Same last+total usage twice in a row means a re-emission of one call, not a
@@ -136,26 +186,13 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
           const sig = countSignature(u, p.info?.total_token_usage);
           if (sig === ctx.lastCount) return; // a re-emission of the previous call
           ctx.lastCount = sig;
-          if (billing(ctx, { input, output: u.output_tokens ?? 0, ts }, true) === "ledger") {
-            ctx.routedN = (ctx.routedN ?? 0) + 1;
-            yield { t: "routed", sessionId: ctx.sid, id: `count${ctx.routedN}`, ts };
+          const usage: Usage = { input: Math.max(0, input - cached), output: u.output_tokens ?? 0, cacheRead: cached, cache5m: 0, cache1h: 0 };
+          if (routes(ctx) && ctx.gateway) {
+            (ctx.pending ??= []).push({ model: ctx.model ?? "unknown", billedModel: ctx.model, input, output: u.output_tokens ?? 0, ts, usage });
+            yield* settleRouted(ctx);
             return;
           }
-          yield {
-            t: "api",
-            sessionId: ctx.sid,
-            requestId: `c${ctx.callN++}`,
-            model: ctx.model,
-            usage: {
-              input: Math.max(0, input - cached),
-              output: u.output_tokens ?? 0,
-              cacheRead: cached,
-              cache5m: 0,
-              cache1h: 0,
-            },
-            sidechain: false,
-            ts,
-          };
+          yield apiEvent(ctx, `c${ctx.callN++}`, ctx.model, usage, ts);
         }
       } else if (p.type === "patch_apply_end") {
         // file edit; size approximated from the patch result if present
@@ -178,26 +215,21 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
       const cached = u.cached_input_tokens ?? 0;
       const cacheWrite = u.cache_write_input_tokens ?? 0;
       const responseId = typeof p.response_id === "string" && p.response_id ? p.response_id : `r${ctx.callN++}`;
-      const billed = billing(ctx, { responseId, input, output: u.output_tokens ?? 0, ts });
-      if (billed === "ledger") {
+      const output = u.output_tokens ?? 0;
+      const usage: Usage = { input: Math.max(0, input - cached - cacheWrite), output, cacheRead: cached, cache5m: cacheWrite, cache1h: 0 };
+      if (routes(ctx) && ctx.gateway && marked(responseId)) {
+        (ctx.pending ??= []).push({ responseId, model: ctx.model ?? "unknown", billedModel: ctx.model, input, output, ts, usage });
+        yield* settleRouted(ctx);
+        return;
+      }
+      // An unmarked routed record can only match a telemetry row, imported once, so it is decided now.
+      if (routes(ctx) && ledgerBills(ctx, { responseId, model: ctx.model ?? "unknown", input, output, ts, usage })) {
         yield { t: "routed", sessionId: ctx.sid, id: responseId, ts };
         return;
       }
-      yield {
-        t: "api",
-        sessionId: ctx.sid,
-        requestId: responseId,
-        model: billed === "unconfirmed" ? `${ctx.model ?? "unknown"} (${UNCONFIRMED})` : ctx.model,
-        usage: {
-          input: Math.max(0, input - cached - cacheWrite),
-          output: u.output_tokens ?? 0,
-          cacheRead: cached,
-          cache5m: cacheWrite,
-          cache1h: 0,
-        },
-        sidechain: false,
-        ts,
-      };
+      // With the gateway source off, a marked call still keeps its id, so the serving Mac's report can settle it.
+      const gatewayId = routes(ctx) && marked(responseId) ? responseId.slice(MARKER.length) : undefined;
+      yield apiEvent(ctx, responseId, ctx.model, usage, ts, gatewayId);
       return;
     }
     case "response_item": {

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -18,7 +18,11 @@ const meta = (at: number, id: string, provider: string) => line({ timestamp: iso
 const saved = { config: process.env.SPENDWATCH_CONFIG, source: process.env.SPENDWATCH_GATEWAY_SOURCE };
 afterEach(() => {
   for (const [key, value] of [["SPENDWATCH_CONFIG", saved.config], ["SPENDWATCH_GATEWAY_SOURCE", saved.source]] as const) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  setSystemTime();
 });
+
+/** The wall clock `watch` would read this far after the world was made: past a call's claim window, say. */
+const later = (w: { now: number }, ms: number) => setSystemTime(new Date(w.now + ms));
 
 /** One watched gateway-routed rollout, driven the way `watch` drives it. */
 function watched(options: { records?: boolean; account?: string } = {}) {
@@ -76,15 +80,32 @@ describe("watch mode with a gateway ledger", () => {
     expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 2]);
   });
 
-  test("a marked record that lands before its ledger row is billed once, by the rollout that read it first", () => {
+  test("a marked record read a tick before its ledger row is billed by the ledger once the row lands", () => {
     const w = watched();
     w.tick();
-    // The rollout has the record; the gateway has not appended its row yet. No ledger here vouches for it, so it is kept.
+    // The rollout has the record; the gateway appends its row just after the response ends, so not yet.
     appendFileSync(w.rollout, record("resp_gl_2", w.now - 1000) + count(w.now - 1000, 200));
+    w.tick();
+    // Neither tab bills it while its row may still come.
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 1]);
+    appendFileSync(w.ledger, ledgerRow("2", w.now - 1000));
+    w.tick();
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 2]);
+    expect(w.report("codex").models).toEqual([]);
+  });
+
+  test("a marked record whose row does not come within the claim window is billed by the rollout, once", () => {
+    const w = watched();
+    w.tick();
+    appendFileSync(w.rollout, record("resp_gl_2", w.now - 1000) + count(w.now - 1000, 200));
+    w.tick();
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 1]);
+    // Past the claim window with no row: no ledger here vouches for it, so it is kept, labelled.
+    later(w, 40_000);
     w.tick();
     expect([w.calls("codex"), w.calls("copilot")]).toEqual([1, 1]);
     expect(w.report("codex").models.map((m) => m.model)).toEqual(["copilot/gpt (gateway-routed, not in this Mac's ledger)"]);
-    // The row lands. The call was billed already, so the ledger must not bill it a second time.
+    // The row lands even later. The call was billed already, so the ledger must not bill it a second time.
     appendFileSync(w.ledger, ledgerRow("2", w.now - 1000));
     w.tick();
     w.tick();
@@ -143,24 +164,40 @@ describe("rollouts that record only token_count", () => {
     expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 2]);
   });
 
-  test("a call the ledger never held is still counted from the rollout", () => {
+  test("a call the ledger never held is still counted from the rollout, once its claim window has passed", () => {
     const w = watched({ records: false });
     w.tick();
     appendFileSync(w.rollout, count(w.now - 1000, 200));
+    w.tick();
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 1]);
+    later(w, 40_000);
     w.tick();
     expect([w.calls("codex"), w.calls("copilot")]).toEqual([1, 1]);
   });
 });
 
 describe("a token_count that lands before its ledger row", () => {
-  test("is billed once, by the rollout that read it first, when the row arrives on a later tick", () => {
+  test("is billed by the ledger when the row arrives on a later tick", () => {
     const w = watched({ records: false });
     w.tick();
-    // Codex wrote the count; the gateway has not appended its row yet. Nothing can claim it, so the rollout bills it.
+    // Codex wrote the count; the gateway has not appended its row yet, so the count waits for it.
     appendFileSync(w.rollout, count(w.now - 1000, 200));
     w.tick();
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 1]);
+    appendFileSync(w.ledger, ledgerRow("2", w.now - 1000));
+    w.tick();
+    w.tick();
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([0, 2]);
+  });
+
+  test("is billed once, by the rollout, when the row arrives after the claim window", () => {
+    const w = watched({ records: false });
+    w.tick();
+    appendFileSync(w.rollout, count(w.now - 1000, 200));
+    later(w, 40_000);
+    w.tick();
     expect([w.calls("codex"), w.calls("copilot")]).toEqual([1, 1]);
-    // The row lands. The call was billed already, so the ledger must not bill it a second time.
+    // The row lands late. The call was billed already, so the ledger must not bill it a second time.
     appendFileSync(w.ledger, ledgerRow("2", w.now - 1000));
     w.tick();
     w.tick();
@@ -185,11 +222,14 @@ describe("a token_count that lands before its ledger row", () => {
     w.tick();
     appendFileSync(w.rollout, count(w.now - 3000, 200));
     w.tick();
-    // A second call with the same usage, moments later: its count lands before its row, so the rollout bills it ...
+    // A second call with the same usage, moments later: no row comes within its claim window, so the rollout bills it ...
     appendFileSync(w.rollout, count(w.now - 2900, 300));
     w.tick();
-    // ... and when that row lands (the gateway's clock a little behind), the reloaded ledger must still know row 2
-    // was claimed, rather than hand the nearer row 2 to this call and bill row 3 as well.
+    later(w, 40_000);
+    w.tick();
+    expect([w.calls("codex"), w.calls("copilot")]).toEqual([1, 2]);
+    // ... and when that row lands late (the gateway's clock a little behind), the reloaded ledger must still know row
+    // 2 was claimed, rather than hand the nearer row 2 to this call and bill row 3 as well.
     appendFileSync(w.ledger, ledgerRow("3", w.now - 1000));
     w.tick();
     expect([w.calls("codex"), w.calls("copilot")]).toEqual([1, 2]);
