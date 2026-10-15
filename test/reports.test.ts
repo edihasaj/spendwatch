@@ -91,6 +91,14 @@ describe("portable reports", () => {
     expect(dimensions.accounts).toEqual([{ label: "Codex · edi@example.com", tokens: 300, cost: 3, calls: 5, sessions: 2 }]);
   });
 
+  test("sums observed calls across machines, falling back to billed calls where a report has none", () => {
+    const routed = { ...report("studio:codex"), apiCalls: 0, observedCalls: 40 };
+    const plain = { ...report("macbook:codex"), apiCalls: 3 }; // an older export that never recorded observed calls
+    const merged = mergeReports([routed, plain]);
+    expect(merged.apiCalls).toBe(3);
+    expect(merged.observedCalls).toBe(43);
+  });
+
   test("keeps the same email separate by service unless email grouping is requested", () => {
     const codex = {
       ...report("studio:codex"),

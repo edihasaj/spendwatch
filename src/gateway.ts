@@ -11,15 +11,19 @@
 //     telemetry-origin row by `claim()`, which proves those tokens were already
 //     accounted for on the subscription side.
 //
-// Telemetry rows are also the ledger's own fallback: the gateway writes them for
-// calls it served without a response of its own — a turn inside a session it
-// tracks (`session: true`), or one it never saw the end of (`session: false`).
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+// Telemetry rows are not written per call: the gateway imports its pre-ledger
+// request history once, when the ledger is first created. `session` says whether
+// that request carried a Codex session id. A row without one (`session: false`,
+// a client that is not Codex) has no rollout to dedupe against, so it counts
+// directly; a row with one counts only when a rollout on this Mac claims it.
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { homedir, platform } from "node:os";
 import { accountLabel } from "./copilot";
-import { claudeAccount, type SourceFile } from "./sources";
+import { claudeAccount, claudeAccountIn, type SourceFile } from "./sources";
 import type { Event } from "./parse";
+import { PROVIDER_TYPES, providerMap, readGatewayConfig, resolveStateDirectory, type GatewayVendor } from "./gateway-config";
+
+export type { GatewayVendor };
 
 export interface ClaimOptions {
   /**
@@ -29,12 +33,23 @@ export interface ClaimOptions {
   gatewayRows?: boolean;
 }
 
+/** A call a rollout billed because the ledger held no row for it yet. */
+export interface BilledCall {
+  model: string;
+  input: number;
+  output: number;
+  ts: number;
+}
+
 export interface GatewayIndex {
   /** Returns true when this usage has already been recorded elsewhere. */
   claim(model: string, input: number, output: number, tsMs: number, options?: ClaimOptions): boolean;
+  /**
+   * Calls a rollout billed on an earlier watch tick, before the gateway had appended their ledger row.
+   * Their rows must not bill them again: the rollout's bill stands.
+   */
+  adopt?(calls: Iterable<BilledCall>): void;
 }
-
-export type GatewayVendor = "claude" | "copilot";
 
 // A gateway-routed response carries this marker on its id; anything else is an
 // ordinary provider call the transcript already counts.
@@ -43,10 +58,6 @@ const MARKER = "resp_gl_";
 const CLAIM_WINDOW_MS = 30_000;
 const GATEWAY_ORIGIN = "gateway";
 const TELEMETRY_ORIGIN = "telemetry";
-const PROVIDER_TYPES: Record<string, GatewayVendor> = {
-  "copilot-subscription": "copilot",
-  "claude-subscription": "claude",
-};
 
 interface LedgerRow {
   at: number;
@@ -56,9 +67,9 @@ interface LedgerRow {
   model: string;
   origin: string;
   vendor: GatewayVendor;
+  /** The route id the gateway served the call through; it names the account for Claude rows. */
+  provider: string;
   session?: boolean;
-  /** HTTP status, read for context only: counting never depends on it. */
-  status?: number;
   input: number; // gross input tokens, cache included, as the transcript reports them
   cached: number;
   cacheWrite: number;
@@ -68,6 +79,8 @@ interface LedgerRow {
   nanoAiu: number | null;
   nanoAiuStatus?: string;
   claimed: boolean;
+  /** A rollout already billed this call (see `adopt`), so the ledger must not. */
+  rolloutBilled: boolean;
 }
 
 const num = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -79,64 +92,14 @@ function timestamp(raw: unknown): number {
   return typeof raw === "string" ? Date.parse(raw) : NaN;
 }
 
-function home(p: string): string {
-  return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
-}
-
-/** Where the gateway keeps its files: one product, two platform conventions. */
-function configDirectory(): string {
-  const at = homedir();
-  return platform() === "darwin"
-    ? join(at, "Library", "Application Support", "Subscription Gateway")
-    : join(at, ".config", "subscription-gateway");
-}
-
-/**
- * The ledger home, in order of who says so: an explicit root, the gateway's own
- * config (only `stateDirectory` is read from it), then the default beside it.
- */
-function stateDirectory(override?: string): string | undefined {
-  const direct = override ?? process.env.SPENDWATCH_GATEWAY_STATE;
-  if (direct) return home(direct);
-  try {
-    const dir = str(JSON.parse(readFileSync(join(configDirectory(), "gateway.json"), "utf8"))?.stateDirectory);
-    if (dir) return home(dir);
-  } catch {}
-  const fallback = join(configDirectory(), "state");
-  return existsSync(fallback) ? fallback : undefined;
-}
-
-/** `SPENDWATCH_GATEWAY_PROVIDER_MAP` retargets the provider names telemetry rows carry. */
-function providerMap(): Record<string, GatewayVendor> {
-  const map: Record<string, GatewayVendor> = { copilot: "copilot", claude: "claude" };
-  const raw = process.env.SPENDWATCH_GATEWAY_PROVIDER_MAP?.trim();
-  if (!raw) return map;
-  let pairs: Array<[string, unknown]>;
-  try {
-    pairs = raw.startsWith("{")
-      ? Object.entries(JSON.parse(raw) as Record<string, unknown>)
-      : raw.split(",").map((entry) => {
-        const at = entry.indexOf("=");
-        return at < 0 ? [entry, ""] : [entry.slice(0, at), entry.slice(at + 1)] as [string, unknown];
-      });
-  } catch {
-    return map;
-  }
-  for (const [key, value] of pairs) {
-    const vendor = str(value);
-    if (!key) continue;
-    if (vendor === "claude" || vendor === "copilot") map[key] = vendor;
-    else delete map[key];
-  }
-  return map;
-}
-
 export class GatewayLedger implements GatewayIndex {
   private readonly rows: LedgerRow[];
   readonly stateDir: string;
+  private readonly claudeDirectories: ReadonlyMap<string, string>;
 
-  private constructor(rows: LedgerRow[], stateDir: string) {
+  private constructor(rows: LedgerRow[], stateDir: string, claudeDirectories: ReadonlyMap<string, string> = new Map()) {
     this.stateDir = stateDir;
+    this.claudeDirectories = claudeDirectories;
     this.rows = rows.sort((a, b) => a.at - b.at); // oldest first, like a transcript
   }
 
@@ -147,7 +110,7 @@ export class GatewayLedger implements GatewayIndex {
    */
   claim(model: string, input: number, output: number, tsMs: number, options: ClaimOptions = {}): boolean {
     for (const row of this.rows) {
-      if (row.claimed) continue;
+      if (row.claimed || row.rolloutBilled) continue;
       if (row.origin === TELEMETRY_ORIGIN ? row.session !== true : !(options.gatewayRows && row.responseId.startsWith(MARKER))) continue;
       if (row.model !== model || row.input !== input || row.output !== output) continue;
       if (Math.abs(row.at - tsMs) > CLAIM_WINDOW_MS) continue;
@@ -158,43 +121,83 @@ export class GatewayLedger implements GatewayIndex {
   }
 
   /**
-   * One file per vendor, read on demand: by the time its events run, every
+   * `watch` loads the ledger afresh on every tick, so a rollout line that was read before its row existed
+   * has already billed its call. Offered those calls again, each takes the billed gateway row nearest in
+   * time (one row per call) and keeps it out of `counts`: one bill, never two.
+   */
+  adopt(calls: Iterable<BilledCall>): void {
+    for (const call of calls) {
+      let best: LedgerRow | undefined;
+      for (const row of this.rows) {
+        if (row.rolloutBilled || row.origin !== GATEWAY_ORIGIN || !row.responseId.startsWith(MARKER)) continue;
+        if (row.model !== call.model || row.input !== call.input || row.output !== call.output) continue;
+        const gap = Math.abs(row.at - call.ts);
+        if (gap <= CLAIM_WINDOW_MS && (!best || gap < Math.abs(best.at - call.ts))) best = row;
+      }
+      if (best) best.rolloutBilled = true;
+    }
+  }
+
+  /**
+   * One file per vendor and account, read on demand: by the time its events run, every
    * rollout has had its chance to claim what the ledger and the transcript share.
    */
   files(vendor: GatewayVendor): SourceFile[] {
-    const rows = this.rows.filter((row) => row.vendor === vendor);
-    if (!rows.length) return [];
-    const account = vendor === "copilot" ? accountLabel() : claudeAccount();
-    return [{
+    const byAccount = new Map<string, LedgerRow[]>();
+    for (const row of this.rows) {
+      if (row.vendor !== vendor) continue;
+      const account = this.accountFor(row);
+      byAccount.set(account, [...(byAccount.get(account) ?? []), row]);
+    }
+    const primary = vendor === "copilot" ? accountLabel() : claudeAccount();
+    return [...byAccount].map(([account, rows]) => ({
       path: join(this.stateDir, "usage"),
-      key: `gateway:${vendor}`,
+      // The usual account keeps the plain key; another Claude account gets its own stream.
+      key: account === primary ? `gateway:${vendor}` : `gateway:${vendor}:${account}`,
       project: "gateway",
       source: vendor,
       account,
       parse: () => [],
       ctx: null,
-      events: (): Generator<Event> => eventsFor(vendor, rows),
-    }];
+      events: (): Generator<Event> => eventsFor(vendor, account === primary ? "" : account, rows),
+    }));
+  }
+
+  /**
+   * Who paid for a row. Copilot rows go to the signed-in Copilot account. A Claude provider can keep its
+   * login in its own `authDirectory`, and its turns are billed to that Claude account, not the default one.
+   */
+  private accountFor(row: LedgerRow): string {
+    if (row.vendor === "copilot") return accountLabel();
+    const directory = this.claudeDirectories.get(row.provider);
+    return directory ? claudeAccountIn(directory) : claudeAccount();
   }
 
   /** Every month ledger the window touches. No gateway installed → nothing to count. */
   static load(opts: { sinceMs: number; stateDir?: string }): GatewayLedger {
-    const dir = stateDirectory(opts.stateDir);
-    if (!dir) return new GatewayLedger([], configDirectory());
+    const config = readGatewayConfig();
+    const dir = resolveStateDirectory(config, opts.stateDir);
+    if (!dir) return new GatewayLedger([], config.directory);
     const map = providerMap();
     const rows = ledgerFiles(dir, opts.sinceMs).flatMap((file) => readRows(file, map));
-    return new GatewayLedger(dedupe(rows), dir);
+    return new GatewayLedger(dedupe(rows), dir, config.claudeDirectories);
+  }
+
+  /** Whether any telemetry row is waiting for a rollout to claim it, so reading rollouts can change a report. */
+  hasClaimable(): boolean {
+    return this.rows.some((row) => row.origin === TELEMETRY_ORIGIN && row.session === true);
   }
 }
 
 /** Rows the ledger is responsible for billing; see the module header. */
 function counts(row: LedgerRow): boolean {
+  if (row.rolloutBilled) return false;
   if (row.origin === GATEWAY_ORIGIN) return row.responseId.startsWith(MARKER);
   return row.claimed || row.session === false;
 }
 
-function* eventsFor(vendor: GatewayVendor, rows: LedgerRow[]): Generator<Event> {
-  const sessionId = `gateway-${vendor}`;
+function* eventsFor(vendor: GatewayVendor, account: string, rows: LedgerRow[]): Generator<Event> {
+  const sessionId = account ? `gateway-${vendor}:${account}` : `gateway-${vendor}`;
   yield { t: "meta", sessionId, project: "gateway", ts: 0 };
   for (const row of rows) {
     if (!counts(row)) continue;
@@ -220,21 +223,20 @@ function* eventsFor(vendor: GatewayVendor, rows: LedgerRow[]): Generator<Event> 
 
 // Copilot reports what a call actually cost in AI credits, so that figure wins
 // and the model keeps its plain alias. Where credits ran short or never arrived,
-// the row is labelled as what it is instead of priced from a token table.
+// the row is labelled as what it is instead of priced from a token table. A
+// telemetry-origin row is priced the same way when it carries credits (the gateway
+// copies them in its one-time import) and says it came from telemetry.
 // Claude rows carry no credit figure at all, so the alias is priced from tokens.
 function price(vendor: GatewayVendor, row: LedgerRow): { model: string; costUsd?: number } {
   const alias = row.model;
-  if (row.origin === TELEMETRY_ORIGIN) {
-    return vendor === "copilot"
-      ? { model: `${alias} (telemetry backfill, unpriced)`, costUsd: 0 }
-      : { model: `${alias} (telemetry backfill)` };
-  }
-  if (vendor !== "copilot") return { model: alias };
+  const telemetry = row.origin === TELEMETRY_ORIGIN;
+  if (vendor !== "copilot") return { model: telemetry ? `${alias} (telemetry backfill)` : alias };
   const credits = row.nanoAiu !== null && row.nanoAiu >= 0 ? row.nanoAiu / 1e11 : undefined;
-  if (credits === undefined) return { model: `${alias} (unpriced)`, costUsd: 0 };
-  return row.nanoAiuStatus === "partial"
-    ? { model: `${alias} (partial credits)`, costUsd: credits }
-    : { model: alias, costUsd: credits };
+  const tags = [
+    ...(telemetry ? ["telemetry backfill"] : []),
+    ...(credits === undefined ? ["unpriced"] : row.nanoAiuStatus === "partial" ? ["partial credits"] : []),
+  ];
+  return { model: tags.length ? `${alias} (${tags.join(", ")})` : alias, costUsd: credits ?? 0 };
 }
 
 /** Month ledgers overlapping [sinceMs, now], oldest file first. */
@@ -308,8 +310,8 @@ function toRow(raw: unknown, map: Record<string, GatewayVendor>): LedgerRow | un
     model: str(d.model) || "unknown",
     origin,
     vendor,
+    provider: str(d.provider),
     session: flag(d.session),
-    status: typeof d.status === "number" ? d.status : undefined,
     input: num(d.inputTokens),
     cached: num(d.cachedTokens),
     cacheWrite: num(d.cacheWriteTokens),
@@ -318,6 +320,7 @@ function toRow(raw: unknown, map: Record<string, GatewayVendor>): LedgerRow | un
     nanoAiu: typeof d.nanoAiu === "number" && Number.isFinite(d.nanoAiu) ? d.nanoAiu : null,
     nanoAiuStatus: d.nanoAiuStatus === undefined ? undefined : str(d.nanoAiuStatus),
     claimed: false,
+    rolloutBilled: false,
   };
 }
 

@@ -2,7 +2,7 @@
 // Emits the same Event model as the Claude parser so both feed one Aggregator.
 import { cmdParts, type Event } from "./parse";
 import { projectFromCwd } from "./projects";
-import type { GatewayIndex } from "./gateway";
+import type { BilledCall, GatewayIndex } from "./gateway";
 
 export interface CodexCtx {
   model?: string;
@@ -21,6 +21,11 @@ export interface CodexCtx {
   gateway?: GatewayIndex;
   /** Drop gateway-marked responses (resp_gl_*) outright instead of claiming them. */
   skipMarked?: boolean;
+  /**
+   * Routed token_count calls this rollout billed because the ledger held no matching row when they were read.
+   * Watch reloads the ledger on every tick, and a row that lands later must not bill the call a second time.
+   */
+  billed?: BilledCall[];
 }
 
 let codexFallback = 0;
@@ -40,7 +45,11 @@ function routed(
   if (ctx.modelProvider !== "subscription_gateway") return false;
   if (!claimOnly && ctx.skipMarked && call.responseId?.startsWith("resp_gl_")) return true;
   // A token_count has no response id for skipMarked to read, so it may also take the ledger's billed row.
-  return ctx.gateway?.claim(ctx.model ?? "unknown", call.input, call.output, call.ts, claimOnly ? { gatewayRows: true } : undefined) === true;
+  const model = ctx.model ?? "unknown";
+  const taken = ctx.gateway?.claim(model, call.input, call.output, call.ts, claimOnly ? { gatewayRows: true } : undefined) === true;
+  // No row yet: this rollout bills the call, and remembers it for a ledger that is loaded later.
+  if (claimOnly && ctx.gateway && !taken) (ctx.billed ??= []).push({ model, input: call.input, output: call.output, ts: call.ts });
+  return taken;
 }
 
 // Same last+total usage twice in a row means a re-emission of one call, not a
