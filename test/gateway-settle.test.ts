@@ -7,7 +7,7 @@ import { settleAcrossMacs } from "../src/gateway-settle";
 import type { Event } from "../src/parse";
 import { mergeReports } from "../src/reports";
 import { GatewayIndex } from "../src/gateway";
-import { apiEvents, copilot, NOW, stateDir } from "./ledger-fixtures";
+import { apiEvents, copilot, NOW, stateDir, telemetry } from "./ledger-fixtures";
 
 const marked = (id: string) => `resp_gl_${id}`;
 const record = (id: string, at: number, input = 1000, output = 50) =>
@@ -120,5 +120,28 @@ describe("a read whose rollout line is newer than its ledger", () => {
     expect(events.filter((e) => e.t === "api" || e.t === "routed")).toEqual([]);
     events.push(...settleRouted(ctx, true));
     expect(events.filter((e) => e.t === "api")).toMatchObject([{ requestId: marked("g3"), gateway: { id: "g3", role: "unconfirmed" } }]);
+  });
+});
+
+describe("a routed record without the gateway's marker", () => {
+  const events = (ledger: ReturnType<typeof GatewayIndex.load>, ...lines: string[]) => {
+    const ctx = newCodexCtx(ledger);
+    return { ctx, events: [meta(), ...lines].flatMap((text) => [...parseCodexLine(text, ctx)]) };
+  };
+
+  test("is decided when it is read: only a telemetry row can match it, so no ledger row is awaited", () => {
+    const { ctx, events: read } = events(GatewayIndex.load({ sinceMs: 0, stateDir: stateDir([]) }), record("resp_plain", NOW - 1000));
+    // Billed at once from the rollout, under its own id; nothing waits for a row the gateway will never write for it.
+    expect(read.filter((event) => event.t === "api").map((event) => (event as Extract<Event, { t: "api" }>).requestId)).toEqual(["resp_plain"]);
+    expect(ctx.pending ?? []).toEqual([]);
+    expect(ctx.unconfirmed).toBeUndefined();
+  });
+
+  test("takes the imported telemetry row it matches, and leaves the rollout without a bill for it", () => {
+    const ledger = GatewayIndex.load({ sinceMs: 0, stateDir: stateDir([telemetry({ requestId: "history", session: true, at: NOW - 1000 })]) });
+    const { ctx, events: read } = events(ledger, record("resp_plain", NOW - 1000));
+    expect(read.map((event) => event.t)).toEqual(["meta", "routed"]);
+    expect(ctx.pending ?? []).toEqual([]);
+    expect(apiEvents(ledger, "copilot").map((event) => event.requestId)).toEqual(["studio:history"]);
   });
 });

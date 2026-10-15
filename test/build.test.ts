@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { build, reportsByPeriod } from "../src/build";
 import { rollingDays } from "../src/periods";
-import { claudeAccount } from "../src/sources";
 import { gatewayWorld } from "./gateway-world";
 
 // Whole-run behaviour: what `report` builds from a Codex rollout and a gateway ledger, whichever agents were asked for.
@@ -80,7 +79,9 @@ describe("a run limited to some agents", () => {
   });
 
   test("an account filter keeps the claims of the rollouts it leaves out of the Codex report", () => {
-    const filter = claudeAccount();
+    // The account the suite names in test/isolate-gateway.ts, never one read from a real login.
+    const filter = process.env.SPENDWATCH_CLAUDE_ACCOUNT!;
+    expect(filter).toBeTruthy();
     const filtered = reports(undefined, { account: filter });
     const found = bySource(filtered.reports);
     // The Codex rollout belongs to another account and is not in the Codex report, but it still vouched for its row.
