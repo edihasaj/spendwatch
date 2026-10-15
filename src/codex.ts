@@ -3,7 +3,7 @@
 import { cmdParts, type Event } from "./parse";
 import type { Usage } from "./pricing";
 import { projectFromCwd } from "./projects";
-import { CLAIM_WINDOW_MS, MARKER, type GatewayIndex, type LedgerDecision } from "./gateway";
+import { CLAIM_WINDOW_MS, MARKER, nextDecisionSeq, type GatewayIndex, type LedgerDecision } from "./gateway";
 
 export interface CodexCtx {
   model?: string;
@@ -82,11 +82,22 @@ const marked = (responseId?: string): responseId is string => !!responseId?.star
 function ledgerBills(ctx: CodexCtx, call: PendingCall): boolean {
   const gateway = ctx.gateway;
   if (!gateway) return false;
-  if (marked(call.responseId)) return !!gateway.covers?.(call.responseId);
+  if (marked(call.responseId)) {
+    if (!gateway.vouch) return !!gateway.covers?.(call.responseId);
+    // The record is dropped on the strength of that row, which no other call may take: a token_count of the same size
+    // and time would otherwise be dropped on it too.
+    const decision: LedgerDecision = { seq: nextDecisionSeq(), kind: "claimed", model: call.model, input: call.input, output: call.output, ts: call.ts, gatewayRows: true, responseId: call.responseId };
+    if (!gateway.vouch(call.responseId, (key) => { decision.key = key; })) return false;
+    (ctx.decisions ??= []).push(decision);
+    return true;
+  }
   // A token_count has no response id to compare, so it may also take the ledger's billed row.
   const gatewayRows = call.responseId === undefined;
-  if (!gateway.claim(call.model, call.input, call.output, call.ts, { gatewayRows })) return false;
-  (ctx.decisions ??= []).push({ kind: "claimed", model: call.model, input: call.input, output: call.output, ts: call.ts, gatewayRows });
+  // The decision keeps the row the claim stands on, and follows it if the ledger moves the claim to another alike row:
+  // a reloaded ledger gives this call that very row back.
+  const decision: LedgerDecision = { seq: nextDecisionSeq(), kind: "claimed", model: call.model, input: call.input, output: call.output, ts: call.ts, gatewayRows };
+  if (!gateway.claim(call.model, call.input, call.output, call.ts, { gatewayRows, onClaim: (key) => { decision.key = key; } })) return false;
+  (ctx.decisions ??= []).push(decision);
   return true;
 }
 
@@ -102,7 +113,7 @@ function billHere(ctx: CodexCtx, call: PendingCall): Event {
   const { model, input, output, ts, responseId } = call;
   // A row that lands after this must not bill the call again: the ledger of this read keeps the call until a
   // refresh finds its row, and a reloaded ledger replays it (see gateway.ts).
-  const decision: LedgerDecision = { kind: "billed", model, input, output, ts, ...(responseId ? { responseId } : {}) };
+  const decision: LedgerDecision = { seq: nextDecisionSeq(), kind: "billed", model, input, output, ts, ...(responseId ? { responseId } : {}) };
   (ctx.decisions ??= []).push(decision);
   ctx.gateway?.adopt?.([decision]);
   if (!marked(responseId)) return apiEvent(ctx, `c${ctx.callN++}`, call.billedModel, call.usage, ts);
@@ -119,10 +130,11 @@ export function* settleRouted(ctx: CodexCtx, final = false, now = Date.now()): G
   const waiting = ctx.pending;
   if (!waiting?.length) return;
   const due = (call: PendingCall): boolean => final || !(now - call.ts <= CLAIM_WINDOW_MS);
-  // A read about to bill calls newer than its ledger lets the ledger catch up first: their rows may have landed since.
-  // A call that has waited out its window while the file was still being read is about to be billed too, so a read
-  // that takes longer than the window checks as well as one that ends.
-  if (waiting.some((call) => due(call) && call.ts >= (ctx.gateway?.readAt ?? Infinity) - CLAIM_WINDOW_MS)) ctx.gateway?.refresh?.();
+  // A call newer than its ledger lets the ledger catch up before anything is decided about it: its row, and the row of
+  // a call just like it, may have landed since the read. A claim that took a neighbour's row because its own had not
+  // been read yet would leave the neighbour to be billed twice. A call that has waited out its window while the file
+  // was still being read counts too, so a read that takes longer than the window checks as well as one that ends.
+  if (waiting.some((call) => call.ts >= (ctx.gateway?.readAt ?? Infinity) - CLAIM_WINDOW_MS)) ctx.gateway?.refresh?.();
   ctx.pending = [];
   for (const call of waiting) {
     if (ledgerBills(ctx, call)) {

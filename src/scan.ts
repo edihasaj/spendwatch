@@ -51,12 +51,17 @@ export class IncrementalReader {
   poll(file: SourceFile): number {
     const { path, project, source, account, parse } = file;
     const id = this.identity(file);
-    if (file.events) {
-      const version = file.version?.();
+    if (file.events || file.snapshot) {
+      const snapshot = file.snapshot?.();
+      if (file.snapshot && !snapshot) return 0;
+      const version = snapshot ? snapshot.version : file.version?.();
       if (version !== undefined && this.versions.get(id) === version) return 0;
+      // These events are all the file has, not what is new: they replace what the last poll folded, so a row that has
+      // stopped billing (a ledger row a rollout's bill now covers) is not counted from the earlier poll.
+      this.agg.reset(id);
       const fold = this.agg.stream(id, project, source, account);
       let count = 0;
-      for (const event of file.events()) { fold(event); count++; }
+      for (const event of snapshot ? snapshot.events : file.events!()) { fold(event); count++; }
       if (version !== undefined) this.versions.set(id, version);
       return count;
     }
@@ -109,6 +114,14 @@ export class IncrementalReader {
     return count;
   }
 
+  /**
+   * Hands a file found again its kept parser state, without reading it. `watch` does this for every file before it
+   * reads any, so a reloaded ledger has every rollout's earlier decisions before the first new one is made.
+   */
+  renew(file: SourceFile): void {
+    if (!file.events && !file.snapshot) this.context(file);
+  }
+
   private context(file: SourceFile): unknown {
     const id = this.identity(file);
     if (!this.contexts.has(id)) this.contexts.set(id, file.ctx);
@@ -123,7 +136,7 @@ export class IncrementalReader {
    * read passes `final = false` and leaves a routed call younger than the claim window waiting for its ledger row.
    */
   flush(file: SourceFile, final = true) {
-    if (file.events) return;
+    if (file.events || file.snapshot) return;
     const id = this.identity(file);
     const carry = this.partial.get(id);
     const ctx = this.context(file);
