@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Aggregator } from "../src/aggregate";
 import { newCodexCtx, parseCodexLine } from "../src/codex";
 import type { GatewayIndex } from "../src/gateway";
 import { IncrementalReader } from "../src/scan";
 import type { SourceFile } from "../src/sources";
+import { tempDir } from "./tmp";
 
 // The reader keeps one parser state per file for as long as it reads that file, however often the file is found.
 
@@ -14,7 +14,7 @@ const line = (value: unknown) => JSON.stringify(value);
 const ledger: GatewayIndex = { claim: () => false, covers: (id) => id === "resp_gl_1" };
 
 function rollout(trailing: string): string {
-  const path = join(mkdtempSync(join(tmpdir(), "spendwatch-scan-")), "rollout-a.jsonl");
+  const path = join(tempDir("spendwatch-scan-"), "rollout-a.jsonl");
   writeFileSync(path, line({ timestamp: "2026-10-05T09:00:00.000Z", type: "session_meta", payload: { id: "s1", model_provider: "subscription_gateway", model: "m" } }) + "\n" + trailing);
   return path;
 }

@@ -97,8 +97,9 @@ export function archiveSource(db: Database, report: Report): string {
  * What happened to a report offered to the archive.
  * - "accepted": this read replaced the stored one.
  * - "fewer": the stored read saw more calls, so this one is a partial re-read of the same kind of month.
- * - "placement": the stored read billed more routed calls through the gateway ledger, so the two reads count
- *   some routed turns in different sources and their figures must never be blended.
+ * - "placement": the stored read billed a different number of routed calls through the gateway ledger (more, or
+ *   fewer while observing more), so the two reads count some routed turns in different sources and their figures
+ *   must never be blended.
  */
 export type ArchiveOutcome = "accepted" | "fewer" | "placement";
 
@@ -117,7 +118,8 @@ export function archiveReport(db: Database, report: Report, source: string, gene
   const stored = db.query<{ routed: number }, [string, string]>(
     "SELECT COALESCE(routed_calls, 0) AS routed FROM spend_report WHERE month = ? AND source = ?",
   ).get(report.period!.key, source);
-  return (report.routedCalls ?? 0) < (stored?.routed ?? 0) ? "placement" : "fewer";
+  // Any difference in routed calls means the two reads place some routed turns in different sources.
+  return (report.routedCalls ?? 0) !== (stored?.routed ?? 0) ? "placement" : "fewer";
 }
 
 /**

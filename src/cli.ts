@@ -468,7 +468,7 @@ function watch(a: Args) {
   // Watch is a live tail, so it stays on a rolling window rather than resetting
   // to an empty screen at midnight on the first of the month.
   if (!a.daysExplicit) a.days = 1;
-  const built = build(a, [watchPeriod(Date.now(), a.days)]);
+  const built = build(a, [watchPeriod(Date.now(), a.days)], { watching: true });
   const sinceMs = Date.now() - a.days * 86400_000;
   const draw = () => {
     const reports = reportsFrom(built, a).filter((r) => r.apiCalls > 0);

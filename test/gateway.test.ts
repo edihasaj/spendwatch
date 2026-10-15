@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Aggregator } from "../src/aggregate";
 import { accountLabel } from "../src/copilot";
@@ -8,6 +7,7 @@ import { usageCost } from "../src/pricing";
 import { GatewayIndex } from "../src/gateway";
 import { claudeAccount } from "../src/sources";
 import { apiEvents, claude, copilot, load, monthKey, NOW, stateDir, telemetry, withEnv, type Api, type Row } from "./ledger-fixtures";
+import { tempDir } from "./tmp";
 
 describe("gateway ledger", () => {
   test("bills a Copilot gateway call with its credits and the ledger's cache split", () => {
@@ -173,7 +173,7 @@ describe("telemetry-origin Copilot rows", () => {
 describe("where the ledger lives", () => {
   /** A gateway config directory holding gateway.json, with a ledger at `<dir>/<state>` filled with one Claude row. */
   function installed(config: Record<string, unknown> | undefined, state: string, row: Row = claude()) {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "spendwatch-config-")));
+    const dir = realpathSync(tempDir("spendwatch-config-"));
     const stateDir = join(dir, state);
     mkdirSync(join(stateDir, "usage"), { recursive: true });
     writeFileSync(join(stateDir, "usage", `usage-${monthKey(row.at as number)}.jsonl`), JSON.stringify({ v: 1, host: "studio", ...row }) + "\n");
@@ -249,7 +249,7 @@ describe("provider map for telemetry rows", () => {
 
 describe("the account a Claude row is billed to", () => {
   function twoAccounts() {
-    const config = realpathSync(mkdtempSync(join(tmpdir(), "spendwatch-claude-")));
+    const config = realpathSync(tempDir("spendwatch-claude-"));
     mkdirSync(join(config, "claude-work"), { recursive: true });
     writeFileSync(join(config, "claude-work", ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "work@example.com" } }));
     mkdirSync(join(config, "claude-bare"), { recursive: true });
@@ -281,7 +281,7 @@ describe("the account a Claude row is billed to", () => {
 
 describe("the account a Copilot row is billed to", () => {
   function twoLogins() {
-    const config = realpathSync(mkdtempSync(join(tmpdir(), "spendwatch-copilot-")));
+    const config = realpathSync(tempDir("spendwatch-copilot-"));
     // A COPILOT_HOME the CLI signed in under: its config.json opens with comment lines, which JSON does not allow.
     mkdirSync(join(config, "copilot-work"), { recursive: true });
     writeFileSync(join(config, "copilot-work", "config.json"), "// User settings belong in settings.json.\n// This file is managed automatically.\n"

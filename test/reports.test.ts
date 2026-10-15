@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Report } from "../src/aggregate";
 import { renderHtml } from "../src/html";
 import { monthPeriod } from "../src/periods";
 import { labelReports, loadReports, mergeReports, reportBreakdowns, sourceLabel } from "../src/reports";
+import { tempDir } from "./tmp";
 
 function report(source = "codex"): Report {
   return {
@@ -28,13 +28,13 @@ function report(source = "codex"): Report {
 
 describe("portable reports", () => {
   test("loads arrays exported on another machine", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "spendwatch-reports-")), "report.json");
+    const path = join(tempDir("spendwatch-reports-"), "report.json");
     writeFileSync(path, JSON.stringify([report("codex"), report("claude")]));
     expect(loadReports([path]).map((item) => item.source)).toEqual(["codex", "claude"]);
   });
 
   test("hydrates token totals from legacy cost-only exports", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "spendwatch-reports-")), "legacy.json");
+    const path = join(tempDir("spendwatch-reports-"), "legacy.json");
     const legacy = {
       ...report("codex"),
       totalTokens: undefined,
@@ -61,7 +61,7 @@ describe("portable reports", () => {
   });
 
   test("rejects malformed imports", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "spendwatch-reports-")), "bad.json");
+    const path = join(tempDir("spendwatch-reports-"), "bad.json");
     writeFileSync(path, JSON.stringify({ source: "codex" }));
     expect(() => loadReports([path])).toThrow("invalid spendwatch report");
   });
