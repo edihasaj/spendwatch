@@ -137,7 +137,6 @@ export function collectCopilot(root: string, sinceMs: number, account?: string):
       `).all(new Date(sinceMs).toISOString());
       read = { stamp: stamp ?? "", sinceMs, selection: optional.map((column) => columns.has(column) ? column : `NULL AS ${column}`).join(", "), sessions: found, versions: new Map() };
       if (stamp !== undefined) reads.set(path, read);
-      else reads.delete(path);
     }
     const { selection, sessions, versions } = read;
     const stored = read;

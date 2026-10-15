@@ -193,6 +193,21 @@ describe("a Copilot session store that has not been written to for a while", () 
     w.db.close();
   });
 
+  test("gives its events to a reader that has not folded them yet, though the version is known", () => {
+    const w = watched();
+    w.add(1, "one"); w.add(2, "two");
+    settle(w.path);
+    const files = collectCopilot(w.path, 0, "dev");
+    const first = new Aggregator();
+    const readerOne = new IncrementalReader(first);
+    for (const file of files) readerOne.poll(file);
+    const second = new Aggregator();
+    const readerTwo = new IncrementalReader(second);
+    for (const file of files) expect(readerTwo.poll(file)).toBeGreaterThan(0);
+    expect(second.report()).toMatchObject({ apiCalls: 2, sessions: 2 });
+    w.db.close();
+  });
+
   test("is read by a tick that finds only its write-ahead log changed", () => {
     const w = watched();
     w.add(1, "one"); w.add(2, "two");

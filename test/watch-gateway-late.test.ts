@@ -20,7 +20,7 @@ const count = (at: number, total: number) => routedLine("counts", "n/a", at, 100
 const calls = (reports: Report[]): Record<string, number> => Object.fromEntries(reports.filter((report) => report.apiCalls).map((report) => [report.source, report.apiCalls]));
 
 /** A Mac watched from `start`, with one Codex rollout and a gateway state directory, driven tick by tick. */
-function watched(options: { usage?: boolean; archive?: boolean } = {}) {
+function watched(options: { usage?: boolean; archive?: boolean; account?: string } = {}) {
   const root = tempDir("spendwatch-watch-late-");
   const start = Date.now();
   setSystemTime(new Date(start));
@@ -36,11 +36,11 @@ function watched(options: { usage?: boolean; archive?: boolean } = {}) {
   writeFileSync(rollout, head("s", start - 90_000));
   // The archive is named by the config only when the test says so, as a user's own config may leave it out.
   writeFileSync(join(root, "config.json"), JSON.stringify([
-    { agent: "codex", path: sessions }, ...(options.archive ? [{ agent: "codex", path: archived }] : []),
+    { agent: "codex", path: sessions, account: "main" }, ...(options.archive ? [{ agent: "codex", path: archived, account: "main" }] : []),
     { agent: "copilot", path: join(root, "none.db") }, { agent: "gateway", path: state },
   ]));
   process.env.SPENDWATCH_CONFIG = join(root, "config.json");
-  const a: BuildOptions = { top: 5 };
+  const a: BuildOptions = { top: 5, ...(options.account ? { account: options.account } : {}) };
   const built: Built = build(a, [watchPeriod(start, 1)], { watching: true });
   let n = 0;
   const tick = (times = 1) => { for (let i = 0; i < times; i++) { setSystemTime(new Date(start + ++n * TICK)); pollWatched(built, discover({ sinceMs: start - 86_400_000 }), a); } };
@@ -118,6 +118,22 @@ describe("a rollout that leaves the places watch looks in", () => {
     w.tick(12); // no row ever comes: the call is billed from the rollout, which is no longer found
     expect(calls(w.watching())).toEqual({ codex: 1, copilot: 1 });
   });
+
+  // The record has no gateway id, so it can only claim a row the history import left: and that row bills only while claimed.
+  for (const [name, account] of [["a report's rollout", undefined], ["a rollout read only for its claims", "test-copilot"]] as const) {
+    test(`${name} keeps the history row it claimed after it is filed away`, () => {
+      const w = watched({ account });
+      appendFileSync(w.ledger, JSON.stringify({ ...JSON.parse(copilotRow("history", w.start - 10_000, 100)), origin: "telemetry", responseId: "", session: true }) + "\n");
+      w.row("seed", w.start - 100_000);
+      appendFileSync(w.rollout, routedLine("records", "unmarked", w.start - 10_200, 100, 0).replace("resp_gl_unmarked", "resp_plain") + "\n");
+      w.tick();
+      w.tick();
+      expect(calls(w.watching())).toEqual({ copilot: 2 });
+      w.archive();
+      w.tick(3);
+      expect(calls(w.watching())).toEqual({ copilot: 2 });
+    });
+  }
 
   test("is found again, and read on from where it was, when the config names the archive", () => {
     const w = watched({ archive: true });
