@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { LedgerDecision } from "../src/gateway";
+import type { LedgerRow, RowHolder } from "../src/gateway-ledger-files";
+import { RowMatcher } from "../src/gateway-match";
 import { apiEvents, copilot, load, openLedger, telemetry } from "./ledger-fixtures";
 
 // Which row a call stands on when alike calls compete for alike rows (gateway-match.ts).
@@ -111,5 +113,58 @@ describe("calls that find no row", () => {
     // Every row has a call, so none of the 200 finds one; each used to look at all 5,000 rows (about two seconds in all).
     expect(placed).toBe(0);
     expect(performance.now() - started).toBeLessThan(1_000);
+  });
+});
+
+describe("the search itself", () => {
+  const row = (id: string, over: Partial<LedgerRow> = {}): LedgerRow => ({
+    at: NOW, host: "studio", requestId: id, responseId: `resp_gl_${id}`, model: MODEL, origin: "gateway", vendor: "copilot", provider: "copilot",
+    input: 1000, cached: 0, cacheWrite: 0, output: 50, reasoning: 0, nanoAiu: 0, claimed: false, rolloutBilled: false, ...over,
+  });
+  const holder = (name: string): RowHolder => ({ kind: "claim", model: MODEL, input: 1000, output: 50, ts: NOW, gatewayRows: true, responseId: name });
+  const stand = (target: LedgerRow, who: RowHolder): void => { target.claimed = true; target.holder = who; };
+
+  test("steps over a row that is taken and has no holder, which stays where it is", () => {
+    const fixed = row("fixed", { claimed: true });
+    const free = row("free");
+    const keys: string[] = [];
+    expect(new RowMatcher().place({ ...holder("a"), moved: (key) => keys.push(key) }, () => [fixed, free])).toBe(true);
+    expect(keys).toEqual(["studio:free"]);
+    expect([fixed.claimed, free.claimed]).toEqual([true, true]);
+    // Nothing else is free, and the row with no holder gives nobody a place.
+    expect(new RowMatcher().place(holder("b"), () => [fixed, free])).toBe(false);
+  });
+
+  test("looks at each row once, however many calls could move to it", () => {
+    // 0 can vacate a or b; a's call can vacate b; b's call has nowhere to go. b is reached twice, and looked at once.
+    const a = row("a");
+    const b = row("b");
+    const wanting = new Map<RowHolder, LedgerRow[]>();
+    const [ha, hb, h0] = [holder("ha"), holder("hb"), holder("h0")];
+    stand(a, ha);
+    stand(b, hb);
+    wanting.set(h0, [a, b]);
+    wanting.set(ha, [b]);
+    wanting.set(hb, []);
+    const asked: RowHolder[] = [];
+    expect(new RowMatcher().place(h0, (who) => { asked.push(who); return wanting.get(who)!; })).toBe(false);
+    expect(asked).toEqual([h0, ha, hb]);
+    expect([a.holder, b.holder, a.claimed, b.claimed]).toEqual([ha, hb, true, true]);
+  });
+
+  test("does not look at a row again after a search that found nothing, until the ledger changes", () => {
+    const only = row("only");
+    const holding = holder("holding");
+    stand(only, holding);
+    const matcher = new RowMatcher();
+    let asked = 0;
+    const candidates = (who: RowHolder): LedgerRow[] => { asked++; return who === holding ? [] : [only]; };
+    expect(matcher.place(holder("first"), candidates)).toBe(false);
+    const after = asked;
+    expect(matcher.place(holder("second"), candidates)).toBe(false);
+    expect(asked - after).toBe(1); // asked for the second call's candidates only: the row is known to lead nowhere
+    matcher.rowsChanged();
+    expect(matcher.place(holder("third"), candidates)).toBe(false);
+    expect(asked - after).toBe(3); // and now the holder of the row is asked again
   });
 });

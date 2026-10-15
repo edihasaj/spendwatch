@@ -29,6 +29,12 @@ export function* walkJsonl(dir: string): Generator<string> {
 /** The part of a file that identifies it and settles what its parser left waiting; it keeps nothing of one discovery. */
 type Settling = Pick<SourceFile, "path" | "key" | "project" | "source" | "account" | "settle">;
 
+/** A file `watch` read before and no longer finds, with the parser state it kept. */
+export interface Absent {
+  file: Settling;
+  ctx: unknown;
+}
+
 // Tracks per-file read offsets so watch mode only parses appended bytes.
 // Parser is supplied per-file via SourceFile, so one reader serves all sources.
 export class IncrementalReader {
@@ -141,20 +147,25 @@ export class IncrementalReader {
    * (Codex files a finished rollout under archived_sessions, which a config may leave out) or deleted. What they
    * decided about the gateway ledger, and the calls they left waiting for a row, still count.
    */
-  private absent(found: SourceFile[]): Array<{ file: Settling; ctx: unknown }> {
+  private absent(found: SourceFile[]): Absent[] {
     const here = new Set(found.map((file) => this.identity(file)));
     return [...this.seen].filter(([id]) => !here.has(id)).map(([id, file]) => ({ file, ctx: this.contexts.get(id) }));
   }
 
-  /** Hands each absent file's kept state what this discovery decided afresh, as `renew` does for a file found again. */
-  renewAbsent(found: SourceFile[], carry: (kept: any) => void): void {
-    for (const { ctx } of this.absent(found)) carry(ctx);
+  /**
+   * Hands each absent file's kept state what this discovery decided afresh, as `renew` does for a file found again,
+   * and names the files, for `settleAbsent`.
+   */
+  renewAbsent(found: SourceFile[], carry: (kept: any) => void): Absent[] {
+    const gone = this.absent(found);
+    for (const { ctx } of gone) carry(ctx);
+    return gone;
   }
 
-  /** Decides what each absent file left waiting, against this discovery (see `SourceFile.settle`). */
-  settleAbsent(found: SourceFile[]): number {
+  /** Decides what the absent files left waiting, against this discovery (see `SourceFile.settle`). */
+  settleAbsent(gone: Absent[]): number {
     let count = 0;
-    for (const { file, ctx } of this.absent(found)) count += this.settle(file, ctx, false);
+    for (const { file, ctx } of gone) count += this.settle(file, ctx, false);
     return count;
   }
 

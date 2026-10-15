@@ -7,8 +7,8 @@
 // The search is the augmenting-path search of bipartite matching: each row is looked at once per search, so it ends,
 // and it is exhaustive, so a call is left without a row only when no rearrangement gives it one. It keeps its own
 // stack rather than recursing, because a chain of alike calls can be as long as the run. A search that fails has
-// looked at every row reachable from the call, and none of them leads to a free row; the ledger keeps those rows
-// (`dead`) until it gains a row, so the next call that finds no row does not walk the same chain again.
+// looked at every row reachable from the call, and none of them leads to a free row; the matcher keeps those rows
+// until the ledger gains a row, so the next call that finds no row does not walk the same chain again.
 import { callKey, type LedgerRow, type RowHolder } from "./gateway-ledger-files";
 
 const occupied = (row: LedgerRow): boolean => row.claimed || row.rolloutBilled;
@@ -28,13 +28,26 @@ function leave(row: LedgerRow): void {
 }
 
 /**
- * Puts `holder` on a row among its candidates (`candidatesOf`, nearest first): the nearest free one, else one a
- * holder there can leave. False when no arrangement gives it a row, and then every row is as it was. A row taken with
- * no holder (a call billed by its response id) stays where it is. `dead` holds the rows known to lead to no free row;
- * a failed search adds the rows it looked at.
+ * Puts holders on rows, and remembers what its failed searches found: the rows from which no free row can be reached
+ * stay known as `dead` until the ledger gains a row (`rowsChanged`), so a call that finds no row does not walk the
+ * same chain again.
  */
-export function place(holder: RowHolder, candidatesOf: (holder: RowHolder) => LedgerRow[], dead: Set<LedgerRow>): boolean {
-  return seek(holder, candidatesOf, dead);
+export class RowMatcher {
+  private readonly dead = new Set<LedgerRow>();
+
+  /**
+   * Puts `holder` on a row among its candidates (`candidatesOf`, nearest first): the nearest free one, else one a
+   * holder there can leave. False when no arrangement gives it a row, and then every row is as it was. A row taken
+   * with no holder stays where it is.
+   */
+  place(holder: RowHolder, candidatesOf: (holder: RowHolder) => LedgerRow[]): boolean {
+    return seek(holder, candidatesOf, this.dead);
+  }
+
+  /** The ledger gained or swapped a row: a row that led nowhere may lead to it. */
+  rowsChanged(): void {
+    this.dead.clear();
+  }
 }
 
 /** Puts a holder that had a row before on it again, when the row is free. */

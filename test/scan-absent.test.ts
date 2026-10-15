@@ -33,13 +33,15 @@ describe("a file the last discovery did not find again", () => {
     expect(carried).toEqual([]);
   });
 
-  test("settles what it left waiting, against the state it kept", () => {
+  test("settles what it left waiting, against the state it kept, and settles nothing of a file that is found", () => {
     const agg = new Aggregator();
     const reader = new IncrementalReader(agg);
     const settled: unknown[] = [];
     const gone = parserFile("gone", { settle: (ctx, final) => { settled.push([ctx, final]); return [call]; } });
+    const here = parserFile("here", { settle: () => { settled.push("here"); return []; } });
     reader.renew(gone);
-    expect(reader.settleAbsent([parserFile("here")])).toBe(1);
+    reader.renew(here);
+    expect(reader.settleAbsent(reader.renewAbsent([parserFile("here")], () => {}))).toBe(1);
     expect(settled).toEqual([[gone.ctx, false]]);
     expect(agg.report().apiCalls).toBe(1);
   });
@@ -52,7 +54,7 @@ describe("a file the last discovery did not find again", () => {
     reader.poll(stream);
     const carried: unknown[] = [];
     reader.renewAbsent([], (kept) => carried.push(kept));
-    expect([carried, reader.settleAbsent([])]).toEqual([[], 0]);
+    expect(carried).toEqual([]);
   });
 
   test("is not a Copilot snapshot either", () => {
