@@ -12,7 +12,7 @@ beforeEach(() => { NOW = Date.now(); });
 const billed = (id: string, at = NOW) => copilot({ requestId: id, responseId: `resp_gl_${id}`, at });
 const echo = (id: string, at = NOW) => telemetry({ requestId: id, at, session: true });
 /** A decision a rollout made, as the ledger of an earlier tick was told it (a claim unless `kind` says it billed itself). */
-const decision = (over: { ts: number; kind?: "claimed" | "billed"; gatewayRows?: boolean; key?: string; seq?: number }): LedgerDecision =>
+const decision = (over: { ts: number; kind?: "claimed" | "billed"; gatewayRows?: boolean; key?: string; seq?: number; responseId?: string }): LedgerDecision =>
   ({ seq: 1, kind: "claimed", model: MODEL, input: 1000, output: 50, gatewayRows: true, ...over }) as LedgerDecision;
 
 const open = openLedger;
