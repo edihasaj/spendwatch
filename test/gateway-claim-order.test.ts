@@ -119,16 +119,18 @@ describe("a call billed under a marked response id", () => {
 
 describe("a routed call newer than the ledger read", () => {
   test("asks the ledger for the rows appended since before it claims one: its own row, not a neighbour's", () => {
-    const dir = stateDir([copilot({ requestId: "neighbour", responseId: "resp_gl_neighbour", at: NOW - CLAIM_WINDOW_MS })]);
-    const ledger = GatewayIndex.load({ sinceMs: NOW - 86_400_000, stateDir: dir });
+    // The ledger is read now, so a call is newer than it only if the call is about now too: NOW is when the suite began.
+    const now = Date.now();
+    const dir = stateDir([copilot({ requestId: "neighbour", responseId: "resp_gl_neighbour", at: now - CLAIM_WINDOW_MS })]);
+    const ledger = GatewayIndex.load({ sinceMs: now - 86_400_000, stateDir: dir });
     // The gateway appends the call's row after the ledger was read, and before the rollout line is.
     const file = join(dir, "usage", readdirSync(join(dir, "usage"))[0]!);
-    appendFileSync(file, JSON.stringify({ v: 1, host: "studio", ...copilot({ requestId: "own", responseId: "resp_gl_own", at: NOW + 200 }) }) + "\n");
+    appendFileSync(file, JSON.stringify({ v: 1, host: "studio", ...copilot({ requestId: "own", responseId: "resp_gl_own", at: now + 200 }) }) + "\n");
     const ctx = newCodexCtx(ledger);
     const usage = { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 50 };
     const lines = [
-      { timestamp: iso(NOW - 5_000), type: "session_meta", payload: { id: "s", model_provider: "subscription_gateway", model: "gpt-5.1-codex" } },
-      { timestamp: iso(NOW), type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage, total_token_usage: usage } } },
+      { timestamp: iso(now - 5_000), type: "session_meta", payload: { id: "s", model_provider: "subscription_gateway", model: "gpt-5.1-codex" } },
+      { timestamp: iso(now), type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage, total_token_usage: usage } } },
     ];
     for (const text of lines) [...parseCodexLine(JSON.stringify(text), ctx)];
     // Without the rows appended since, the only row to take is the neighbour's, and its own call would be left without one.
