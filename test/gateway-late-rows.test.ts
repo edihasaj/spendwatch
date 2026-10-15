@@ -95,11 +95,11 @@ describe("a row that lands while the rollouts are read", () => {
 
 describe("a row that lands for an account the ledger had no stream for", () => {
   // A second Copilot login: its provider names a COPILOT_HOME, and no row of it was in the ledger when it was read.
-  function twoLogins() {
+  function twoLogins(...before: Row[]) {
     const config = realpathSync(tempDir("spendwatch-late-accounts-"));
     mkdirSync(join(config, "copilot-work"), { recursive: true });
     writeFileSync(join(config, "copilot-work", "config.json"), JSON.stringify({ lastLoggedInUser: { login: "octo-work" } }));
-    const dir = stateDir([copilot({ requestId: "main", provider: "copilot", at: NOW - 10_000 })]);
+    const dir = stateDir([copilot({ requestId: "main", provider: "copilot", at: NOW - 10_000 }), ...before]);
     writeFileSync(join(config, "gateway.json"), JSON.stringify({ version: 1, stateDirectory: dir, providers: [
       { id: "copilot", type: "copilot-subscription" },
       { id: "copilot-work", type: "copilot-subscription", authDirectory: "copilot-work" },
@@ -118,6 +118,15 @@ describe("a row that lands for an account the ledger had no stream for", () => {
     expect(ledger.files("copilot").map((f) => f.account).length).toBe(1);
     land(copilot({ requestId: "work", provider: "copilot-work", responseId: marked("work"), at: NOW - 5000 }));
     expect(ledger.covers(marked("work"))).toBe(false);
+    expect(apiEvents(ledger, "copilot").map((e) => e.requestId)).toEqual(["studio:main"]);
+  });
+
+  test("does not replace another account's telemetry echo of the same call: the echo's account does not bill it", () => {
+    const { ledger, land } = twoLogins(telemetry({ requestId: "call", provider: "copilot", session: true, at: NOW - 5000 }));
+    ledger.files("copilot");
+    // The same host and request id, but billed by the work login: the row is not the echo's own, so it takes no place in the main stream.
+    land(copilot({ requestId: "call", provider: "copilot-work", responseId: marked("call"), at: NOW - 5000 }));
+    expect(ledger.covers(marked("call"))).toBe(false);
     expect(apiEvents(ledger, "copilot").map((e) => e.requestId)).toEqual(["studio:main"]);
   });
 

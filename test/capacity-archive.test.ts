@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { archiveCapacityHistory, restoreCapacityArchive } from "../src/capacity-archive";
 import { importCapacityHistory, writeCapacitySnapshot } from "../src/capacity-db";
 import { parseCapacityArgs } from "../src/capacity-cli";
 import type { CodexLimitAccount } from "../src/limits";
+import { tempDir } from "./tmp";
 
 function account(at: string, used: number): CodexLimitAccount {
   return {
@@ -28,7 +28,7 @@ function counts(path: string): { windows: number; accounts: number } {
 
 describe("capacity archive", () => {
   test("previews, restore-verifies, compacts, and restores idempotently", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "spendwatch-archive-"));
+    const dir = tempDir("spendwatch-archive-");
     const database = join(dir, "spendwatch.db");
     const archives = join(dir, "archives");
     const now = Date.parse("2026-08-12T00:00:00Z");

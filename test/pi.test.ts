@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Aggregator } from "../src/aggregate";
 import { IncrementalReader } from "../src/scan";
 import { newPiCtx, parsePiLine } from "../src/pi";
 import { defaultOmpRoots, defaultPiRoots, discover, type SourceFile } from "../src/sources";
 import { priceFor, usageCost } from "../src/pricing";
+import { tempDir } from "./tmp";
 
 const CWD = "/Users/dev/Projects/spendwatch";
 
@@ -15,7 +15,7 @@ function piFile(path: string, source: "pi" | "omp" = "pi"): SourceFile {
 }
 
 function write(lines: unknown[]): string {
-  const root = mkdtempSync(join(tmpdir(), "spendwatch-pi-"));
+  const root = tempDir("spendwatch-pi-");
   const file = join(root, "session.jsonl");
   writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
   return file;
@@ -166,7 +166,7 @@ describe("self-hosted pricing", () => {
 
 describe("pi discovery", () => {
   test("finds pi and oh-my-pi sessions in their per-cwd folders", () => {
-    const home = mkdtempSync(join(tmpdir(), "spendwatch-pi-home-"));
+    const home = tempDir("spendwatch-pi-home-");
     const piDir = join(defaultPiRoots(home)[0].path, "--Users-edi-Projects-spendwatch--");
     const ompDir = join(defaultOmpRoots(home)[0].path, "-Projects-spendwatch");
     mkdirSync(piDir, { recursive: true });
