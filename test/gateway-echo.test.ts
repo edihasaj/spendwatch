@@ -109,6 +109,13 @@ describe("decisions replayed on a ledger", () => {
     expect(bills(ledger).sort()).toEqual(["studio:t1", "studio:t2"]);
   });
 
+  test("a claim does not go back to a row that no claim could take", () => {
+    // A history row of a request without a Codex session bills on its own, so no rollout's claim belongs on it.
+    const { ledger } = open([telemetry({ requestId: "sessionless", at: NOW, session: false }), echo("t", NOW + 1_000)]);
+    ledger.replay([decision({ ts: NOW, gatewayRows: false, key: "studio:sessionless" })]);
+    expect(bills(ledger).sort()).toEqual(["studio:sessionless", "studio:t"]);
+  });
+
   test("a call a rollout billed does not go back to a row that is not a billed one", () => {
     const { ledger } = open([echo("t", NOW)]);
     ledger.replay([decision({ kind: "billed", ts: NOW, gatewayRows: false, key: "studio:t" })]);

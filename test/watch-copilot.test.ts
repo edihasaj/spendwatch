@@ -183,6 +183,18 @@ describe("a Copilot session store that has not been written to for a while", () 
     w.db.close();
   });
 
+  test("lists a session added since, though the store was settled when it was last read", () => {
+    const w = watched();
+    w.add(1, "one"); w.add(2, "two");
+    settle(w.path);
+    w.tick();
+    w.db.prepare("INSERT INTO sessions VALUES (?,?)").run("three", "/workspace/three");
+    w.add(3, "three");
+    expect(w.tick()).toBeGreaterThan(0);
+    expect(w.report()).toMatchObject({ apiCalls: 3, sessions: 3 });
+    w.db.close();
+  });
+
   test("is read again by a session file polled after the store was written, without a new discovery", () => {
     const w = watched();
     w.add(1, "one", 0);
