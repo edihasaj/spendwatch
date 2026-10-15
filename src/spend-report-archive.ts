@@ -26,7 +26,25 @@ export function initReportArchive(db: Database): void {
     );
   `);
   addObservedCallsColumn(db, "spend_report");
+  addLedgerColumn(db, "spend_report");
 }
+
+/** Whether the gateway ledger was read for the month; see {@link ledgerGuard}. */
+export function addLedgerColumn(db: Database, table: string): void {
+  const named = db.query<{ name: string }, [string, string]>(
+    "SELECT name FROM pragma_table_info(?) WHERE name = ?",
+  ).get(table, "ledger");
+  if (!named) db.exec(`ALTER TABLE ${table} ADD COLUMN ledger INTEGER`);
+}
+
+/**
+ * An archived month read with the gateway ledger counted routed Copilot and Claude turns there and
+ * dropped their copies from the Codex rollouts. A later read without the ledger (the source switched
+ * off, or a config with no gateway root) would count those turns in Codex again while the other
+ * sources keep their ledger rows, so that read can never replace the month. Reading the month with the
+ * ledger again replaces it as usual.
+ */
+export const ledgerGuard = (table: string) => `AND (excluded.ledger = 1 OR COALESCE(${table}.ledger, 0) = 0)`;
 
 /** Archives predate this column; ALTER is the only way to add it without a rebuild. */
 export function addObservedCallsColumn(db: Database, table: string): void {
@@ -61,13 +79,13 @@ export function archiveSource(db: Database, report: Report): string {
 
 export function archiveReport(db: Database, report: Report, source: string, generatedAt: number): boolean {
   const result = db.prepare(`
-    INSERT INTO spend_report(month, source, calls, observed_calls, report_json, updated_at)
-    VALUES (?,?,?,?,?,?)
+    INSERT INTO spend_report(month, source, calls, observed_calls, ledger, report_json, updated_at)
+    VALUES (?,?,?,?,?,?,?)
     ON CONFLICT(month, source) DO UPDATE SET
-      calls = excluded.calls, observed_calls = excluded.observed_calls,
+      calls = excluded.calls, observed_calls = excluded.observed_calls, ledger = excluded.ledger,
       report_json = excluded.report_json, updated_at = excluded.updated_at
-    WHERE excluded.observed_calls >= COALESCE(spend_report.observed_calls, spend_report.calls)
-  `).run(report.period!.key, source, report.apiCalls, report.observedCalls ?? report.apiCalls, JSON.stringify(report), generatedAt);
+    WHERE excluded.observed_calls >= COALESCE(spend_report.observed_calls, spend_report.calls) ${ledgerGuard("spend_report")}
+  `).run(report.period!.key, source, report.apiCalls, report.observedCalls ?? report.apiCalls, report.ledger ? 1 : 0, JSON.stringify(report), generatedAt);
   return result.changes > 0;
 }
 

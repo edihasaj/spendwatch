@@ -21,9 +21,17 @@ import { accountLabel } from "./copilot";
 import { claudeAccount, type SourceFile } from "./sources";
 import type { Event } from "./parse";
 
+export interface ClaimOptions {
+  /**
+   * Also match the ledger's own billed rows (marked `resp_gl_*`). Only for a transcript line that
+   * carries no response id to compare, such as a token_count: with an id, `skipMarked` already decides.
+   */
+  gatewayRows?: boolean;
+}
+
 export interface GatewayIndex {
   /** Returns true when this usage has already been recorded elsewhere. */
-  claim(model: string, input: number, output: number, tsMs: number): boolean;
+  claim(model: string, input: number, output: number, tsMs: number, options?: ClaimOptions): boolean;
 }
 
 export type GatewayVendor = "claude" | "copilot";
@@ -132,10 +140,15 @@ export class GatewayLedger implements GatewayIndex {
     this.rows = rows.sort((a, b) => a.at - b.at); // oldest first, like a transcript
   }
 
-  /** The transcript's copy of this call was already billed: take one telemetry row. */
-  claim(model: string, input: number, output: number, tsMs: number): boolean {
+  /**
+   * The transcript's copy of this call was already billed: take one telemetry row. With `gatewayRows`, a
+   * billed gateway row can be taken too. Taking it only drops the transcript's copy; the ledger still
+   * bills the row, because it is the record that carries the charge (see `counts`).
+   */
+  claim(model: string, input: number, output: number, tsMs: number, options: ClaimOptions = {}): boolean {
     for (const row of this.rows) {
-      if (row.origin !== TELEMETRY_ORIGIN || row.claimed || row.session !== true) continue;
+      if (row.claimed) continue;
+      if (row.origin === TELEMETRY_ORIGIN ? row.session !== true : !(options.gatewayRows && row.responseId.startsWith(MARKER))) continue;
       if (row.model !== model || row.input !== input || row.output !== output) continue;
       if (Math.abs(row.at - tsMs) > CLAIM_WINDOW_MS) continue;
       row.claimed = true;
@@ -235,12 +248,13 @@ function ledgerFiles(dir: string, sinceMs: number): string[] {
     .map((name) => join(usage, name));
 }
 
+// The gateway names its month files by UTC month (usage-YYYY-MM.jsonl), so the window is UTC too: east
+// of UTC the previous UTC month holds the first hours of the new local month.
 function inWindow(key: string, sinceMs: number, nowMs: number): boolean {
-  const from = new Date(`${key}-01T00:00:00`).getTime();
+  const [year, month] = key.split("-").map(Number);
+  const from = Date.UTC(year!, month! - 1, 1);
   if (!Number.isFinite(from)) return false;
-  const to = new Date(from);
-  to.setMonth(to.getMonth() + 1);
-  return to.getTime() > sinceMs && from <= nowMs;
+  return Date.UTC(year!, month!, 1) > sinceMs && from <= nowMs;
 }
 
 function safeReaddir(dir: string): string[] {

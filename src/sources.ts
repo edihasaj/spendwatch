@@ -11,7 +11,7 @@ import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Event } from "./parse";
 import { parseLine } from "./parse";
-import { newCodexCtx, parseCodexLine } from "./codex";
+import { newCodexCtx, parseCodexLine, type CodexCtx } from "./codex";
 import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
 import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
@@ -28,6 +28,12 @@ export interface SourceFile {
   account: string;
   parse: (line: string, ctx: any) => Iterable<Event>;
   ctx: any;
+  /**
+   * Watch mode discovers the same file again on every tick, with a new `ctx`. The reader keeps the first
+   * one, because it holds what earlier lines taught the parser, and calls this to hand it whatever the
+   * new discovery decided afresh (such as the reloaded gateway ledger).
+   */
+  renew?: (kept: any) => void;
 }
 
 export interface SourceStatus {
@@ -35,6 +41,8 @@ export interface SourceStatus {
   present: boolean; // logs directory exists
   parseable: boolean; // we can read token usage from it
   note?: string;
+  /** The gateway ledger was read for this source: its routed turns are counted from the ledger once. */
+  ledger?: boolean;
   files: SourceFile[];
 }
 
@@ -250,7 +258,8 @@ function collectCodex(dir: string, account: string, sinceMs: number, gateway?: G
     const ctx = newCodexCtx(gateway);
     // With a ledger loaded, a gateway-marked response is billed there instead.
     if (gateway) ctx.skipMarked = true;
-    files.push({ path, project: "?", source: "codex", account: acct, parse: parseCodexLine, ctx });
+    files.push({ path, project: "?", source: "codex", account: acct, parse: parseCodexLine, ctx,
+      renew: (kept: CodexCtx) => { kept.gateway = ctx.gateway; kept.skipMarked = ctx.skipMarked; } });
   }
   return files;
 }
@@ -318,6 +327,7 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
       id: "claude",
       present: claudeRoots.some((r) => existsSync(r.path)) || ledger.length > 0,
       parseable: true,
+      ledger: !!gateway,
       files: [...files, ...ledger],
     });
   }
@@ -340,13 +350,13 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
         seenRollouts.add(rollout);
         return true;
       });
-    const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, files };
+    const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger: !!gateway, files };
     // Asked after the rollouts have been read, because only the parser knows what
     // a rollout recorded: gateway-routed turns with token_count and no record were
     // deduped against telemetry rows alone.
     if (gateway) Object.defineProperty(codex, "note", {
       get: () => files.some((f) => f.ctx?.modelProvider === "subscription_gateway" && f.ctx?.lastCount !== undefined)
-        ? "gateway-routed rollouts recorded token_count without token_usage_record; those calls were matched against the gateway ledger"
+        ? "gateway-routed rollouts recorded token_count without token_usage_record; those calls were matched against the gateway ledger by model, token counts and time (telemetry rows and billed rows), and a call the ledger does not hold is counted from the rollout"
         : undefined,
       enumerable: true,
       configurable: true,
@@ -374,7 +384,7 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
     const ledger = gateway?.files("copilot") ?? [];
     const all = [...files, ...ledger];
     const present = roots.some((r) => existsSync(r.path)) || ledger.length > 0;
-    out.push({ id: "copilot", present, parseable: all.length > 0, files: all,
+    out.push({ id: "copilot", present, parseable: all.length > 0, ledger: !!gateway, files: all,
       note: present && !all.length ? "no readable per-request usage for this period" : undefined });
   }
 
@@ -395,4 +405,19 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
  */
 export function pollOrder(statuses: SourceStatus[]): SourceStatus[] {
   return [...statuses].sort((a, b) => Number(a.id !== "codex") - Number(b.id !== "codex"));
+}
+
+/**
+ * One watch tick: re-read what each discovered file appended since the last tick. Files are matched to
+ * their reader by source, and every reader keeps its parsers' state between ticks. Returns the bytes
+ * (or ledger events) consumed.
+ */
+export function pollWatched(readers: Map<string, { reader: { poll(file: SourceFile): number } }>, statuses: SourceStatus[]): number {
+  let changed = 0;
+  for (const st of pollOrder(statuses)) {
+    const slot = readers.get(st.id);
+    if (!slot) continue;
+    for (const f of st.files) changed += slot.reader.poll(f);
+  }
+  return changed;
 }

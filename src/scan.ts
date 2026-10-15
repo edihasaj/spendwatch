@@ -30,12 +30,14 @@ export function* walkJsonl(dir: string): Generator<string> {
 export class IncrementalReader {
   private offsets = new Map<string, number>();
   private partial = new Map<string, string>();
+  /** The parser state of each file, from the first time it was seen: the offset only makes sense with it. */
+  private contexts = new Map<string, unknown>();
 
   constructor(private agg: EventSink) {}
 
   /** Read new bytes from a file into the aggregator. Returns bytes consumed. */
   poll(file: SourceFile): number {
-    const { path, project, source, account, parse, ctx } = file;
+    const { path, project, source, account, parse } = file;
     if (file.events) {
       const fold = this.agg.stream(file.key ?? path, project, source, account);
       let count = 0;
@@ -49,6 +51,8 @@ export class IncrementalReader {
       return 0;
     }
     let off = this.offsets.get(path) ?? 0;
+    // A file found again keeps its first context: a new one has not seen the lines before the offset.
+    const ctx = this.context(file);
     if (size <= off) return 0;
     const fd = openSync(path, "r");
     let consumed = 0;
@@ -74,13 +78,20 @@ export class IncrementalReader {
     return consumed;
   }
 
+  private context(file: SourceFile): unknown {
+    if (!this.contexts.has(file.path)) this.contexts.set(file.path, file.ctx);
+    const kept = this.contexts.get(file.path);
+    if (kept !== file.ctx) file.renew?.(kept);
+    return kept;
+  }
+
   /** Flush a trailing line with no newline (end-of-scan for report mode). */
   flush(file: SourceFile) {
     if (file.events) return;
     const carry = this.partial.get(file.path);
     if (!carry) return;
     const fold = this.agg.stream(file.path, file.project, file.source, file.account);
-    for (const ev of file.parse(carry, file.ctx)) fold(ev);
+    for (const ev of file.parse(carry, this.context(file))) fold(ev);
     this.partial.set(file.path, "");
   }
 }

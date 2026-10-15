@@ -148,7 +148,7 @@ describe("gateway source", () => {
     const state = mkdtempSync(join(tmpdir(), "spendwatch-gateway-"));
     mkdirSync(join(state, "usage"), { recursive: true });
     const at = new Date();
-    const month = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}`;
+    const month = `${at.getUTCFullYear()}-${String(at.getUTCMonth() + 1).padStart(2, "0")}`;
     const row = (vendor: string, id: string) => JSON.stringify({
       v: 1, at: at.toISOString(), host: "studio", requestId: id, responseId: `resp_gl_${id}`,
       origin: "gateway", providerType: `${vendor}-subscription`, model: "gpt-5.1-codex",
@@ -200,6 +200,25 @@ describe("gateway source", () => {
       expect(copilot?.files.map((f) => f.key)).toEqual(["gateway:copilot"]);
       expect([claude?.present, copilot?.present, copilot?.parseable]).toEqual([true, true, true]);
       expect(claude?.files[0]).toMatchObject({ project: "gateway", source: "claude" });
+    });
+  });
+
+  test("marks the sources whose reports were read with the ledger", () => {
+    const home = homeWith({ ".claude/projects": [], ".codex/sessions": [], ".copilot": [] });
+    const state = ledgerDir();
+    const config = join(home, "config.json");
+    writeFileSync(config, JSON.stringify([
+      { agent: "claude", path: join(home, ".claude", "projects") },
+      { agent: "codex", path: join(home, ".codex", "sessions") },
+      { agent: "copilot", path: join(home, ".copilot", "session-store.db") },
+      { agent: "gateway", path: state },
+    ]));
+    const agents = new Set(["claude", "codex", "copilot"]);
+    withEnv({ SPENDWATCH_CONFIG: config, SPENDWATCH_GATEWAY_SOURCE: undefined }, () => {
+      expect(discover({ sinceMs: 0, agents }).map((s) => [s.id, s.ledger])).toEqual([["claude", true], ["codex", true], ["copilot", true]]);
+    });
+    withEnv({ SPENDWATCH_CONFIG: config, SPENDWATCH_GATEWAY_SOURCE: "off" }, () => {
+      expect(discover({ sinceMs: 0, agents }).map((s) => s.ledger)).toEqual([false, false, false]);
     });
   });
 
