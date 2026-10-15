@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defaultCodexRoots, discover, pollOrder } from "../src/sources";
 import { tempDir } from "./tmp";
@@ -15,7 +14,7 @@ function idToken(email: string, plan: string): string {
 
 describe("Codex profile discovery", () => {
   test("finds default and named profiles with session directories", () => {
-    const home = mkdtempSync(join(tmpdir(), "spendwatch-home-"));
+    const home = tempDir("spendwatch-home-");
     mkdirSync(join(home, ".codex", "sessions"), { recursive: true });
     mkdirSync(join(home, ".codex-personal", "sessions"), { recursive: true });
     mkdirSync(join(home, ".codex-work", "sessions"), { recursive: true });
@@ -27,7 +26,7 @@ describe("Codex profile discovery", () => {
   });
 
   test("does not double-count symlinked session roots", () => {
-    const home = mkdtempSync(join(tmpdir(), "spendwatch-home-"));
+    const home = tempDir("spendwatch-home-");
     const sessions = join(home, ".codex", "sessions");
     mkdirSync(sessions, { recursive: true });
     mkdirSync(join(home, ".codex-shadow"), { recursive: true });
@@ -40,7 +39,7 @@ describe("Codex profile discovery", () => {
     // ~/.codex is a copy-on-write clone of ~/.codex-primary: same rollout file,
     // two distinct real paths, so realpath dedupe cannot see it. The surviving
     // copy must be credited to the named profile, not the playground.
-    const home = mkdtempSync(join(tmpdir(), "spendwatch-home-"));
+    const home = tempDir("spendwatch-home-");
     const rollout = "rollout-2026-08-18T10-00-00-11111111-2222-3333-4444-555555555555.jsonl";
     const roots = [join(home, ".codex", "sessions"), join(home, ".codex-primary", "sessions")];
     for (const root of roots) {
@@ -64,7 +63,7 @@ describe("Codex profile discovery", () => {
   });
 
   test("labels each profile home so duplicate accounts stay distinguishable", () => {
-    const home = mkdtempSync(join(tmpdir(), "spendwatch-home-"));
+    const home = tempDir("spendwatch-home-");
     const roots = [".codex", ".codex-tertiary"].map((p) => join(home, p, "sessions"));
     for (const [index, root] of roots.entries()) {
       mkdirSync(root, { recursive: true });
@@ -85,7 +84,7 @@ describe("Codex profile discovery", () => {
   });
 
   test("skips Codex homes on a free plan, unless SPENDWATCH_INCLUDE_FREE is set", () => {
-    const home = mkdtempSync(join(tmpdir(), "spendwatch-home-"));
+    const home = tempDir("spendwatch-home-");
     const roots: string[] = [];
     for (const [index, [profile, plan]] of [[".codex-paid", "pro"], [".codex-gratis", "free"]].entries()) {
       const sessions = join(home, profile, "sessions");
@@ -289,5 +288,31 @@ describe("gateway source", () => {
     expect(found.map((s) => s.id)).toEqual(["claude", "codex", "copilot"]);
     expect(pollOrder(found).map((s) => s.id)).toEqual(["codex", "claude", "copilot"]);
     expect(found.map((s) => s.id)).toEqual(["claude", "codex", "copilot"]);
+  });
+});
+
+describe("Gemini discovery", () => {
+  test("follows an explicit config, as for every other agent: named roots are read, and the home directory is not looked in", () => {
+    const root = tempDir("spendwatch-gemini-");
+    const log = join(root, "logs", "session.jsonl");
+    mkdirSync(join(root, "logs"), { recursive: true });
+    writeFileSync(log, "");
+    const config = join(root, "config.json");
+    const previous = process.env.SPENDWATCH_CONFIG;
+    process.env.SPENDWATCH_CONFIG = config;
+    try {
+      writeFileSync(config, JSON.stringify([{ agent: "gemini", path: root }]));
+      const named = discover({ sinceMs: 0, agents: new Set(["gemini"]) }).find((s) => s.id === "gemini");
+      expect(named?.present).toBe(true);
+      expect(named?.files.map((f) => f.path)).toEqual([log]);
+
+      // A config that names no Gemini root says there is none, whatever the home directory holds.
+      writeFileSync(config, JSON.stringify([{ agent: "claude", path: join(root, "none") }]));
+      const unnamed = discover({ sinceMs: 0, agents: new Set(["gemini"]) }).find((s) => s.id === "gemini");
+      expect(unnamed).toMatchObject({ present: false, files: [] });
+    } finally {
+      if (previous === undefined) delete process.env.SPENDWATCH_CONFIG;
+      else process.env.SPENDWATCH_CONFIG = previous;
+    }
   });
 });

@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseRouteArgs } from "../src/route-cli";
 import { buildRoutePlan } from "../src/routing";
+import { tempDir } from "./tmp";
 
 function repo(manifests: string[] = []): string {
-  const path = mkdtempSync(join(tmpdir(), "spendwatch-route-"));
+  const path = tempDir("spendwatch-route-");
   for (const manifest of manifests) writeFileSync(join(path, manifest), "{}");
   return path;
 }

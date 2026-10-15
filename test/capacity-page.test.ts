@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeCapacitySnapshot } from "../src/capacity-db";
 import { createCapacityPageRenderer } from "../src/capacity-page";
+import { tempDir } from "./tmp";
 
 test("a stored page ages out without collection, and a new snapshot restores it", () => {
-  const dir = mkdtempSync(join(tmpdir(), "spendwatch-page-"));
+  const dir = tempDir("spendwatch-page-");
   const input = join(dir, "limits.json");
   const database = join(dir, "capacity.db");
   const sampledAt = Date.parse("2026-10-12T10:51:00Z");
@@ -52,7 +52,7 @@ test("a stored page ages out without collection, and a new snapshot restores it"
 });
 
 test("HTTP capacity requests never serve the frozen static export", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "spendwatch-page-http-"));
+  const dir = tempDir("spendwatch-page-http-");
   const input = join(dir, "limits.json");
   const database = join(dir, "capacity.db");
   const publicDir = join(dir, "public");
