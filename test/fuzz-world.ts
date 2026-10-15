@@ -26,3 +26,18 @@ export function routedLine(mode: "records" | "counts", id: string, at: number, i
     ? { timestamp: iso(at), type: "token_usage_record", payload: { response_id: `resp_gl_${id}`, usage } }
     : { timestamp: iso(at), type: "event_msg", payload: { type: "token_count", info: { last_token_usage: usage, total_token_usage: { input_tokens: total, output_tokens: 10 } } } });
 }
+
+/**
+ * `SPENDWATCH_FUZZ_SEED=<n>` runs just that seed of every seeded world, to replay one that failed. Unset, or not a
+ * positive whole number, runs them all.
+ */
+export function onlySeed(): number | undefined {
+  const seed = Number(process.env.SPENDWATCH_FUZZ_SEED);
+  return Number.isInteger(seed) && seed > 0 ? seed : undefined;
+}
+
+/** `SPENDWATCH_FUZZ_SEEDS=<n>` runs seeds 1..n of every seeded world instead of the usual count, to hunt for a rarer failure. */
+export function seedCount(usual: number): number {
+  const count = Number(process.env.SPENDWATCH_FUZZ_SEEDS);
+  return Number.isInteger(count) && count > 0 ? count : usual;
+}
