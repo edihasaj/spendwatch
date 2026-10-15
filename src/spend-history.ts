@@ -104,12 +104,16 @@ export function writeMonthlySpend(
     let rows = 0;
     const tx = db.transaction(() => {
       for (const report of reports) {
-        if (!report.period?.month || report.apiCalls <= 0) continue;
+        // A month whose every call was routed to the gateway bills nothing here but still observed calls:
+        // it has to replace a stale row that counted those turns, so observed calls decide, not billed ones.
+        if (!report.period?.month || (report.observedCalls ?? report.apiCalls) <= 0) continue;
         const source = archiveSource(db, report);
         // The full report decides first: its acceptance says whether this run
         // really saw the whole month, which picks the daily detail's mode.
-        const accepted = archiveReport(db, report, source, opts.generatedAt);
-        archiveTokenDays(db, report, source, accepted ? "replace" : "merge");
+        const outcome = archiveReport(db, report, source, opts.generatedAt);
+        // Days from a read with the ledger and a read without it count the routed turns in different
+        // places: maxing one into the other would count them twice, so such a read leaves the days alone.
+        if (outcome !== "ledger") archiveTokenDays(db, report, source, outcome === "accepted" ? "replace" : "merge");
         const result = upsert.run(
           report.period.key,
           source,

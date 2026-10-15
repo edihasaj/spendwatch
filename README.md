@@ -106,9 +106,14 @@ SELECT source, calls, observed_calls FROM spend_report
 WHERE month = '2026-10' AND source LIKE '%:codex%';
 ```
 
-`calls` below `observed_calls` is the gateway doing its job — the subscription
-billed those turns, and the transcripts stopped billing them a second time. A
-month where both are equal was never routed at all.
+`calls` can fall below `observed_calls` for two reasons, and the archive cannot
+tell them apart: Codex re-emits some `token_count` events, which are no longer
+billed twice (this alone lowered an unrouted month by about 6%), and turns the
+subscription gateway billed on a subscription are counted from its ledger instead
+of the rollout. Equal figures only say that neither happened. A month whose every
+call was routed has `calls` of 0 and a positive `observed_calls`; it is still
+archived, so it replaces an older read of that month that billed those turns in
+Codex.
 
 A month holds the agents whose transcripts still existed when it was first
 recorded, which is not the same as the agents you used. Claude Code rotates its
@@ -538,6 +543,14 @@ of estimating them from a model list. Compatible Copilot Chat stores in Code,
 Code Insiders and Cursor are detected too. Copies of the same session are
 counted once. Legacy stores without this ledger and Gemini logs remain footnotes. Adding a new agent = one parser emitting the shared `Event` model + a `sources.ts` entry.
 
+Codex calls are read per response: one call for each `token_usage_record`
+(its `response_id` is the call), falling back to `token_count` events for
+rollouts written by a Codex build that has no record. A `token_count` that
+repeats the previous one is a re-emission, not a second call, so it is no longer
+billed twice. Cache writes (`cache_write_input_tokens`) come out of the input
+and are priced as cache writes instead of as plain input. Totals read before this
+change were higher by the repeats and priced the cache writes as input.
+
 Grok reports token usage once per prompt-turn, covering every model call its
 agentic loop made for that prompt, so its **API calls** count turns rather than
 individual requests. Cost uses xAI's published per-model rates including the
@@ -547,49 +560,104 @@ spend report but not in `capacity` or `guard`.
 
 ### Subscription gateway
 
-A gateway can bill a Codex or Claude Code turn on a Copilot or Claude
-subscription instead of an API key, and it keeps a month ledger of what it
-billed. Spendwatch reads that ledger as a source, so a routed turn is counted
-once — by the subscription that paid for it — instead of twice.
+A gateway can bill a Codex turn on a Copilot or Claude subscription instead of an
+API key (it serves Codex's `/v1/responses` requests only), and it keeps a month
+ledger of what it billed. Spendwatch reads that ledger as a source, so a routed
+turn is counted once — by the subscription that paid for it — instead of twice.
+Only Codex rollouts are deduped against it; no other agent's transcript is.
 
 Rows are read from `usage/usage-YYYY-MM.jsonl`, oldest month file first. The
-state directory is `$SPENDWATCH_GATEWAY_STATE`, else the `stateDirectory` key of
-the gateway's own config (`~/Library/Application Support/Subscription
-Gateway/gateway.json` on macOS, `~/.config/subscription-gateway/gateway.json` on
-Linux — only that key is read), else `state` beside that config.
-`SPENDWATCH_GATEWAY_SOURCE=off` skips the ledger; with an explicit
-`~/.config/spendwatch/config.json`, only a `{ "agent": "gateway", "path": … }`
-root switches it on. `$SPENDWATCH_GATEWAY_PROVIDER_MAP` (`copilot=claude`, or
-JSON) retargets the provider names a telemetry row can arrive with.
+state directory is, in order:
+
+1. a `{ "agent": "gateway", "path": … }` root in an explicit spendwatch config;
+2. `$SPENDWATCH_GATEWAY_STATE`;
+3. the `stateDirectory` key of the gateway's own config, read the way the gateway
+   reads it: relative to the directory holding that config, and `.state` when the
+   key is missing. The config is `$SPENDWATCH_GATEWAY_CONFIG`, else
+   `~/Library/Application Support/Subscription Gateway/gateway.json` on macOS and
+   `~/.config/subscription-gateway/gateway.json` on Linux. The gateway's own
+   `$GATEWAY_CONFIG` is deliberately not read, because a shell pointed at a
+   development gateway must not redirect the spend of the installed one;
+4. only when there is no gateway config at all, a `state` directory beside where
+   it would be (the layout `gateway setup` creates).
+
+Only `stateDirectory` and, for Claude providers, `authDirectory` are read from
+that config. `SPENDWATCH_GATEWAY_SOURCE=off` skips the ledger; with an explicit
+`~/.config/spendwatch/config.json`, only a gateway root switches it on.
+`$SPENDWATCH_GATEWAY_PROVIDER_MAP` (`copilot=claude`, or JSON) retargets the
+provider names a telemetry row can arrive with; a name mapped to anything but
+`claude` or `copilot` is dropped.
 
 | the ledger says | what spendwatch does |
 |---|---|
 | gateway-origin row with a `resp_gl_*` response id | counts the row; the rollout's copy of that turn is dropped |
-| telemetry row for a session turn a rollout claims — same model, same input and output tokens, within 30 seconds | counts the row once, and drops the rollout's copy |
-| telemetry row with `session: false` | counts the row; the gateway never saw a response of its own |
+| telemetry row with `session: true` that a rollout claims — same model, same input and output tokens, within 30 seconds | counts the row once, and drops the rollout's copy |
+| telemetry row with `session: false` | counts the row directly: its request carried no Codex session id, so no rollout exists to dedupe against |
 | a rollout call with no response id (`token_count` only, from a Codex build without `token_usage_record`) that matches a billed gateway row the same way | counts the gateway row once, and drops the rollout's copy |
 | an unmarked gateway row, or a telemetry row nothing claimed | leaves it to the transcript, which already bills it |
 
+Telemetry rows are not written per call. The gateway imports its pre-ledger
+request history once, when the ledger is first created, and `session` records
+whether that request carried a Codex session id. So `session: true` rows count
+only while the rollouts that vouch for them still exist on this Mac, and a
+`--agents` subset still reads the Codex rollouts for those claims (reporting
+nothing for Codex), so `report --agents claude` shows the Claude spend of the full
+report. An `--account` filter keeps the claims of the rollouts it leaves out as
+well.
+
 Rows are keyed by `<host>:<requestId>`, so one call recorded twice counts once
 and the gateway's own row wins the key: it is the row carrying the charge.
-Copilot rows are labelled as they were billed — plain model alias when the
-credits are complete, `<model> (partial credits)` when fewer arrived than the
-call cost, `<model> (unpriced)` when none did, and
-`<model> (telemetry backfill, unpriced)` for a call the gateway only heard about
-afterwards. Claude rows carry no credit figure at all, so they are priced from
-their tokens under the model alias, and only gain a `(telemetry backfill)` suffix
-when telemetry is where they came from. Codex and self-hosted rows are ignored:
-this ledger bills neither.
+Copilot rows are labelled as they were billed:
+
+| label | the row |
+|---|---|
+| `<model>` | credits complete |
+| `<model> (partial credits)` | fewer credits arrived than the call cost |
+| `<model> (unpriced)` | none arrived |
+| `<model> (telemetry backfill)` | from the telemetry import, with credits |
+| `<model> (telemetry backfill, partial credits)` | from the telemetry import, with partial credits |
+| `<model> (telemetry backfill, unpriced)` | from the telemetry import, with no credit figure |
+
+Copilot cost is `nanoAiu / 1e11` dollars, and an imported row keeps the credits it
+carries. Claude rows carry no credit figure at all, so they are priced from their
+tokens under the model alias, and only gain a `(telemetry backfill)` suffix when
+telemetry is where they came from. Codex and self-hosted rows are ignored: this
+ledger bills neither.
 
 Gateway rows join the Claude and Copilot tabs — that is whose subscription paid —
-under the project `gateway`. Rollouts are always read before the ledger, because
-a transcript can only give up a turn it has already asked the ledger about.
+under the project `gateway`. Copilot rows go to the signed-in Copilot account. A
+Claude row goes to the account signed in under its provider's `authDirectory`
+(`.claude.json` inside it), or to the default Claude account when the provider has
+none; a provider whose directory holds no signed-in account is named after the
+directory, never folded into the default one. Rollouts are always read before the
+ledger, because a transcript can only give up a turn it has already asked the
+ledger about.
 
 The gateway names its month files by UTC month, so spendwatch picks the files a
 window needs in UTC too; in a zone east of UTC the previous UTC month's file holds
-the first hours of the new local month. `watch` keeps each rollout's parser state
-between ticks, so a routed turn that arrives after the first tick is still
-recognised as routed.
+the first hours of the new local month.
+
+`watch` finds every rollout again on each tick and reloads the ledger, so it keeps
+each rollout's parser state between ticks: a routed turn that arrives after the
+first tick is still recognised as routed, and a rollout Codex moves into
+`archived_sessions` while watched carries on from where it was read instead of
+being read again from the top. One race remains in a rollout that records only
+`token_count`: if the count lands one tick before the gateway appends its row,
+nothing can claim it yet, so the rollout bills the call, and the row that arrives
+later is kept out of the ledger so that it is not billed again. That call then
+shows under Codex until `watch` is restarted, where a report would show it under
+Copilot or Claude. Rollouts with `token_usage_record` carry the response id, so
+they are not affected.
+
+**Several Macs.** A routed turn is counted where the gateway served it, by that
+Mac's Spendwatch, under the provider's account. Every Mac whose Spendwatch loads a
+ledger — even an empty one — drops the `resp_gl_*` turns from its Codex report. So
+the serving Mac has to run Spendwatch, or those turns vanish; and
+`SPENDWATCH_GATEWAY_SOURCE`, the gateway root and the Spendwatch version have to be
+the same on every Mac, or a Mac that reads without the ledger counts the routed
+turns in Codex while the serving Mac counts them again. A rollout that records only
+`token_count` on a Mac other than the serving one cannot claim a ledger row it
+cannot see, so such a call is billed on both Macs.
 
 **Turning the ledger off rewrites history, unless you archive.** A month read with
 the ledger counts routed turns in the Claude and Copilot tabs and drops them from
@@ -598,8 +666,11 @@ Codex. Read without it (`SPENDWATCH_GATEWAY_SOURCE=off`, or a config with no
 already holds the ledger's Claude and Copilot rows would count them again. The
 spend archives therefore record whether the ledger was read (`ledger` on
 `spend_month` and `spend_report`) and refuse to replace a month that was read with
-it by a read without it. Reading that month with the ledger again replaces it as
-usual. An archive written before this column is treated as read without the ledger.
+it by a read without it; its daily token rows are left alone too, because they
+would otherwise be raised to the larger figure. While the source is off, every
+month already archived with the ledger therefore stops updating, for every source,
+until it is read with the ledger again, which replaces it as usual. An archive
+written before this column is treated as read without the ledger.
 
 ## What to automate
 
