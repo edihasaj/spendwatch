@@ -20,7 +20,7 @@ Requires [Bun](https://bun.sh). Run from source, or compile a standalone binary:
 ```sh
 git clone https://github.com/edihasaj/spendwatch && cd spendwatch
 bun run report                 # run directly
-bun run build                  # → bin/spendwatch (self-contained, embeds Bun + SQLite)
+bun run build                  # → bin/spendwatch (self-contained, embeds Bun + SQLite); removes the .*.bun-build staging files it leaves
 install -m 0755 bin/spendwatch /opt/homebrew/bin/   # optional: put on PATH
 ```
 
@@ -621,16 +621,50 @@ nothing for Codex), so `report --agents claude` shows the Claude spend of the fu
 report. An `--account` filter keeps the claims of the rollouts it leaves out as
 well.
 
-A claim takes the free row nearest in time to the call. A call is matched to a row
-by model, tokens and time alone, so alike calls and rows are interchangeable; when a
-call finds every alike row taken, the calls standing on them step to another free
-alike row (within their own 30 seconds, and as far as that chain goes) to leave it
-one. A marked record dropped on the strength of its row holds that row too, so a
-`token_count` of the same size cannot be dropped on it as well. So a call that
-another Mac's gateway served, and has no row here, may stand on a neighbour's row
-for a while, but never keeps a call without a row that a different arrangement would
-give one: each call with a row is billed once, in a report and in `watch`, whichever
+A claim takes the free row nearest in time to the call. A `token_count` carries no id
+and its own row may not have landed yet, so it prefers a billed row to a telemetry
+row: a telemetry row it took would bill the call a second time once its own row
+came. `watch` reloads the ledger on every tick and hands such a claim to the best
+row again each time. A call is matched to a row by model, tokens and time alone, so
+alike calls and rows are interchangeable; when a call finds every alike row taken,
+the calls standing on them step to another free alike row (within their own 30
+seconds, and as far as that chain goes, however long it is) to leave it one. A call
+that finds no row this way is left alone until the ledger gains a row. A marked
+record dropped on the strength of its row holds that row, so a `token_count` of the
+same size cannot be dropped on it as well; if one already stands there and cannot
+move, the record is billed from its rollout as the plain call it is, because the row
+bills the other call. A fork copies its parent's records, so one marked response can
+sit in two rollouts: it is one call, and it is billed once. So a call that another
+Mac's gateway served, and has no row here, may stand on a neighbour's row for a
+while, but never keeps a call without a row that a different arrangement would give
+one: each call with a row is billed once, in a report and in `watch`, whichever
 order the rows landed in and the rollouts were read.
+
+What no ledger can tell apart without an id on the call, and so what can still be
+billed wrong, is limited to a `token_count` (no id) whose own row is not in this
+Mac's ledger — another Mac's gateway served it, or its row has not landed — next to
+an alike billed or imported row that belongs to another call:
+
+- the `token_count` can stand on that other call's row, and the row then bills one
+  call for two. If that call's record is on this Mac, the record is read, finds the
+  row taken, and is billed as a plain call: the figure is short by one only until
+  the record is read, for instance in a report taken between the gateway's row and
+  the rollout's line. If the record is on another Mac whose report is settled
+  against this one, that Mac's copy is taken out against the row, and the call is
+  lost for good: the two Macs together are short by one. Only a `token_count`
+  triggers this, so only a Codex build that writes no `token_usage_record` can;
+- a `token_count` served by a Mac in the set, though, has no id to settle with: the
+  client's report counts it from its rollout and the serving Mac's ledger bills its
+  row, so the pair is billed twice;
+- the history import of a new ledger writes a telemetry row for each earlier
+  request. A report that reads while the ledger is being created can let a
+  `token_count` stand on one of these before its own row is written, and bill the
+  call by both rows; the next report and the next `watch` tick bill it once. This
+  can happen only around the creation of the ledger.
+
+Everything else — records with an id, a fork's copies, alike calls and rows in any
+number, rows that land late, rollouts that are read in any order or filed away — is
+billed exactly once; the seeded fuzz tests below check it.
 
 Rows are keyed by `<host>:<requestId>`, so one call recorded twice counts once
 and the gateway's own row wins the key: it is the row carrying the charge. A
@@ -702,8 +736,12 @@ Copilot session only when one of its rows, or a figure in one, changed. A
 session's rows are read once per tick, and both the check for a change and the
 fold come from that one read. The table has no index on the session, so a store's
 sessions are read 50 at a time instead of with a scan each: a store of 1,000,000
-rows in 1,000 sessions is read in about two seconds, on the first read and on an
-idle tick alike.
+rows in 1,000 sessions is read in a few seconds the first time. A store that
+has not been written to for two seconds, by its size and modification time and
+those of its write-ahead log, is as it was at the last tick: an idle tick reads
+nothing from it at all (about 20 ms for that store). A store written more recently,
+or with a write in progress, is read again, because a size and a time cannot vouch
+for it yet.
 
 The gateway appends a call's ledger row just after the response ends, so the
 rollout line can come first. A routed call with no row yet — a `resp_gl_*`
@@ -864,6 +902,13 @@ bun test   # claude + codex + grok fixtures with hand-computed costs, deep-comma
            # incremental append, multi-account sum/breakout, sqlite round-trip,
            # month-boundary splitting and the monthly spend archive
 ```
+
+The gateway ledger is also shaken by seeded random worlds (`test/gateway-fuzz-*.test.ts`):
+whole Macs whose calls, ledger rows and rollout lines interleave over time, with forks,
+late rows and alike calls, read by `watch` and by a report. The seeds are fixed, so a
+run is the same every time. `SPENDWATCH_FUZZ_SEED=<n>` replays one seed of every
+world (a failure prints its world), and `SPENDWATCH_FUZZ_SEEDS=<n>` runs seeds 1 to n
+instead of the usual few hundred, to hunt for a rarer failure.
 
 ## Contributing
 
