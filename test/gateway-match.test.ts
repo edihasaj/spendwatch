@@ -128,11 +128,17 @@ describe("the search itself", () => {
     const fixed = row("fixed", { claimed: true });
     const free = row("free");
     const keys: string[] = [];
-    expect(new RowMatcher().place({ ...holder("a"), moved: (key) => keys.push(key) }, () => [fixed, free])).toBe(true);
+    // Only a call that stands on a row can be asked to leave it.
+    const candidates = (who: RowHolder | undefined): LedgerRow[] => {
+      if (!who) throw new Error("asked about a call that stands nowhere");
+      return [fixed, free];
+    };
+    expect(new RowMatcher().place({ ...holder("a"), moved: (key) => keys.push(key) }, candidates)).toBe(true);
     expect(keys).toEqual(["studio:free"]);
     expect([fixed.claimed, free.claimed]).toEqual([true, true]);
     // Nothing else is free, and the row with no holder gives nobody a place.
-    expect(new RowMatcher().place(holder("b"), () => [fixed, free])).toBe(false);
+    expect(new RowMatcher().place(holder("b"), candidates)).toBe(false);
+    expect(fixed.claimed).toBe(true);
   });
 
   test("looks at each row once, however many calls could move to it", () => {
