@@ -100,7 +100,7 @@ function seek(first: RowHolder, candidatesOf: (holder: RowHolder) => LedgerRow[]
       leave(row);
       if (open(other)) {
         // `other` stands on a free row: every holder on the path takes the row it asked the next one to vacate.
-        for (let i = path.length - 1; i >= 0; i--) stand(path[i]!.vacated!.row, path[i]!.holder);
+        for (const step of path) stand(step.vacated!.row, step.holder);
         return true;
       }
       advanced = true;
