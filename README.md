@@ -102,18 +102,20 @@ figure while its `observed_calls` cannot, so the month survives. Older rows fall
 back to their `calls`. Check what a month's transcripts actually contributed:
 
 ```sql
-SELECT source, calls, observed_calls FROM spend_report
+SELECT source, calls, observed_calls, routed_calls, ledger FROM spend_report
 WHERE month = '2026-10' AND source LIKE '%:codex%';
 ```
 
-`calls` can fall below `observed_calls` for two reasons, and the archive cannot
-tell them apart: Codex re-emits some `token_count` events, which are no longer
-billed twice (this alone lowered an unrouted month by about 6%), and turns the
-subscription gateway billed on a subscription are counted from its ledger instead
-of the rollout. Equal figures only say that neither happened. A month whose every
-call was routed has `calls` of 0 and a positive `observed_calls`; it is still
-archived, so it replaces an older read of that month that billed those turns in
-Codex.
+`calls` can fall below `observed_calls` for two reasons: Codex re-emits some
+`token_count` events, which are no longer billed twice (this alone lowered an
+unrouted month by about 6%), and turns the subscription gateway billed on a
+subscription are counted from its ledger instead of the rollout. `routed_calls`
+counts the second kind: for Codex, the rollout calls handed to the ledger; for
+Claude and Copilot, the ledger rows they billed. A month whose every call was
+routed has `calls` of 0 and a positive `observed_calls`; it is still archived, so
+it replaces an older read of that month that billed those turns in Codex. How the
+archive keeps routed turns in exactly one source is described under
+[Subscription gateway](#subscription-gateway).
 
 A month holds the agents whose transcripts still existed when it was first
 recorded, which is not the same as the agents you used. Claude Code rotates its
@@ -581,20 +583,27 @@ state directory is, in order:
 4. only when there is no gateway config at all, a `state` directory beside where
    it would be (the layout `gateway setup` creates).
 
-Only `stateDirectory` and, for Claude providers, `authDirectory` are read from
-that config. `SPENDWATCH_GATEWAY_SOURCE=off` skips the ledger; with an explicit
-`~/.config/spendwatch/config.json`, only a gateway root switches it on.
-`$SPENDWATCH_GATEWAY_PROVIDER_MAP` (`copilot=claude`, or JSON) retargets the
-provider names a telemetry row can arrive with; a name mapped to anything but
-`claude` or `copilot` is dropped.
+A state directory without a `usage` directory means this Mac has no ledger: then
+nothing is counted from it and no rollout call is dropped because of it. Only
+`stateDirectory` and, for Claude and Copilot subscription providers,
+`authDirectory` are read from that config. `SPENDWATCH_GATEWAY_SOURCE=off` skips
+the ledger; with an explicit `~/.config/spendwatch/config.json`, only a gateway
+root switches it on. `$SPENDWATCH_GATEWAY_PROVIDER_MAP` (`copilot=claude`, or
+JSON) retargets the provider names a telemetry row without a provider type can
+arrive with; a name mapped to anything but `claude` or `copilot` is dropped.
 
 | the ledger says | what spendwatch does |
 |---|---|
-| gateway-origin row with a `resp_gl_*` response id | counts the row; the rollout's copy of that turn is dropped |
+| gateway-origin row with a `resp_gl_*` response id | counts the row; a rollout record with exactly that response id is dropped |
+| a rollout record with a `resp_gl_*` id that this Mac's ledger holds no row for | keeps it in Codex as `<model> (gateway-routed, not in this Mac's ledger)` and says so under the report (see *Several Macs*) |
 | telemetry row with `session: true` that a rollout claims — same model, same input and output tokens, within 30 seconds | counts the row once, and drops the rollout's copy |
 | telemetry row with `session: false` | counts the row directly: its request carried no Codex session id, so no rollout exists to dedupe against |
 | a rollout call with no response id (`token_count` only, from a Codex build without `token_usage_record`) that matches a billed gateway row the same way | counts the gateway row once, and drops the rollout's copy |
 | an unmarked gateway row, or a telemetry row nothing claimed | leaves it to the transcript, which already bills it |
+
+A rollout's provider comes from its own `session_meta`, the first one in the
+file. A forked rollout copies its parent's `session_meta` after its own, and that
+one describes the parent thread, so it never changes which calls count as routed.
 
 Telemetry rows are not written per call. The gateway imports its pre-ledger
 request history once, when the ledger is first created, and `session` records
@@ -613,7 +622,7 @@ Copilot rows are labelled as they were billed:
 |---|---|
 | `<model>` | credits complete |
 | `<model> (partial credits)` | fewer credits arrived than the call cost |
-| `<model> (unpriced)` | none arrived |
+| `<model> (unpriced)` | none arrived, or the figure was negative |
 | `<model> (telemetry backfill)` | from the telemetry import, with credits |
 | `<model> (telemetry backfill, partial credits)` | from the telemetry import, with partial credits |
 | `<model> (telemetry backfill, unpriced)` | from the telemetry import, with no credit figure |
@@ -622,55 +631,85 @@ Copilot cost is `nanoAiu / 1e11` dollars, and an imported row keeps the credits 
 carries. Claude rows carry no credit figure at all, so they are priced from their
 tokens under the model alias, and only gain a `(telemetry backfill)` suffix when
 telemetry is where they came from. Codex and self-hosted rows are ignored: this
-ledger bills neither.
+ledger bills neither. A gateway row's subscription is read from its provider type;
+only an imported telemetry row without one is placed by its provider name.
 
 Gateway rows join the Claude and Copilot tabs — that is whose subscription paid —
-under the project `gateway`. Copilot rows go to the signed-in Copilot account. A
-Claude row goes to the account signed in under its provider's `authDirectory`
-(`.claude.json` inside it), or to the default Claude account when the provider has
-none; a provider whose directory holds no signed-in account is named after the
-directory, never folded into the default one. Rollouts are always read before the
-ledger, because a transcript can only give up a turn it has already asked the
-ledger about.
+under the project `gateway`, and under the account the provider billed. A provider
+can sign in under its own `authDirectory`: a Claude provider's turns go to the
+account in `.claude.json` inside it, a Copilot provider's (its `COPILOT_HOME`) to
+`lastLoggedInUser.login` in its `config.json`. A provider without one goes to the
+default account of that subscription (the signed-in Claude account, or the
+`gh` user), and a directory that holds no signed-in account is named after the
+directory, never folded into the default one. Each account gets its own stream.
+Rollouts are always read before the ledger, because a transcript can only give up
+a turn it has already asked the ledger about.
 
 The gateway names its month files by UTC month, so spendwatch picks the files a
 window needs in UTC too; in a zone east of UTC the previous UTC month's file holds
-the first hours of the new local month.
+the first hours of the new local month. The window is widened by the 30-second
+claim window, so a call filed in the last seconds of one UTC month still finds its
+row when its rollout line landed in the next and that month is read alone. Account
+labels are resolved once per read and rows are matched through an index, so a
+ledger of 100,000 rows is read and grouped in well under a second, and `watch`
+can reload it on every tick.
 
 `watch` finds every rollout again on each tick and reloads the ledger, so it keeps
-each rollout's parser state between ticks: a routed turn that arrives after the
-first tick is still recognised as routed, and a rollout Codex moves into
-`archived_sessions` while watched carries on from where it was read instead of
-being read again from the top. One race remains in a rollout that records only
-`token_count`: if the count lands one tick before the gateway appends its row,
-nothing can claim it yet, so the rollout bills the call, and the row that arrives
-later is kept out of the ledger so that it is not billed again. That call then
-shows under Codex until `watch` is restarted, where a report would show it under
-Copilot or Claude. Rollouts with `token_usage_record` carry the response id, so
-they are not affected.
+each rollout's parser state between ticks, and replays on the reloaded ledger what
+the rollout already decided (rows it claimed, calls it billed itself): a routed
+turn that arrives after the first tick is still recognised as routed, and a
+rollout Codex moves into `archived_sessions` while watched carries on from where
+it was read instead of being read again from the top. Each tick applies the same
+`--account` and `--project` filters as the first read, and the window stays open
+for everything written while `watch` runs. One race remains: if a routed call
+lands in the rollout one tick before the gateway appends its row, the rollout
+bills it (a record as `(gateway-routed, not in this Mac's ledger)`), and the row
+that arrives later is kept out of the ledger so that it is not billed again. That
+call then shows under Codex until `watch` is restarted, where a report would show
+it under Copilot or Claude.
 
-**Several Macs.** A routed turn is counted where the gateway served it, by that
-Mac's Spendwatch, under the provider's account. Every Mac whose Spendwatch loads a
-ledger — even an empty one — drops the `resp_gl_*` turns from its Codex report. So
-the serving Mac has to run Spendwatch, or those turns vanish; and
-`SPENDWATCH_GATEWAY_SOURCE`, the gateway root and the Spendwatch version have to be
-the same on every Mac, or a Mac that reads without the ledger counts the routed
-turns in Codex while the serving Mac counts them again. A rollout that records only
-`token_count` on a Mac other than the serving one cannot claim a ledger row it
-cannot see, so such a call is billed on both Macs.
+**Several Macs.** A routed turn is counted on the Mac whose gateway served it, by
+that Mac's Spendwatch, under the provider's account. Another Mac's rollouts drop a
+`resp_gl_*` call only when their own ledger holds its row, which is the case only
+when that Mac's own gateway served it. A Codex client whose turns another Mac's
+gateway served cannot prove that a ledger counted them, so it keeps them, labelled
+`(gateway-routed, not in this Mac's ledger)`, and says so under the report. Two
+consequences follow, and both are visible in the report rather than silent:
 
-**Turning the ledger off rewrites history, unless you archive.** A month read with
-the ledger counts routed turns in the Claude and Copilot tabs and drops them from
-Codex. Read without it (`SPENDWATCH_GATEWAY_SOURCE=off`, or a config with no
-`gateway` root), the same month counts them in Codex too, while an archive that
-already holds the ledger's Claude and Copilot rows would count them again. The
-spend archives therefore record whether the ledger was read (`ledger` on
-`spend_month` and `spend_report`) and refuse to replace a month that was read with
-it by a read without it; its daily token rows are left alone too, because they
-would otherwise be raised to the larger figure. While the source is off, every
-month already archived with the ledger therefore stops updating, for every source,
-until it is read with the ledger again, which replaces it as usual. An archive
-written before this column is treated as read without the ledger.
+- if the serving Mac also runs Spendwatch, those turns appear twice in a merged
+  report: under that Mac's Copilot or Claude tab, and under the client's Codex tab
+  with that label;
+- if it does not, the client's Codex tab is the only place they appear.
+
+The rollout records no serving host, so Spendwatch cannot tell those cases apart
+on its own. A rollout that records only `token_count` is matched against this
+Mac's ledger by model, tokens and time; on any other Mac it is counted from the
+rollout, unlabelled, and the report says that such rollouts were found.
+`SPENDWATCH_GATEWAY_SOURCE`, the gateway root and the Spendwatch version should be
+the same on every Mac.
+
+**The spend archive keeps routed turns in one source.** A month read with this
+Mac's ledger counts the routed turns it holds in the Claude and Copilot reports
+and drops them from Codex; read without it they stay in Codex. Each archived
+report records whether the ledger was read (`ledger`) and how many routed calls it
+billed through it (`routed_calls`, in `spend_month` and `spend_report`):
+
+- a read that billed fewer routed calls never replaces one that billed more — the
+  source switched off, a ledger month pruned after 13 months, or a rollout that
+  vouched for a telemetry row gone — and its daily token rows are left alone;
+- the first time a month's Codex, Claude and Copilot reports take a read with
+  routed calls while any of them holds a read without the ledger, they change
+  together or not at all. All of them must offer a fuller read; a source the run
+  did not read (a `--agents` subset, or one that reported nothing) holds them
+  back, unless it is Claude or Copilot and its own read shows that it routed
+  nothing. Until then the month keeps its earlier reads, daily rows included;
+- after that, each source keeps its fullest read as every month does. A Claude
+  month whose oldest transcripts have rotated keeps its earlier read, and with it
+  the routed Claude turns that read held; routed turns billed after that read are
+  not added to it, just as its native turns are not.
+
+An archive written before these columns is treated as read without the ledger,
+with no routed calls.
 
 ## What to automate
 
@@ -721,13 +760,15 @@ There is no automatic device collection.
 - `src/projects.ts` — one project name per working directory, shared by every parser
 - `src/parse.ts` — Claude JSONL → events; `commandPath()` deep shell breakdown
 - `src/codex.ts` — Codex rollout JSONL → same events
-- `src/gateway.ts` — subscription gateway ledger: dedupe, claims, and per-vendor rows
+- `src/gateway.ts` — subscription gateway ledger: dedupe, claims, coverage, and per-account rows
+- `src/gateway-config.ts` — where the gateway keeps its ledger, and which login each provider bills
 - `src/grok.ts` — Grok ACP session updates → same events
 - `src/sources.ts` — agent registry: log locations, discovery, account detection, config roots
 - `src/aggregate.ts` — per-session fold → leaderboards + per-account + drill-down samples
 - `src/periods.ts` / `src/report-window.ts` — calendar-month windows and imported-month filing
 - `src/monthly.ts` — one pass over the transcripts, split per month
 - `src/spend-history.ts` — per-month spend archive read/write
+- `src/spend-report-archive.ts` / `src/archive-ledger.ts` — fullest-read rules, and the month the gateway ledger takes over
 - `src/db.ts` — SQLite snapshot writer (`bun:sqlite`)
 - `src/capacity-db.ts` — live quota history and adaptive chart queries
 - `src/capacity-archive.ts` / `src/capacity-cli.ts` — verified retention and restore

@@ -99,6 +99,14 @@ describe("portable reports", () => {
     expect(merged.observedCalls).toBe(43);
   });
 
+  test("sums the routed calls and keeps the ledger flag of any report it merges", () => {
+    const studio = { ...report("studio:codex"), routedCalls: 4, ledger: true };
+    const macbook = { ...report("macbook:codex"), routedCalls: 1 };
+    expect(mergeReports([studio, macbook])).toMatchObject({ routedCalls: 5, ledger: true });
+    const plain = mergeReports([report("macbook:codex")]);
+    expect([plain.routedCalls, plain.ledger]).toEqual([undefined, undefined]);
+  });
+
   test("keeps the same email separate by service unless email grouping is requested", () => {
     const codex = {
       ...report("studio:codex"),

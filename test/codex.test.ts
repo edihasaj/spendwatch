@@ -43,6 +43,9 @@ const record = (responseId: string, usage: Row): Row => ({
   payload: { response_id: responseId, usage },
 });
 
+/** A ledger stub that holds billed rows for exactly these response ids, and nothing to claim. */
+const ledgerHolding = (...ids: string[]): GatewayIndex => ({ claim: () => false, covers: (id) => ids.includes(id) });
+
 const count = (last: Row, total: Row = last): Row => ({
   type: "event_msg",
   payload: { type: "token_count", info: { last_token_usage: last, total_token_usage: total } },
@@ -66,8 +69,7 @@ describe("codex token_usage_record parsing", () => {
   });
 
   test("a record skipped by the gateway marks the file as record-backed all the same", () => {
-    const ctx = newCodexCtx();
-    ctx.skipMarked = true;
+    const ctx = newCodexCtx(ledgerHolding("resp_gl_1"));
     const events = collect([
       meta("subscription_gateway"),
       record("resp_gl_1", { input_tokens: 10, cached_input_tokens: 0, output_tokens: 1 }),
@@ -78,6 +80,14 @@ describe("codex token_usage_record parsing", () => {
     expect(observed(events)).toHaveLength(1);
     const rest = collect([count({ input_tokens: 100, cached_input_tokens: 0, output_tokens: 5 })], ctx);
     expect(apis(rest)).toEqual([]);
+  });
+});
+
+describe("codex token_usage_record fields", () => {
+  test("reads the cache fields Codex writes, and no Anthropic-style aliases", () => {
+    const [call] = apis(collect([meta(), record("resp_a", { input_tokens: 1000, cache_read_input_tokens: 400, cache_creation_input_tokens: 100, output_tokens: 50 })]));
+    // Codex names them cached_input_tokens and cache_write_input_tokens; other names are not its usage.
+    expect(call!.usage).toEqual({ input: 1000, output: 50, cacheRead: 0, cache5m: 0, cache1h: 0 });
   });
 });
 
@@ -113,13 +123,25 @@ describe("codex observed calls", () => {
 describe("codex subscription_gateway routing", () => {
   test("a marked response is skipped under subscription_gateway and kept elsewhere", () => {
     const marked = record("resp_gl_9", { input_tokens: 500, cached_input_tokens: 0, output_tokens: 25 });
-    const ctx = newCodexCtx();
-    ctx.skipMarked = true;
-    expect(apis(collect([meta("subscription_gateway"), marked], ctx))).toEqual([]);
+    const events = collect([meta("subscription_gateway"), marked], newCodexCtx(ledgerHolding("resp_gl_9")));
+    expect(apis(events)).toEqual([]);
+    // The ledger bills it, so the report knows one call was routed.
+    expect(events.filter((e) => e.t === "routed")).toEqual([{ t: "routed", sessionId: "cx1", id: "resp_gl_9", ts: MS }]);
     // The same marked id is an ordinary API call when nothing routed it.
-    const other = newCodexCtx();
-    other.skipMarked = true;
-    expect(apis(collect([meta("openai"), marked], other))).toHaveLength(1);
+    expect(apis(collect([meta("openai"), marked], newCodexCtx(ledgerHolding("resp_gl_9"))))).toHaveLength(1);
+  });
+
+  test("a marked response this Mac's ledger does not hold is kept, labelled, and remembered for a later ledger", () => {
+    const marked = record("resp_gl_9", { input_tokens: 500, cached_input_tokens: 0, output_tokens: 25 });
+    // Another Mac's gateway served it, or this ledger's month is gone: nothing here proves a ledger bills it.
+    const ctx = newCodexCtx(ledgerHolding("resp_gl_other"));
+    const [call] = apis(collect([meta("subscription_gateway"), marked], ctx));
+    expect(call).toMatchObject({ requestId: "resp_gl_9", model: "gpt-5.5 (gateway-routed, not in this Mac's ledger)" });
+    expect(call!.usage).toEqual({ input: 500, output: 25, cacheRead: 0, cache5m: 0, cache1h: 0 });
+    expect(ctx.unconfirmed).toBe(1);
+    expect(ctx.decisions).toEqual([{ kind: "billed", model: "gpt-5.5", input: 500, output: 25, ts: MS, responseId: "resp_gl_9" }]);
+    // With the gateway source off there is no ledger to ask: an ordinary call, unlabelled.
+    expect(apis(collect([meta("subscription_gateway"), marked]))[0]!.model).toBe("gpt-5.5");
   });
 
   test("the gateway index skips matching usage and keeps differing usage", () => {
@@ -147,6 +169,22 @@ describe("codex subscription_gateway routing", () => {
 });
 
 describe("codex session_meta", () => {
+  test("a forked rollout keeps its own meta: the parent's, copied in after it, does not decide the provider", () => {
+    const own = { type: "session_meta", payload: { id: "fork-1", cwd: "/Users/dev/Projects/sample-app", model: "claude-opus-5-5", model_provider: "subscription_gateway" } };
+    const parent = { type: "session_meta", payload: { id: "parent-1", cwd: "/Users/dev/Projects/other", model: "gpt-5.5", model_provider: "openai" } };
+    const ctx = newCodexCtx(ledgerHolding("resp_gl_f1"));
+    const events = collect([own, parent, record("resp_gl_f1", { input_tokens: 300, cached_input_tokens: 0, output_tokens: 9 })], ctx);
+    // The ledger bills the fork's routed call, so the rollout drops it.
+    expect(apis(events)).toEqual([]);
+    expect([ctx.modelProvider, ctx.model, ctx.sid]).toEqual(["subscription_gateway", "claude-opus-5-5", "fork-1"]);
+    expect(events.filter((e) => e.t === "meta")).toHaveLength(1);
+    // The reverse: a native fork of a routed parent never asks the ledger about its own calls.
+    const native = newCodexCtx(ledgerHolding("resp_gl_n1"));
+    const kept = collect([{ ...parent, payload: { ...parent.payload, id: "fork-2" } }, { ...own, payload: { ...own.payload, id: "parent-2" } },
+      record("resp_gl_n1", { input_tokens: 300, cached_input_tokens: 0, output_tokens: 9 })], native);
+    expect(apis(kept).map((e) => e.model)).toEqual(["gpt-5.5"]);
+  });
+
   test("a meta line without a model keeps the model already known", () => {
     const ctx = newCodexCtx();
     const events = collect([
