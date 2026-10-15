@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
-import { appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Aggregator } from "../src/aggregate";
 import { build, pollWatched, watchPeriod, type BuildOptions, type Built } from "../src/build";
@@ -234,6 +234,25 @@ describe("a watch tick that changes what the ledger bills without changing the l
     writeFileSync(w.ledger, ledgerRow("1", w.now - 50_000).replace('"complete"', '"partial"'));
     expect(w.tick()).toBeGreaterThan(0);
     expect(w.report("copilot").models.map((m) => m.model)).toEqual(["copilot/gpt (partial credits)"]);
+  });
+});
+
+describe("a ledger the gateway rewrites in place", () => {
+  test("shows a rewrite that keeps the file's length, which only its modification time gives away", () => {
+    const w = watched();
+    // The file was last touched long ago, so a rewrite now cannot share its modification time.
+    utimesSync(w.ledger, 1_700_000_000, 1_700_000_000);
+    w.tick();
+    expect(w.report("copilot").totalCost).toBeCloseTo(0.01, 9);
+    // Same call, same row count, same byte length: only the credits changed (1e9 to 2e9 nano-AIU).
+    const before = readFileSync(w.ledger, "utf8");
+    const after = before.replace("1000000000", "2000000000");
+    expect(after).toHaveLength(before.length);
+    writeFileSync(w.ledger, after);
+    expect(w.tick()).toBeGreaterThan(0);
+    expect(w.report("copilot").totalCost).toBeCloseTo(0.02, 9);
+    // And once it is shown, nothing more to draw.
+    expect(w.tick()).toBe(0);
   });
 });
 
