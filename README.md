@@ -345,8 +345,8 @@ stored quota freshness on every Capacity request, so a snapshot becomes
 pace forecasts and recommendations without contacting providers or adding
 history samples. The displayed update time remains the stored snapshot's time.
 Session-equivalent forecasts use the newest 5,000 paired history samples. The
-query selects matching timestamps before aggregation, so large histories do not
-block dashboard refreshes and newer unmatched windows do not hide older pairs.
+query selects matching timestamps before aggregation, avoiding a full-history
+aggregation on refresh. Newer unmatched windows do not hide older pairs.
 Background alerts are opt-in per browser. The server registers a service worker
 and sends one weekly notification per account at 30%, 15%, 10%, 5%, and 0%.
 A large usage jump produces only the most severe newly crossed threshold, so it
