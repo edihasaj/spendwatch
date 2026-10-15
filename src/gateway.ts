@@ -105,6 +105,15 @@ interface LedgerSource {
   map: ReturnType<typeof providerMap>;
   /** Bytes of each month file already read, up to its last complete line. */
   read: Map<string, number>;
+  /** Each month file's modification time at its last read: a row rewritten in place keeps the length. */
+  mtimes: Map<string, number>;
+}
+
+/** The rows one account bills in one vendor's report. */
+interface Stream {
+  vendor: GatewayVendor;
+  account: string;
+  rows: LedgerRow[];
 }
 
 const streamKey = (vendor: GatewayVendor, account: string): string => `${vendor}\u0000${account}`;
@@ -121,10 +130,13 @@ export class GatewayLedger implements GatewayIndex {
   private readonly byResponse = new Map<string, LedgerRow>();
   /** Account labels, resolved once per load: each one reads a credential file. */
   private readonly labels = new Map<string, string>();
-  /** The rows each account stream bills, once `files` has made the streams. */
-  private readonly streams = new Map<string, LedgerRow[]>();
+  /**
+   * The streams of this read, one per vendor and account the rows held when it was loaded, whichever agents were
+   * asked for: a row that lands later joins one of them or, with none for its account, is left out (see `refresh`).
+   */
+  private readonly streams = new Map<string, Stream>();
   /** Every call the rows hold, by `callKey`. */
-  private readonly calls = new Set<string>();
+  private readonly known = new Map<string, LedgerRow>();
   /** Calls a rollout billed that `adopt` has already seen, so offering one twice never marks a second row. */
   private readonly adopted = new Set<BilledCall>();
   /** The adopted calls no row has matched yet: a row `refresh` finds later is theirs. */
@@ -136,11 +148,18 @@ export class GatewayLedger implements GatewayIndex {
     this.present = present;
     this.authDirectories = authDirectories;
     this.rows = rows.sort((a, b) => a.at - b.at); // oldest first, like a transcript
-    for (const row of this.rows) this.index(row);
+    for (const row of this.rows) {
+      this.index(row);
+      const account = this.accountFor(row);
+      const key = streamKey(row.vendor, account);
+      let stream = this.streams.get(key);
+      if (!stream) this.streams.set(key, (stream = { vendor: row.vendor, account, rows: [] }));
+      stream.rows.push(row);
+    }
   }
 
   private index(row: LedgerRow): void {
-    this.calls.add(callKey(row));
+    this.known.set(callKey(row), row);
     if (billedRow(row) && !this.byResponse.has(row.responseId)) this.byResponse.set(row.responseId, row);
     if (!matchable(row)) return;
     const key = usageKey(row.model, row.input, row.output);
@@ -149,42 +168,82 @@ export class GatewayLedger implements GatewayIndex {
     bucket.splice(firstAtOrAfter(bucket, row.at, true), 0, row);
   }
 
+  /** Takes a row out of the lookups, for the row that replaces it. */
+  private unindex(row: LedgerRow): void {
+    if (this.byResponse.get(row.responseId) === row) this.byResponse.delete(row.responseId);
+    const bucket = this.buckets.get(usageKey(row.model, row.input, row.output));
+    const at = bucket?.indexOf(row) ?? -1;
+    if (at >= 0) bucket!.splice(at, 1);
+  }
+
   /**
    * The rows the gateway appended since the files were read. A read loads the ledger first and the rollouts after,
    * and the gateway appends a call's row just after the response ends, so a rollout line can be newer than the
    * ledger it is checked against; such a call asks for this before it is billed from the rollout. A new row joins
-   * the stream of its account; one whose account has no stream in this read is left out, and so is never covered.
+   * the stream of its account; one whose account had no stream when the ledger was loaded is left out, and so is
+   * never covered. This holds for every vendor, whichever agents were asked for, so a rollout is settled the same
+   * way in a run limited to some agents as in the full one.
    */
   refresh(): void {
     const source = this.source;
-    if (!source || !this.streams.size) return;
+    if (!source) return;
     this.lastRead = Date.now();
     let added = false;
     for (const file of ledgerFiles(source.usage, source.sinceMs - CLAIM_WINDOW_MS)) {
-      const { rows, end } = readRows(file, source.map, source.read.get(file) ?? 0);
+      const { rows, end, mtime } = readRows(file, source.map, source.read.get(file) ?? 0);
       source.read.set(file, end);
-      for (const row of rows) {
-        if (this.calls.has(callKey(row))) continue;
-        const stream = this.streams.get(streamKey(row.vendor, this.accountFor(row)));
-        if (!stream) continue;
-        this.rows.push(row);
-        stream.push(row);
-        this.index(row);
-        added = true;
-      }
+      if (mtime !== undefined) source.mtimes.set(file, mtime);
+      for (const row of rows) if (this.admit(row)) added = true;
     }
     // A rollout of this read may have billed a call before its row existed: the row is that call's, not a second bill.
     if (added) for (const call of this.unmatched) if (this.take(call)) this.unmatched.delete(call);
   }
 
+  /** Takes in a row that landed after the load; false when it changes nothing. */
+  private admit(row: LedgerRow): boolean {
+    const known = this.known.get(callKey(row));
+    if (known) return this.supersede(known, row);
+    const stream = this.streams.get(streamKey(row.vendor, this.accountFor(row)));
+    if (!stream) return false;
+    this.rows.push(row);
+    stream.rows.push(row);
+    this.index(row);
+    return true;
+  }
+
+  /**
+   * The gateway's own row for a call the ledger holds only as the telemetry echo of its history import takes the
+   * echo's place, as a fresh load would resolve the pair (`dedupe`): it is the row that carries the charge. It keeps
+   * what a rollout already did with the echo.
+   */
+  private supersede(known: LedgerRow, row: LedgerRow): boolean {
+    if (known.origin !== TELEMETRY_ORIGIN || row.origin !== GATEWAY_ORIGIN) return false;
+    // A rollout that claimed the echo dropped its own copy of the call: only a row that bills it may take over.
+    if (known.claimed && !billedRow(row)) return false;
+    const account = this.accountFor(known);
+    if (known.vendor !== row.vendor || account !== this.accountFor(row)) return false;
+    const stream = this.streams.get(streamKey(row.vendor, account));
+    const inStream = stream?.rows.indexOf(known) ?? -1;
+    const inRows = this.rows.indexOf(known);
+    if (!stream || inStream < 0 || inRows < 0) return false;
+    row.claimed = known.claimed;
+    row.rolloutBilled = known.rolloutBilled;
+    this.unindex(known);
+    stream.rows[inStream] = row;
+    this.rows[inRows] = row;
+    this.index(row);
+    return true;
+  }
+
   /**
    * What the ledger files held when last read, and how many of a stream's rows bill. Unchanged means nothing a
-   * `watch` tick would show has changed, so the reader need not fold the stream again.
+   * `watch` tick would show has changed, so the reader need not fold the stream again. A file the gateway rewrote
+   * in place keeps its length, so its modification time counts too.
    */
   private version(rows: LedgerRow[]): string {
     let bytes = 0;
     for (const end of this.source?.read.values() ?? []) bytes += end;
-    return `${bytes}:${rows.length}:${rows.filter(counts).length}`;
+    return `${bytes}:${[...(this.source?.mtimes.values() ?? [])].join(",")}:${rows.length}:${rows.filter(counts).length}`;
   }
 
   /** When the ledger files were last read, by `load` or by `refresh`. */
@@ -265,17 +324,8 @@ export class GatewayLedger implements GatewayIndex {
    * rollout has had its chance to claim what the ledger and the transcript share.
    */
   files(vendor: GatewayVendor): SourceFile[] {
-    const byAccount = new Map<string, LedgerRow[]>();
-    for (const row of this.rows) {
-      if (row.vendor !== vendor) continue;
-      const account = this.accountFor(row);
-      let rows = byAccount.get(account);
-      if (!rows) byAccount.set(account, (rows = []));
-      rows.push(row);
-    }
     const primary = this.label(vendor);
-    for (const [account, rows] of byAccount) this.streams.set(streamKey(vendor, account), rows);
-    return [...byAccount].map(([account, rows]) => ({
+    return [...this.streams.values()].filter((stream) => stream.vendor === vendor).map(({ account, rows }) => ({
       path: join(this.stateDir, "usage"),
       // The usual account keeps the plain key; another account gets its own stream.
       key: account === primary ? `gateway:${vendor}` : `gateway:${vendor}:${account}`,
@@ -320,10 +370,11 @@ export class GatewayLedger implements GatewayIndex {
     const usage = dir ? join(dir, "usage") : "";
     if (!dir || !isDirectory(usage)) return new GatewayLedger([], dir ?? config.directory, false, config.authDirectories);
     const map = providerMap();
-    const source: LedgerSource = { usage, sinceMs: opts.sinceMs, map, read: new Map() };
+    const source: LedgerSource = { usage, sinceMs: opts.sinceMs, map, read: new Map(), mtimes: new Map() };
     const rows = ledgerFiles(usage, opts.sinceMs - CLAIM_WINDOW_MS).flatMap((file) => {
-      const { rows, end } = readRows(file, map);
+      const { rows, end, mtime } = readRows(file, map);
       source.read.set(file, end);
+      if (mtime !== undefined) source.mtimes.set(file, mtime);
       return rows;
     });
     return new GatewayLedger(dedupe(rows), dir, true, config.authDirectories, source);

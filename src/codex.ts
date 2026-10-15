@@ -118,14 +118,17 @@ function billHere(ctx: CodexCtx, call: PendingCall): Event {
 export function* settleRouted(ctx: CodexCtx, final = false, now = Date.now()): Generator<Event> {
   const waiting = ctx.pending;
   if (!waiting?.length) return;
+  const due = (call: PendingCall): boolean => final || !(now - call.ts <= CLAIM_WINDOW_MS);
   // A read about to bill calls newer than its ledger lets the ledger catch up first: their rows may have landed since.
-  if (final && waiting.some((call) => call.ts >= (ctx.gateway?.readAt ?? Infinity) - CLAIM_WINDOW_MS)) ctx.gateway?.refresh?.();
+  // A call that has waited out its window while the file was still being read is about to be billed too, so a read
+  // that takes longer than the window checks as well as one that ends.
+  if (waiting.some((call) => due(call) && call.ts >= (ctx.gateway?.readAt ?? Infinity) - CLAIM_WINDOW_MS)) ctx.gateway?.refresh?.();
   ctx.pending = [];
   for (const call of waiting) {
     if (ledgerBills(ctx, call)) {
       const id = call.responseId ?? `count${(ctx.routedN = (ctx.routedN ?? 0) + 1)}`;
       yield { t: "routed", sessionId: ctx.sid, id, ts: call.ts };
-    } else if (final || !(now - call.ts <= CLAIM_WINDOW_MS)) {
+    } else if (due(call)) {
       yield billHere(ctx, call);
     } else {
       ctx.pending.push(call);
