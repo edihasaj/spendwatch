@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Aggregator } from "../src/aggregate";
 import { build, pollWatched, watchPeriod, type BuildOptions } from "../src/build";
@@ -129,6 +129,127 @@ describe("reading a native Copilot session store", () => {
     renameSync(`${w.path}.away`, w.path);
     for (const file of files) expect(reader.poll(file)).toBeGreaterThan(0);
     expect(agg.report()).toMatchObject({ apiCalls: 2, sessions: 2 });
+    w.db.close();
+  });
+});
+
+describe("a Copilot session store that has not been written to for a while", () => {
+  /** Makes the store look as if it was last written a minute ago, which is what lets a tick trust that it is as it was. */
+  const settle = (path: string): void => {
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(path, old, old);
+  };
+  const reads = (spy: { mock: { calls: unknown[][] } }, what: string): number => spy.mock.calls.filter(([sql]) => String(sql).includes(what)).length;
+  const withSpy = <T,>(body: (spy: ReturnType<typeof spyOn>) => T): T => {
+    const spy = spyOn(Database.prototype, "query");
+    try { return body(spy as ReturnType<typeof spyOn>); } finally { spy.mockRestore(); }
+  };
+
+  test("is not read at all by a tick that finds it as it was: not its sessions, not their rows", () => {
+    const w = watched();
+    w.add(1, "one"); w.add(2, "two");
+    settle(w.path);
+    withSpy((spy) => {
+      w.tick();
+      expect(reads(spy, "FROM sessions")).toBe(1);
+      expect(reads(spy, "FROM assistant_usage_events WHERE session_id")).toBe(1);
+      spy.mockClear();
+      expect(w.tick()).toBe(0);
+      expect(w.tick()).toBe(0);
+      expect(spy.mock.calls.length).toBe(0);
+      expect(w.report()).toMatchObject({ apiCalls: 2, sessions: 2 });
+    });
+    w.db.close();
+  });
+
+  test("is read again when a request is added, and a charge finalized in place shows too", () => {
+    const w = watched();
+    w.add(1, "one", 0); w.add(2, "two");
+    settle(w.path);
+    w.tick();
+    w.add(3, "one");
+    expect(w.tick()).toBeGreaterThan(0);
+    expect(w.report().apiCalls).toBe(3);
+    settle(w.path);
+    expect(w.tick()).toBe(0);
+    w.db.exec("UPDATE assistant_usage_events SET total_nano_aiu=3000000000 WHERE id=1");
+    expect(w.tick()).toBeGreaterThan(0);
+    expect(w.report().totalCost).toBeCloseTo(0.05, 9);
+    w.db.close();
+  });
+
+  test("is read again by a session file polled after the store was written, without a new discovery", () => {
+    const w = watched();
+    w.add(1, "one", 0);
+    settle(w.path);
+    const files = collectCopilot(w.path, 0, "dev");
+    const agg = new Aggregator();
+    const reader = new IncrementalReader(agg);
+    for (const file of files) reader.poll(file);
+    expect(agg.report().totalCost).toBe(0);
+    w.db.exec("UPDATE assistant_usage_events SET total_nano_aiu=3000000000 WHERE id=1");
+    for (const file of files) expect(reader.poll(file)).toBeGreaterThan(0);
+    expect(agg.report().totalCost).toBeCloseTo(0.03, 9);
+    w.db.close();
+  });
+
+  test("is read by a tick that finds only its write-ahead log changed", () => {
+    const w = watched();
+    w.add(1, "one"); w.add(2, "two");
+    const wal = `${w.path}-wal`;
+    writeFileSync(wal, "frames");
+    settle(w.path); settle(wal);
+    w.tick();
+    withSpy((spy) => {
+      expect(w.tick()).toBe(0);
+      expect(spy.mock.calls.length).toBe(0);
+      appendFileSync(wal, "more frames");
+      w.tick();
+      expect(reads(spy, "FROM assistant_usage_events WHERE session_id")).toBe(1);
+    });
+    w.db.close();
+  });
+
+  test("is read by a tick that finds a write in progress, as a rollback journal shows", () => {
+    const w = watched();
+    w.add(1, "one"); w.add(2, "two");
+    settle(w.path);
+    w.tick();
+    writeFileSync(`${w.path}-journal`, "");
+    withSpy((spy) => {
+      w.tick();
+      expect(reads(spy, "FROM assistant_usage_events WHERE session_id")).toBe(1);
+    });
+    w.db.close();
+  });
+
+  test("lists the sessions that fall in the period asked for, not those of another period it was last read for", () => {
+    const w = watched();
+    w.db.prepare("INSERT INTO sessions VALUES (?,?)").run("older", "/workspace/old");
+    w.db.prepare("INSERT INTO assistant_usage_events VALUES (?,?,?,?,?,?,?,?,?,?)").run(50, "older", "claude-sonnet-5", 100, 10, 0, 0, 1, null, "2020-01-01T00:00:00.000Z");
+    w.add(1, "one");
+    settle(w.path);
+    expect(collectCopilot(w.path, Date.parse("2019-01-01"), "dev")).toHaveLength(2);
+    expect(collectCopilot(w.path, Date.parse("2026-01-01"), "dev")).toHaveLength(1);
+    w.db.close();
+  });
+
+  test("after a failed read, the next session tries the batch again instead of scanning the table for itself", () => {
+    const w = watched();
+    w.db.prepare("INSERT INTO sessions VALUES (?,?)").run("three", "/workspace/three");
+    w.add(1, "one"); w.add(2, "two"); w.add(3, "three");
+    const files = collectCopilot(w.path, 0, "dev");
+    const agg = new Aggregator();
+    const reader = new IncrementalReader(agg);
+    renameSync(w.path, `${w.path}.away`);
+    expect(reader.poll(files[0]!)).toBe(0);
+    renameSync(`${w.path}.away`, w.path);
+    withSpy((spy) => {
+      expect(reader.poll(files[1]!)).toBeGreaterThan(0);
+      expect(reader.poll(files[2]!)).toBeGreaterThan(0);
+      // One scan read the rest of the batch for both.
+      expect(reads(spy, "FROM assistant_usage_events WHERE session_id")).toBe(1);
+    });
     w.db.close();
   });
 });

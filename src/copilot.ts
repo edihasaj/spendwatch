@@ -1,6 +1,6 @@
 // Read only the CLI's usage ledger. Session transcripts and credentials stay local.
 import { Database } from "bun:sqlite";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { homedir, platform } from "node:os";
 import { projectFromCwd } from "./projects";
@@ -23,6 +23,39 @@ interface UsageRow {
 
 /** Sessions whose usage rows are read together. */
 const BATCH = 50;
+
+/**
+ * A store written less than this long ago may be written again within the file system's timestamp granularity, which
+ * a size and a modification time cannot tell apart; it is read as often as it is asked for.
+ */
+const SETTLED_MS = 2_000;
+
+/** What an idle `watch` tick needs of a store it has read: while the store is as it was, nothing in it is read again. */
+interface Read {
+  stamp: string;
+  sinceMs: number;
+  selection: string;
+  sessions: SessionRow[];
+  /** The version of each session's rows, once read. */
+  versions: Map<string, string>;
+}
+const reads = new Map<string, Read>();
+
+/**
+ * The size and modification time of the store and its write-ahead log, or undefined when they cannot vouch that the
+ * store is unchanged: it was written a moment ago, or a write is in progress (a rollback journal exists).
+ */
+function stampOf(path: string): string | undefined {
+  const parts: string[] = [];
+  for (const file of [path, `${path}-wal`]) {
+    try {
+      const stat = statSync(file);
+      if (Date.now() - stat.mtimeMs < SETTLED_MS) return undefined;
+      parts.push(`${stat.size}:${stat.mtimeMs}`);
+    } catch { parts.push("-"); }
+  }
+  return existsSync(`${path}-journal`) ? undefined : parts.join("|");
+}
 
 const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
 
@@ -84,19 +117,30 @@ function timestamp(raw: string): number {
 export function collectCopilot(root: string, sinceMs: number, account?: string): SourceFile[] {
   const path = root.endsWith(".db") ? root : join(root, "session-store.db");
   if (!existsSync(path)) return [];
+  const stamp = stampOf(path);
+  const before = reads.get(path);
+  // A store as it was at the last discovery has the same sessions and the same rows, so a tick that finds it so reads nothing.
+  const same = stamp !== undefined && before?.stamp === stamp && before.sinceMs === sinceMs ? before : undefined;
   let db: Database | undefined;
   try {
-    db = new Database(path, { readonly: true, create: false });
-    const columns = new Set(db.query<{ name: string }, []>("PRAGMA table_info(assistant_usage_events)").all().map((row) => row.name));
-    if (!["id", "session_id", "model", "created_at"].every((column) => columns.has(column))) return [];
-    const optional = ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "total_nano_aiu", "token_details_json"];
-    const selection = optional.map((column) => columns.has(column) ? column : `NULL AS ${column}`).join(", ");
-    const sessions = db.query<SessionRow, [string]>(`
-      SELECT s.id, s.cwd FROM sessions s WHERE EXISTS (
-        SELECT 1 FROM assistant_usage_events u WHERE u.session_id=s.id
-        AND julianday(u.created_at) >= julianday(?)
-      ) ORDER BY s.id
-    `).all(new Date(sinceMs).toISOString());
+    let read = same;
+    if (!read) {
+      db = new Database(path, { readonly: true, create: false });
+      const columns = new Set(db.query<{ name: string }, []>("PRAGMA table_info(assistant_usage_events)").all().map((row) => row.name));
+      if (!["id", "session_id", "model", "created_at"].every((column) => columns.has(column))) return [];
+      const optional = ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "total_nano_aiu", "token_details_json"];
+      const found = db.query<SessionRow, [string]>(`
+        SELECT s.id, s.cwd FROM sessions s WHERE EXISTS (
+          SELECT 1 FROM assistant_usage_events u WHERE u.session_id=s.id
+          AND julianday(u.created_at) >= julianday(?)
+        ) ORDER BY s.id
+      `).all(new Date(sinceMs).toISOString());
+      read = { stamp: stamp ?? "", sinceMs, selection: optional.map((column) => columns.has(column) ? column : `NULL AS ${column}`).join(", "), sessions: found, versions: new Map() };
+      if (stamp !== undefined) reads.set(path, read);
+      else reads.delete(path);
+    }
+    const { selection, sessions, versions } = read;
+    const stored = read;
     // Every read opens the store afresh: the CLI keeps writing to it while Spendwatch watches. The table has no index
     // on the session, so each read scans all of it: a session's rows are read together with those of the next
     // `BATCH - 1` sessions, once per discovery, and each file takes its own when it is polled.
@@ -118,8 +162,10 @@ export function collectCopilot(root: string, sinceMs: number, account?: string):
     const usageOf = (index: number): UsageRow[] => {
       const first = index - (index % BATCH);
       if (!loaded.has(first)) {
-        loaded.add(first);
         for (const [id, rows] of readRows(ids.slice(first, first + BATCH))) waiting.set(id, rows);
+        // Only a batch that was read is loaded: after a failed read the next session tries the batch again, rather than
+        // scanning the whole table for itself alone.
+        loaded.add(first);
       }
       const rows = waiting.get(ids[index]!);
       waiting.delete(ids[index]!);
@@ -128,6 +174,9 @@ export function collectCopilot(root: string, sinceMs: number, account?: string):
     };
     return sessions.map((session, index): SourceFile => {
       const project = session.cwd ? projectFromCwd(session.cwd) : "?";
+      function* lazyEvents(id: string): Generator<Event> {
+        yield* eventsOf(readRows([id]).get(id)!);
+      }
       function* eventsOf(rows: UsageRow[]): Generator<Event> {
         yield { t: "meta", sessionId: session.id, project, ts: 0 };
         for (const row of rows) {
@@ -146,9 +195,17 @@ export function collectCopilot(root: string, sinceMs: number, account?: string):
         // unchanged folds nothing and draws nothing. A finalized charge updates a row in place, so the whole row
         // counts, not only how many there are. A store that cannot be read now is skipped until the next tick.
         snapshot: () => {
+          // A store unchanged since the version was taken has the same rows: they are read only if a reader that has
+          // not folded this version asks for the events. A store written since, or a moment ago, is read again.
+          const current = stampOf(path);
+          const unchanged = current !== undefined && current === stored.stamp;
+          const known = unchanged ? versions.get(session.id) : undefined;
+          if (known !== undefined) return { version: known, events: lazyEvents(session.id) };
           let rows: UsageRow[];
           try { rows = usageOf(index); } catch { return undefined; }
-          return { version: `${Bun.hash(JSON.stringify(rows))}`, events: eventsOf(rows) };
+          const version = `${Bun.hash(JSON.stringify(rows))}`;
+          if (unchanged) versions.set(session.id, version);
+          return { version, events: eventsOf(rows) };
         },
       };
     });
