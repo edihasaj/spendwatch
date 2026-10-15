@@ -13,6 +13,7 @@ interface StreamState {
   sidechain: boolean;
   model?: string;
   observed: number; // calls as the agent counted them, repeats included
+  routed: Set<string>; // gateway-routed calls this read billed through the ledger; ids, because the ledger is re-read in watch
   nCalls: number;
   callIdx: Map<string, number>; // requestId -> 0-based call index
   currentPromptKey?: string;
@@ -92,8 +93,14 @@ export interface Report {
   /** Calls as the agent counted them. Absent on reports written before this existed. */
   observedCalls?: number;
   /**
-   * True when the gateway ledger was read for this report, so routed turns were counted from it once.
-   * The archive never lets a read without the ledger replace a month that was read with it.
+   * Gateway-routed calls whose bill this report assigned through the gateway ledger: for Codex, the rollout
+   * copies it dropped because a ledger row bills them; for Claude and Copilot, the ledger rows it counted.
+   * The archive never lets a read that routed fewer calls replace one that routed more. Absent when none.
+   */
+  routedCalls?: number;
+  /**
+   * True when this Mac's gateway ledger was read for this report, so the routed turns it holds were counted from
+   * it once. The archive uses it to recognise the month the ledger takes over (see archive-ledger.ts).
    */
   ledger?: boolean;
   sessions: number;
@@ -138,6 +145,7 @@ export class Aggregator {
         sessionId: "?",
         sidechain: fileKey.includes("agent-"),
         observed: 0,
+        routed: new Set(),
         nCalls: 0,
         callIdx: new Map(),
         toolUse: new Map(),
@@ -192,6 +200,10 @@ export class Aggregator {
         s.observed++;
         return;
       }
+      case "routed": {
+        s.routed.add(e.id);
+        return;
+      }
       case "toolresult": {
         const tu = s.toolUse.get(e.id);
         if (tu) s.results.push({ name: tu.name, tokens: estTokens(e.chars), idx: tu.idx, promptKey: tu.promptKey, sub: tu.sub, deep: tu.deep, detail: tu.detail, error: e.error, exit: e.exit });
@@ -229,12 +241,17 @@ export class Aggregator {
     let totalTokens = 0;
     let apiCalls = 0;
     let observedCalls = 0;
+    let routedCalls = 0;
     let sinceTs = Infinity;
 
     for (const s of this.streams.values()) {
       // Streams from parsers that never emit `observed` (Claude, Grok, pi) still
-      // know how many calls they folded, so fall back to those.
-      observedCalls += s.observed || s.usage.size;
+      // know how many calls they folded, so fall back to those — and to the routed calls a
+      // rollout handed to the ledger, which it made all the same (a ledger row is both).
+      let routedOnly = 0;
+      for (const id of s.routed) if (!s.usage.has(id)) routedOnly++;
+      observedCalls += s.observed || s.usage.size + routedOnly;
+      routedCalls += s.routed.size;
       sessions.add(s.sessionId);
       sources.add(s.source);
       let acc = accounts.get(s.account);
@@ -354,6 +371,7 @@ export class Aggregator {
       totalCost,
       apiCalls,
       observedCalls,
+      ...(routedCalls ? { routedCalls } : {}),
       sessions: sessions.size,
       tools: by([...tools.values()], (t) => t.ctxCost),
       bash: by([...bash.values()], (t) => t.ctxCost),

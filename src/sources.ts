@@ -11,7 +11,7 @@ import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Event } from "./parse";
 import { parseLine } from "./parse";
-import { newCodexCtx, parseCodexLine, type CodexCtx } from "./codex";
+import { newCodexCtx, parseCodexLine, UNCONFIRMED, type CodexCtx } from "./codex";
 import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
 import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
@@ -40,8 +40,11 @@ export interface SourceStatus {
   id: string;
   present: boolean; // logs directory exists
   parseable: boolean; // we can read token usage from it
+  /** Why a source reported nothing; shown only when it did not. */
   note?: string;
-  /** The gateway ledger was read for this source: its routed turns are counted from the ledger once. */
+  /** How some of a source's calls were counted; shown whatever the source reported. Known once its files are read. */
+  warning?: string;
+  /** This Mac's gateway ledger was read for this source: its routed turns are counted from the ledger once. */
   ledger?: boolean;
   /**
    * Read so its rollouts can claim ledger rows, without reporting anything. The gateway's telemetry rows count
@@ -274,16 +277,14 @@ function collectCodex(dir: string, account: string, sinceMs: number, gateway?: G
     if (!path.includes("rollout-")) continue;
     if (!mtimeOk(path, sinceMs)) continue;
     const ctx = newCodexCtx(gateway);
-    // With a ledger loaded, a gateway-marked response is billed there instead.
-    if (gateway) ctx.skipMarked = true;
     // A rollout keeps its identity when Codex moves it into archived_sessions, so a watching reader carries on
     // from its offset instead of reading the file again as a new one.
     files.push({ path, key: `codex:${basename(path)}`, project: "?", source: "codex", account: acct, parse: parseCodexLine, ctx,
       renew: (kept: CodexCtx) => {
         kept.gateway = ctx.gateway;
-        kept.skipMarked = ctx.skipMarked;
-        // The reloaded ledger may now hold rows for calls this rollout already billed on an earlier tick.
-        ctx.gateway?.adopt?.(kept.billed ?? []);
+        // The reloaded ledger has not seen what this rollout already did: rows it claimed, and calls it billed
+        // before their rows existed.
+        ctx.gateway?.replay?.(kept.decisions ?? []);
       } });
   }
   return files;
@@ -341,19 +342,22 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   // rollout and supplies the rows the subscriptions billed on their own.
   // With an explicit config, only a `gateway` root enables it — a config states
   // where logs live, and it may deliberately leave the gateway out.
+  // Loaded even when this Mac has no ledger: a rollout's gateway-marked call that no ledger here vouches for is
+  // then kept and labelled, never dropped (see codex.ts). `ledger` says whether a ledger was actually read.
   const gatewayRoot = cfg?.find((r) => r.agent === "gateway");
   const gatewayOn = process.env.SPENDWATCH_GATEWAY_SOURCE !== "off" && (cfg ? !!gatewayRoot : true);
   const gateway = gatewayOn ? GatewayIndex.load({ sinceMs: opts.sinceMs, stateDir: gatewayRoot?.path }) : undefined;
+  const ledger = !!gateway?.present;
 
   if (want("claude")) {
     const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project));
-    const ledger = gateway?.files("claude") ?? [];
+    const rows = gateway?.files("claude") ?? [];
     out.push({
       id: "claude",
-      present: claudeRoots.some((r) => existsSync(r.path)) || ledger.length > 0,
+      present: claudeRoots.some((r) => existsSync(r.path)) || rows.length > 0,
       parseable: true,
-      ledger: !!gateway,
-      files: [...files, ...ledger],
+      ledger,
+      files: [...files, ...rows],
     });
   }
 
@@ -378,14 +382,10 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
         seenRollouts.add(rollout);
         return true;
       });
-    const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger: !!gateway, ...(claimOnly ? { claimOnly } : {}), files };
-    // Asked after the rollouts have been read, because only the parser knows what
-    // a rollout recorded: gateway-routed turns with token_count and no record were
-    // deduped against telemetry rows alone.
-    if (gateway && !claimOnly) Object.defineProperty(codex, "note", {
-      get: () => files.some((f) => f.ctx?.modelProvider === "subscription_gateway" && f.ctx?.lastCount !== undefined)
-        ? "gateway-routed rollouts recorded token_count without token_usage_record; those calls were matched against the gateway ledger by model, token counts and time (telemetry rows and billed rows), and a call the ledger does not hold is counted from the rollout"
-        : undefined,
+    const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger, ...(claimOnly ? { claimOnly } : {}), files };
+    // Asked after the rollouts have been read, because only the parser knows what a rollout recorded.
+    if (gateway && !claimOnly) Object.defineProperty(codex, "warning", {
+      get: () => gatewayWarning(files.map((f) => f.ctx as CodexCtx)),
       enumerable: true,
       configurable: true,
     });
@@ -409,10 +409,10 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   if (want("copilot")) {
     const roots = cfg ? cfg.filter((r) => r.agent === "copilot") : defaultCopilotRoots().map((path) => ({ agent: "copilot", path, account: undefined }));
     const files = roots.flatMap((r) => collectCopilot(r.path, opts.sinceMs, r.account));
-    const ledger = gateway?.files("copilot") ?? [];
-    const all = [...files, ...ledger];
-    const present = roots.some((r) => existsSync(r.path)) || ledger.length > 0;
-    out.push({ id: "copilot", present, parseable: all.length > 0, ledger: !!gateway, files: all,
+    const rows = gateway?.files("copilot") ?? [];
+    const all = [...files, ...rows];
+    const present = roots.some((r) => existsSync(r.path)) || rows.length > 0;
+    out.push({ id: "copilot", present, parseable: all.length > 0, ledger, files: all,
       note: present && !all.length ? "no readable per-request usage for this period" : undefined });
   }
 
@@ -426,6 +426,17 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   return out;
 }
 
+/** What the rollouts' gateway-routed calls need said about how they were counted, if anything. */
+function gatewayWarning(contexts: CodexCtx[]): string | undefined {
+  const routed = contexts.filter((ctx) => ctx?.modelProvider === "subscription_gateway");
+  // No count here: these files can reach outside the report's window, and the labelled model rows carry the figures.
+  const notes = [
+    routed.some((ctx) => ctx.unconfirmed) ? `some gateway-routed calls in these rollouts had no row in this Mac's gateway ledger, so they are counted under Codex as "<model> (${UNCONFIRMED})"; if another Mac's gateway served them and that Mac runs Spendwatch, they are counted there as well` : "",
+    routed.some((ctx) => ctx.lastCount !== undefined) ? "gateway-routed rollouts recorded token_count without token_usage_record; those calls were matched against this Mac's gateway ledger by model, token counts and time, and a call it does not hold is counted from the rollout" : "",
+  ].filter(Boolean);
+  return notes.length ? notes.join("; ") : undefined;
+}
+
 /**
  * Rollouts must be read before the gateway ledger is, so every claim a transcript
  * can make is already taken when its gateway rows are folded. Reader order is
@@ -435,17 +446,3 @@ export function pollOrder(statuses: SourceStatus[]): SourceStatus[] {
   return [...statuses].sort((a, b) => Number(a.id !== "codex") - Number(b.id !== "codex"));
 }
 
-/**
- * One watch tick: re-read what each discovered file appended since the last tick. Files are matched to
- * their reader by source, and every reader keeps its parsers' state between ticks. Returns the bytes
- * (or ledger events) consumed.
- */
-export function pollWatched(readers: Map<string, { reader: { poll(file: SourceFile): number } }>, statuses: SourceStatus[]): number {
-  let changed = 0;
-  for (const st of pollOrder(statuses)) {
-    const slot = readers.get(st.id);
-    if (!slot) continue;
-    for (const f of st.files) changed += slot.reader.poll(f);
-  }
-  return changed;
-}

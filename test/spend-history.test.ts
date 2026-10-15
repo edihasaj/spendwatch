@@ -250,7 +250,8 @@ describe("monthly spend archive", () => {
 
   test("a month read with the gateway ledger is never replaced by a read without it", () => {
     const path = dbPath();
-    const codex = (tokens: number, ledger: boolean): Report => ({ ...report("2026-10", "studio:codex", tokens, 900), observedCalls: 900, ...(ledger ? { ledger: true } : {}) });
+    // With the ledger, 50 routed calls were billed to Claude and Copilot and dropped from Codex.
+    const codex = (tokens: number, ledger: boolean): Report => ({ ...report("2026-10", "studio:codex", tokens, 900), observedCalls: 900, ...(ledger ? { ledger: true, routedCalls: 50 } : {}) });
     // With the ledger, routed turns are counted there and dropped from the rollouts: 20,000 tokens.
     writeMonthlySpend(path, [codex(20_000, true)], { generatedAt: 1 });
     // The gateway source was switched off: the same 900 observed calls now include the routed turns again.
@@ -266,7 +267,7 @@ describe("monthly spend archive", () => {
   test("a read without the ledger leaves a ledger month's days alone as well as its totals", () => {
     const path = dbPath();
     const codex = (tokens: number, ledger: boolean, days: Array<[string, number]>): Report => ({
-      ...report("2026-10", "studio:codex", tokens, 900), observedCalls: 900, tokenDays: dayRows("2026-10", days), ...(ledger ? { ledger: true } : {}),
+      ...report("2026-10", "studio:codex", tokens, 900), observedCalls: 900, tokenDays: dayRows("2026-10", days), ...(ledger ? { ledger: true, routedCalls: 50 } : {}),
     });
     writeMonthlySpend(path, [codex(20_000, true, [["2026-10-05", 20_000]])], { generatedAt: 1 });
     // The source was switched off: the routed turns are back in the rollouts, 6,000 more tokens on the 5th.
@@ -281,10 +282,10 @@ describe("monthly spend archive", () => {
   test("a thin ledger read cannot add days to a month stored without the ledger", () => {
     const path = dbPath();
     const codex = (tokens: number, calls: number, ledger: boolean, days: Array<[string, number]>): Report => ({
-      ...report("2026-10", "studio:codex", tokens, calls), observedCalls: calls, tokenDays: dayRows("2026-10", days), ...(ledger ? { ledger: true } : {}),
+      ...report("2026-10", "studio:codex", tokens, calls), observedCalls: calls, tokenDays: dayRows("2026-10", days), ...(ledger ? { ledger: true, routedCalls: 5 } : {}),
     });
     writeMonthlySpend(path, [codex(26_000, 900, false, [["2026-10-05", 26_000]])], { generatedAt: 1 });
-    // Fewer observed calls and a different ledger state: the stored month wins, and its days go with its totals.
+    // Fewer observed calls, and routed calls the stored read billed in Codex: the stored month wins, and its days go with its totals.
     expect(writeMonthlySpend(path, [codex(1_000, 20, true, [["2026-10-06", 1_000]])], { generatedAt: 2 }).rows).toBe(0);
     expect(storedDays(path)).toEqual([{ day: "2026-10-05", tokens: 26_000 }]);
   });

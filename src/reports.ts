@@ -258,6 +258,8 @@ export function mergeReports(
     totalCost: reports.reduce((sum, report) => sum + report.totalCost, 0),
     apiCalls: reports.reduce((sum, report) => sum + report.apiCalls, 0),
     observedCalls: reports.reduce((sum, report) => sum + (report.observedCalls ?? report.apiCalls), 0),
+    ...(reports.some((report) => report.routedCalls) ? { routedCalls: reports.reduce((sum, report) => sum + (report.routedCalls ?? 0), 0) } : {}),
+    ...(reports.some((report) => report.ledger) ? { ledger: true } : {}),
     sessions: reports.reduce((sum, report) => sum + report.sessions, 0),
     tools,
     bash,

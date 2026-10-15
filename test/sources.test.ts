@@ -203,6 +203,37 @@ describe("gateway source", () => {
     });
   });
 
+  test("counts a subscription whose only usage is in the ledger as present", () => {
+    const home = homeWith({});
+    const state = ledgerDir();
+    const config = join(home, "config.json");
+    // Neither Claude Code nor Copilot ever ran on this Mac; its gateway billed both.
+    writeFileSync(config, JSON.stringify([
+      { agent: "claude", path: join(home, "no-claude", "projects") },
+      { agent: "copilot", path: join(home, "no-copilot", "session-store.db") },
+      { agent: "gateway", path: state },
+    ]));
+    withEnv({ SPENDWATCH_CONFIG: config }, () => {
+      const found = discover({ sinceMs: 0, agents: new Set(["claude", "copilot"]) });
+      expect(found.map((s) => [s.id, s.present, s.files.length])).toEqual([["claude", true, 1], ["copilot", true, 1]]);
+    });
+  });
+
+  test("says a ledger was read only when this Mac has one", () => {
+    const home = homeWith({ ".claude/projects": [], ".codex/sessions": [] });
+    // A gateway root with no usage directory: a client that sends its turns to another Mac's gateway.
+    const state = mkdtempSync(join(tmpdir(), "spendwatch-client-gateway-"));
+    const config = join(home, "config.json");
+    writeFileSync(config, JSON.stringify([
+      { agent: "claude", path: join(home, ".claude", "projects") },
+      { agent: "codex", path: join(home, ".codex", "sessions") },
+      { agent: "gateway", path: state },
+    ]));
+    withEnv({ SPENDWATCH_CONFIG: config }, () => {
+      expect(discover({ sinceMs: 0, agents: new Set(["claude", "codex"]) }).map((s) => s.ledger)).toEqual([false, false]);
+    });
+  });
+
   test("marks the sources whose reports were read with the ledger", () => {
     const home = homeWith({ ".claude/projects": [], ".codex/sessions": [], ".copilot": [] });
     const state = ledgerDir();
