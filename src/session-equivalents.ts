@@ -24,6 +24,8 @@ export function loadSessionEquivalentForecasts(
 ): Map<string, SessionEquivalentForecast> {
   const db = new Database(path, { readonly: true });
   const grouped = new Map<string, PairedRow[]>();
+  // Bound matching timestamps before aggregation. CROSS JOIN keeps this small
+  // set driving indexed lookups; separately limiting each window loses pairs.
   const pairedSamples = db.query<PairedRow, [string, string]>(`
     WITH recent_times AS MATERIALIZED (
       SELECT w.sampled_at_ms
@@ -39,19 +41,19 @@ export function loadSessionEquivalentForecasts(
       ORDER BY w.sampled_at_ms DESC
       LIMIT 5000
     ), session_samples AS (
-      SELECT provider, account, sampled_at_ms,
-        MAX(used_percent) AS used_percent, MAX(resets_at_ms) AS resets_at_ms
-      FROM capacity_history
-      WHERE provider = ?1 AND account = ?2 COLLATE NOCASE AND window_kind = 'session'
-        AND sampled_at_ms IN (SELECT sampled_at_ms FROM recent_times)
-      GROUP BY provider, account, sampled_at_ms
+      SELECT h.provider, h.account, h.sampled_at_ms,
+        MAX(h.used_percent) AS used_percent, MAX(h.resets_at_ms) AS resets_at_ms
+      FROM recent_times r CROSS JOIN capacity_history h
+      WHERE h.provider = ?1 AND h.account = ?2 COLLATE NOCASE AND h.window_kind = 'session'
+        AND h.sampled_at_ms = r.sampled_at_ms
+      GROUP BY h.provider, h.account, h.sampled_at_ms
     ), weekly_samples AS (
-      SELECT provider, account, sampled_at_ms,
-        MAX(used_percent) AS used_percent, MAX(resets_at_ms) AS resets_at_ms
-      FROM capacity_history
-      WHERE provider = ?1 AND account = ?2 COLLATE NOCASE AND window_kind = 'weekly'
-        AND sampled_at_ms IN (SELECT sampled_at_ms FROM recent_times)
-      GROUP BY provider, account, sampled_at_ms
+      SELECT h.provider, h.account, h.sampled_at_ms,
+        MAX(h.used_percent) AS used_percent, MAX(h.resets_at_ms) AS resets_at_ms
+      FROM recent_times r CROSS JOIN capacity_history h
+      WHERE h.provider = ?1 AND h.account = ?2 COLLATE NOCASE AND h.window_kind = 'weekly'
+        AND h.sampled_at_ms = r.sampled_at_ms
+      GROUP BY h.provider, h.account, h.sampled_at_ms
     )
     SELECT s.provider, s.account, s.sampled_at_ms AS sampledAt,
       s.used_percent AS sessionUsed, s.resets_at_ms AS sessionReset,
