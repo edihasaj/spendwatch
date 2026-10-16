@@ -64,14 +64,19 @@ export class ManagedPostgresDatabase {
   } = {}) {
     this.readonly = Boolean(settings.readonly);
     this.safeIntegers = Boolean(settings.safeIntegers);
-    this.connection = new PgConnection(options, settings.job ? 120_000 : 20_000);
+    // Send fixed session settings in the PostgreSQL startup packet instead of
+    // paying a separate cross-cloud round trip for every SET on every reader.
+    const session = [
+      "-c client_min_messages=warning", "-c synchronous_commit=on",
+      "-c statement_timeout=" + (settings.job ? "100s" : "15s"),
+      "-c lock_timeout=10s", "-c idle_in_transaction_session_timeout=15s",
+      ...(settings.job ? ["-c work_mem=64MB"] : []),
+      ...(this.readonly ? ["-c default_transaction_read_only=on"] : []),
+    ].join(" ");
+    this.connection = new PgConnection({
+      ...options, options: [options.options, session].filter(Boolean).join(" "),
+    }, settings.job ? 120_000 : 20_000);
     try {
-      this.connection.query("SET client_min_messages=warning");
-      this.connection.query("SET synchronous_commit=on");
-      this.connection.query(settings.job ? "SET statement_timeout='100s'" : "SET statement_timeout='15s'");
-      if (settings.job) this.connection.query("SET work_mem='64MB'");
-      this.connection.query("SET lock_timeout='10s'");
-      this.connection.query("SET idle_in_transaction_session_timeout='15s'");
       const durability = this.connection.query(
         "SELECT current_setting('fsync') AS fsync,current_setting('full_page_writes') AS pages," +
         "current_setting('synchronous_commit') AS commit",
@@ -85,7 +90,6 @@ export class ManagedPostgresDatabase {
         this.connection.query(COMPATIBILITY_CATALOG);
         initialized.add(identity);
       }
-      if (this.readonly) this.connection.query("SET default_transaction_read_only=on");
     } catch (error) { this.connection.close(); throw error; }
   }
 
