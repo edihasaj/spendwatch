@@ -15,7 +15,7 @@ import { writeMonthlySpend, loadMonthlySpend } from "../src/spend-history";
 import { tokenSummary } from "../src/token-summary";
 import { monthPeriod } from "../src/periods";
 import type { Report } from "../src/aggregate";
-import { loadBurnForecasts } from "../src/capacity-burn";
+import { burnForecast, loadBurnForecasts, type BurnSample } from "../src/capacity-burn";
 import { writeSnapshot } from "../src/db";
 
 const configPath = process.env.SPENDWATCH_TEST_PG_CONFIG;
@@ -48,6 +48,49 @@ function fixture<T>(run: (path: string) => T): { sqlite: T; postgres: T } {
 }
 
 suite("managed business behavior", () => {
+  test("batched burn reads preserve provider, account, window and device aggregation", () => {
+    const result = fixture((path) => {
+      const now = Date.parse("2026-10-16T12:00:00Z");
+      const accounts: CodexLimitAccount[] = ["codex", "claude"].flatMap((provider) =>
+        ["WORK@example.com", "other@example.com"].map((email) => ({
+          provider, email, plan: "Pro", devices: ["one"], updatedAt: new Date(now).toISOString(),
+          session: { usedPercent: 50, windowMinutes: 300, resetsAt: new Date(now + 3_600_000).toISOString() },
+          weekly: { usedPercent: 60, windowMinutes: 10080, resetsAt: new Date(now + 86_400_000).toISOString() },
+        })) as CodexLimitAccount[]);
+      for (const minutesAgo of [20, 10, 0]) {
+        for (const device of ["one", "two"]) {
+          writeCapacitySnapshot(path, accounts.map((account) => ({
+            ...account, email: account.email.toLowerCase(), devices: [device],
+            updatedAt: new Date(now - minutesAgo * 60_000).toISOString(),
+            session: { ...account.session!, usedPercent: 50 - minutesAgo + (device === "two" ? 1 : 0) },
+            weekly: { ...account.weekly!, usedPercent: 60 - minutesAgo / 2 },
+          })), { collectedAt: now - minutesAgo * 60_000 });
+        }
+      }
+      const expected = new Map();
+      const db = new Database(path, { readonly: true });
+      try {
+        for (const account of accounts) {
+          const entry: Record<string, unknown> = {};
+          for (const kind of ["session", "weekly"] as const) {
+            const rows = db.query<BurnSample, [string, string, string]>(`
+              SELECT sampled_at_ms AS sampledAt, MAX(used_percent) AS usedPercent,
+                MAX(resets_at_ms) AS resetsAt FROM capacity_history
+              WHERE provider=? AND account=? COLLATE NOCASE AND window_kind=?
+              GROUP BY sampled_at_ms ORDER BY sampled_at_ms
+            `).all(account.provider, account.email, kind);
+            entry[kind] = burnForecast(rows, account[kind]!, now);
+          }
+          expected.set(`${account.provider}:${account.email.toLowerCase()}`, entry);
+        }
+      } finally { db.close(); }
+      const actual = loadBurnForecasts(path, accounts, now);
+      expect(actual).toEqual(expected);
+      return [...actual];
+    });
+    expect(result.postgres).toEqual(result.sqlite);
+  });
+
   test("keeps quota history, duplicates, paired forecast selection and aliases identical", () => {
     const result = fixture((path) => {
       const reset = "2026-08-16T00:00:00Z";

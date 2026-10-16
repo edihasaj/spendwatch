@@ -7,6 +7,13 @@ read_when:
 
 # Managed database conversion
 
+The managed reader sends fixed timeout, durability and read-only settings in
+the PostgreSQL startup packet, then independently verifies durability. Capacity
+renders batch all live account/window burn reads into one query. Stale readings
+still age on every render and need no burn-history connection. Forecasts retain
+case-insensitive account matching, provider/window separation and per-sample
+maximum aggregation across devices.
+
 Production still uses its existing SQLite database on `ops-eu`. This worktree
 contains preparation only. Do not stop that source or publish a candidate
 until copied-state staging, uploads, private ingress, notifications and
