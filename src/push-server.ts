@@ -192,6 +192,10 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
     async fetch(request) {
       try {
       const url = new URL(request.url);
+      if (url.pathname === "/api/managed-health" && managedDeploymentMode()) {
+        const healthy = capacityPolls.db.query<{ ok: number }, []>("SELECT 1 AS ok").get()?.ok === 1;
+        return json({ ready: healthy }, healthy ? 200 : 503);
+      }
       if (["/api/capacity/poll/claim", "/api/capacity/poll/complete"].includes(url.pathname) && request.method === "POST") {
         if (!postAllowed(request)) return json({ error: "same-origin JSON required" }, 403);
         return handleCapacityPoll(request, capacityPolls);
