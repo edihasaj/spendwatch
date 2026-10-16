@@ -1,4 +1,4 @@
-import {Database} from "bun:sqlite";
+import {Database} from "./database";
 import type {Report} from "./aggregate";
 
 export interface TokenCounts {total: number; cloud: number; local: number; unclassified: number}

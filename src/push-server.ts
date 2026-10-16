@@ -3,9 +3,11 @@ import webpush from "web-push";
 import { NOTIFICATION_BADGE, NOTIFICATION_ICON } from "./branding";
 import { loadCapacityDashboard } from "./capacity-dashboard";
 import { createCapacityPageRenderer } from "./capacity-page";
+import { CapacityPollStore, handleCapacityPoll } from "./capacity-poll";
 import { PushStore, type PendingPushDelivery, type StoredPushSubscription } from "./push-store";
 import { SERVICE_WORKER_SOURCE } from "./service-worker";
 import { reportOperationalError } from "./telemetry";
+import { managedDeploymentMode } from "./database";
 
 export interface DashboardServerOptions {
   host: string;
@@ -98,6 +100,7 @@ function configureVapid(store: PushStore, subject: string): { publicKey: string;
 }
 
 export async function testBackgroundPush(databasePath: string, vapidSubject: string): Promise<PushTestResult> {
+  if (managedDeploymentMode() === "staging") throw new Error("Notifications are disabled in staging");
   const store = new PushStore(databasePath);
   const result: PushTestResult = { sent: 0, failed: 0, disabled: 0 };
   try {
@@ -130,11 +133,13 @@ export async function testBackgroundPush(databasePath: string, vapidSubject: str
 
 export async function serveDashboard(options: DashboardServerOptions): Promise<never> {
   const store = new PushStore(options.databasePath);
+  const capacityPolls = new CapacityPollStore(options.databasePath);
   const { publicKey } = configureVapid(store, options.vapidSubject);
   let monitoring = false;
   let consecutiveSqliteBusy = 0;
 
   const send = async (delivery: PendingPushDelivery): Promise<void> => {
+    if (managedDeploymentMode() === "staging") throw new Error("Notifications are disabled in staging");
     try {
       await webpush.sendNotification(
         { endpoint: delivery.endpoint, keys: delivery.keys },
@@ -155,6 +160,7 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
   };
 
   const monitor = async (): Promise<void> => {
+    if (managedDeploymentMode() === "staging") return;
     if (monitoring) return;
     monitoring = true;
     try {
@@ -186,6 +192,10 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
     async fetch(request) {
       try {
       const url = new URL(request.url);
+      if (["/api/capacity/poll/claim", "/api/capacity/poll/complete"].includes(url.pathname) && request.method === "POST") {
+        if (!postAllowed(request)) return json({ error: "same-origin JSON required" }, 403);
+        return handleCapacityPoll(request, capacityPolls);
+      }
       if (url.pathname === "/api/push/config" && request.method === "GET") {
         return json({ publicKey, thresholds: [30, 15, 10, 5, 0] });
       }
@@ -202,6 +212,7 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
           store.disableSubscription(body.subscription.endpoint, Date.now());
           return json({ ok: true });
         }
+        if (managedDeploymentMode() === "staging") return json({ error: "Notifications are disabled in staging" }, 503);
         store.upsertSubscription(body.subscription, request.headers.get("user-agent") ?? undefined, Date.now());
         try {
           await webpush.sendNotification(body.subscription, JSON.stringify({

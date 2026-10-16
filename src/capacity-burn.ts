@@ -3,7 +3,7 @@
 // done. This measures the recent slope inside the current cycle and compares it
 // with the rate the remaining allowance can actually afford, so a change in
 // behaviour is visible while there is still time to act on it.
-import { Database } from "bun:sqlite";
+import { Database } from "./database";
 import { windowFreshness } from "./capacity-freshness";
 import type { CodexLimitAccount, LimitWindow } from "./limits";
 

@@ -1,8 +1,9 @@
 // Persists a report snapshot into a SQLite database (one row per run, so you
 // build spend history over time and can query with plain SQL). Uses bun:sqlite,
 // which is bundled into the compiled binary.
-import { Database } from "bun:sqlite";
+import { Database, isManagedDatabase } from "./database";
 import type { Report } from "./aggregate";
+import { encodeSampleDetail } from "./managed/codecs";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS runs (
@@ -21,28 +22,66 @@ CREATE INDEX IF NOT EXISTS idx_runs_ts ON runs(ts);
 CREATE INDEX IF NOT EXISTS idx_aa_run ON agent_account(run_id);
 `;
 
-export function writeSnapshot(path: string, reports: Report[], opts: { generatedAt: number; days: number }): { runId: number; rows: number } {
+export function writeSnapshot(path: string, reports: Report[], opts: {
+  generatedAt: number; days: number; idempotencyKey?: string;
+}): { runId: number; rows: number } {
   const db = new Database(path);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
+  const snapshotKey = isManagedDatabase(path)
+    ? opts.idempotencyKey ?? process.env.SPENDWATCH_SNAPSHOT_ID : undefined;
+  if (snapshotKey) {
+    if (!/^[a-f0-9]{64}$/.test(snapshotKey)) throw new Error("Invalid managed snapshot identity");
+    db.exec(`CREATE TABLE IF NOT EXISTS _spendwatch_snapshot_receipts(
+      id TEXT PRIMARY KEY,run_id INTEGER NOT NULL,row_count INTEGER NOT NULL)`);
+  }
 
   const live = reports.filter((r) => r.apiCalls > 0);
   const total = live.reduce((s, r) => s + r.totalCost, 0);
   let rows = 0;
 
   const insertRun = db.prepare("INSERT INTO runs(ts, generated_at, day_span, total_cost) VALUES (?, ?, ?, ?)");
+  const flushes: Array<() => void> = [];
+  type Binding = string | number | bigint | Uint8Array | boolean | null | undefined;
+  const prepareLeaf = (sql: string) => {
+    if (!isManagedDatabase(path)) return db.prepare(sql);
+    const marker = sql.indexOf(" VALUES ");
+    if (marker < 0) throw new Error("Snapshot insert requires an explicit column list");
+    const prefix = sql.slice(0, marker);
+    let pending: Binding[][] = [], bytes = 0;
+    const flush = () => {
+      if (!pending.length) return;
+      const values = pending.map((row) => "(" + row.map(() => "?").join(",") + ")").join(",");
+      const result = db.prepare(prefix + " VALUES " + values).run(...pending.flat());
+      if (Number(result.changes) !== pending.length) throw new Error("Snapshot row count differs");
+      pending = []; bytes = 0;
+    };
+    flushes.push(flush);
+    return { run(...values: Binding[]) {
+      if (sql.startsWith("INSERT INTO samples(")) values[4] = encodeSampleDetail(values[4]);
+      pending.push(values);
+      bytes += values.reduce((size, value) => size + (typeof value === "string"
+        ? Buffer.byteLength(value) : value instanceof Uint8Array ? value.byteLength : 8), 0);
+      if (pending.length >= 200 || bytes >= 1024 * 1024) flush();
+    } };
+  };
   const stmt = {
-    aa: db.prepare("INSERT INTO agent_account(run_id, agent, account, cost, calls, sessions) VALUES (?,?,?,?,?,?)"),
-    tools: db.prepare("INSERT INTO tools(run_id, agent, tool, calls, arg_tok, result_tok, ctx_cost) VALUES (?,?,?,?,?,?,?)"),
-    commands: db.prepare("INSERT INTO commands(run_id, agent, command, is_deep, calls, arg_tok, result_tok, ctx_cost) VALUES (?,?,?,?,?,?,?,?)"),
-    prompts: db.prepare("INSERT INTO prompts(run_id, agent, project, cost, tool_calls, out_tok, text) VALUES (?,?,?,?,?,?,?)"),
-    models: db.prepare("INSERT INTO models(run_id, agent, model, calls, in_tok, out_tok, cache_rd, cache_wr, cost) VALUES (?,?,?,?,?,?,?,?,?)"),
-    projects: db.prepare("INSERT INTO projects(run_id, agent, project, cost) VALUES (?,?,?,?)"),
-    targets: db.prepare("INSERT INTO targets(run_id, agent, command, calls, ctx_cost, err_pct, reason, score) VALUES (?,?,?,?,?,?,?,?)"),
-    samples: db.prepare("INSERT INTO samples(run_id, agent, scope, key, detail, count, result_tok) VALUES (?,?,?,?,?,?,?)"),
+    aa: prepareLeaf("INSERT INTO agent_account(run_id, agent, account, cost, calls, sessions) VALUES (?,?,?,?,?,?)"),
+    tools: prepareLeaf("INSERT INTO tools(run_id, agent, tool, calls, arg_tok, result_tok, ctx_cost) VALUES (?,?,?,?,?,?,?)"),
+    commands: prepareLeaf("INSERT INTO commands(run_id, agent, command, is_deep, calls, arg_tok, result_tok, ctx_cost) VALUES (?,?,?,?,?,?,?,?)"),
+    prompts: prepareLeaf("INSERT INTO prompts(run_id, agent, project, cost, tool_calls, out_tok, text) VALUES (?,?,?,?,?,?,?)"),
+    models: prepareLeaf("INSERT INTO models(run_id, agent, model, calls, in_tok, out_tok, cache_rd, cache_wr, cost) VALUES (?,?,?,?,?,?,?,?,?)"),
+    projects: prepareLeaf("INSERT INTO projects(run_id, agent, project, cost) VALUES (?,?,?,?)"),
+    targets: prepareLeaf("INSERT INTO targets(run_id, agent, command, calls, ctx_cost, err_pct, reason, score) VALUES (?,?,?,?,?,?,?,?)"),
+    samples: prepareLeaf("INSERT INTO samples(run_id, agent, scope, key, detail, count, result_tok) VALUES (?,?,?,?,?,?,?)"),
   };
 
   const tx = db.transaction(() => {
+    if (snapshotKey) {
+      const prior = db.query<{ run_id: number; row_count: number }, [string]>(
+        "SELECT run_id,row_count FROM _spendwatch_snapshot_receipts WHERE id=?").get(snapshotKey);
+      if (prior) { rows = prior.row_count; return prior.run_id; }
+    }
     const info = insertRun.run(opts.generatedAt, new Date(opts.generatedAt).toISOString(), opts.days, total);
     const runId = Number(info.lastInsertRowid);
     for (const r of live) {
@@ -64,6 +103,9 @@ export function writeSnapshot(path: string, reports: Report[], opts: { generated
       for (const pr of r.projects) (stmt.projects.run(runId, a, pr.project, pr.cost), rows++);
       for (const t of r.targets) (stmt.targets.run(runId, a, t.command, t.calls, t.ctxCost, t.errPct, t.reason, t.score), rows++);
     }
+    for (const flush of flushes) flush();
+    if (snapshotKey) db.prepare("INSERT INTO _spendwatch_snapshot_receipts VALUES(?,?,?)")
+      .run(snapshotKey, runId, rows);
     return runId;
   });
 

@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database } from "./database";
 import { crossedWeeklyThreshold, type WeeklyAlertThreshold } from "./capacity-alerts";
 import { copilotCreditWindow } from "./copilot-budget";
 import type { CodexLimitAccount } from "./limits";

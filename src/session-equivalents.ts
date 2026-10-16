@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database } from "./database";
 import type { CodexLimitAccount, SessionEquivalentForecast } from "./limits";
 
 interface PairedRow {
