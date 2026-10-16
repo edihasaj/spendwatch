@@ -54,7 +54,9 @@ export const Database: typeof NativeDatabase = new Proxy(NativeDatabase, {
     const path = args[0];
     if (typeof path !== "string" || !isManagedDatabase(path)) return Reflect.construct(target, args);
     const config = configuration()!;
-    return new ManagedPostgresDatabase(config.connection, args[1] ?? {});
+    return new ManagedPostgresDatabase(config.connection, {
+      ...(args[1] ?? {}), job: process.env.SPENDWATCH_MANAGED_JOB === "1",
+    });
   },
 });
 export type Database = NativeDatabase;
