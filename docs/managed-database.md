@@ -88,3 +88,11 @@ text and one for historical binary values. Text is decoded with strict UTF-8;
 NUL and original blob/text distinctions survive exactly. Result-origin
 metadata handles aliased reads. The importer fingerprints decoded logical
 values against SQLite and normalized snapshot writes apply the same codec.
+
+The isolated offsite qualification is `deploy/qualify-managed-archive.ts`.
+It admits only the loopback test cluster on port 15487 and a loopback supervisor.
+The private manager supervisor stores the native archive in staging R2, reads
+it back independently, and only then confirms durability. Qualification proved
+pruning two window rows and one account row, restoring from actual downloaded
+R2 bytes, and a second restore writing zero rows. It does not mutate a serving
+database or contact a quota provider.
