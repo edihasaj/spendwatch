@@ -13,6 +13,10 @@ renders batch all live account/window burn reads into one query. Stale readings
 still age on every render and need no burn-history connection. Forecasts retain
 case-insensitive account matching, provider/window separation and per-sample
 maximum aggregation across devices.
+The managed capacity renderer retains one read-only connection for at most five
+minutes. It runs fresh queries on each render, discards a failed socket without
+replaying the read, and reconnects on the next request. Native CLI reads retain
+their existing connection lifecycle.
 
 Production still uses its existing SQLite database on `ops-eu`. This worktree
 contains preparation only. Do not stop that source or publish a candidate
