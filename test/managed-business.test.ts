@@ -91,6 +91,32 @@ suite("managed business behavior", () => {
     expect(result.postgres).toEqual(result.sqlite);
   });
 
+  test("a retained burn reader sees later commits and never owns its borrowed connection", () => {
+    const result = fixture((path) => {
+      const now = Date.parse("2026-10-16T12:00:00Z");
+      const account: CodexLimitAccount = {
+        provider: "codex", email: "work@example.com", plan: "Pro", devices: ["fixture"],
+        updatedAt: new Date(now).toISOString(),
+        session: { usedPercent: 40, windowMinutes: 300, resetsAt: new Date(now + 3_600_000).toISOString() },
+      };
+      for (const minutesAgo of [20, 10, 0]) writeCapacitySnapshot(path, [{
+        ...account, updatedAt: new Date(now - minutesAgo * 60_000).toISOString(),
+        session: { ...account.session!, usedPercent: 40 - minutesAgo },
+      }], { collectedAt: now - minutesAgo * 60_000 });
+      const reader = new Database(path, { readonly: true });
+      try {
+        const before = [...loadBurnForecasts(path, [account], now, () => reader)];
+        writeCapacitySnapshot(path, [{ ...account, updatedAt: new Date(now + 60_000).toISOString(),
+          session: { ...account.session!, usedPercent: 60 } }], { collectedAt: now + 60_000 });
+        const after = [...loadBurnForecasts(path, [account], now + 60_000, () => reader)];
+        expect(after).not.toEqual(before);
+        expect(reader.query("SELECT 1 AS ok").get()).toEqual({ ok: 1 });
+        return { before, after };
+      } finally { reader.close(); }
+    });
+    expect(result.postgres).toEqual(result.sqlite);
+  });
+
   test("keeps quota history, duplicates, paired forecast selection and aliases identical", () => {
     const result = fixture((path) => {
       const reset = "2026-08-16T00:00:00Z";
