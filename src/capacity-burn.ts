@@ -115,6 +115,7 @@ export function loadBurnForecasts(
   path: string,
   accounts: CodexLimitAccount[],
   nowMs: number,
+  reader?: () => Database,
 ): Map<string, AccountBurnForecasts> {
   const forecasts = new Map<string, AccountBurnForecasts>();
   const windows = accounts.flatMap((account) => (["session", "weekly"] as const).flatMap((kind) => {
@@ -125,7 +126,7 @@ export function loadBurnForecasts(
   }));
   // Old readings still age on every render without opening a remote connection.
   if (!windows.length) return forecasts;
-  const db = new Database(path, { readonly: true });
+  const db = reader ? reader() : new Database(path, { readonly: true });
   try {
     type Row = BurnSample & { provider: string; account: string; kind: BurnWindowKind };
     const rows = db.query<Row, (string | number)[]>(`
@@ -153,13 +154,15 @@ export function loadBurnForecasts(
       forecasts.set(identity, entry);
     }
   } finally {
-    db.close();
+    if (!reader) db.close();
   }
   return forecasts;
 }
 
-export function attachBurnForecasts(path: string, accounts: CodexLimitAccount[], nowMs: number): void {
-  const forecasts = loadBurnForecasts(path, accounts, nowMs);
+export function attachBurnForecasts(
+  path: string, accounts: CodexLimitAccount[], nowMs: number, reader?: () => Database,
+): void {
+  const forecasts = loadBurnForecasts(path, accounts, nowMs, reader);
   for (const account of accounts) {
     const entry = forecasts.get(`${account.provider}:${account.email.toLowerCase()}`);
     if (account.session) account.session.burn = entry?.session;
