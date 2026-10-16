@@ -59,14 +59,17 @@ export class ManagedPostgresDatabase {
   readonly safeIntegers: boolean;
   get inTransaction(): boolean { return this.depth > 0; }
 
-  constructor(private readonly options: Record<string, string>, settings: { readonly?: boolean; safeIntegers?: boolean } = {}) {
+  constructor(private readonly options: Record<string, string>, settings: {
+    readonly?: boolean; safeIntegers?: boolean; job?: boolean;
+  } = {}) {
     this.readonly = Boolean(settings.readonly);
     this.safeIntegers = Boolean(settings.safeIntegers);
-    this.connection = new PgConnection(options);
+    this.connection = new PgConnection(options, settings.job ? 120_000 : 20_000);
     try {
       this.connection.query("SET client_min_messages=warning");
       this.connection.query("SET synchronous_commit=on");
-      this.connection.query("SET statement_timeout='15s'");
+      this.connection.query(settings.job ? "SET statement_timeout='100s'" : "SET statement_timeout='15s'");
+      if (settings.job) this.connection.query("SET work_mem='64MB'");
       this.connection.query("SET lock_timeout='10s'");
       this.connection.query("SET idle_in_transaction_session_timeout='15s'");
       const durability = this.connection.query(
