@@ -196,6 +196,14 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
         const healthy = capacityPolls.db.query<{ ok: number }, []>("SELECT 1 AS ok").get()?.ok === 1;
         return json({ ready: healthy }, healthy ? 200 : 503);
       }
+      if (url.pathname === "/api/managed-watermark" && managedDeploymentMode() && request.method === "GET") {
+        const device = url.searchParams.get("device") ?? "";
+        if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(device)) return json({ error: "invalid device" }, 400);
+        const row = capacityPolls.db.query<{ sampled_at_ms: number }, [string]>(
+          "SELECT sampled_at_ms FROM capacity_history WHERE source='codex-session-log' AND devices=? ORDER BY sampled_at_ms DESC LIMIT 1",
+        ).get(JSON.stringify([device]));
+        return json({ afterMs: Math.max(0, (row?.sampled_at_ms ?? 0) - 2 * 86_400_000) });
+      }
       if (["/api/capacity/poll/claim", "/api/capacity/poll/complete"].includes(url.pathname) && request.method === "POST") {
         if (!postAllowed(request)) return json({ error: "same-origin JSON required" }, 403);
         return handleCapacityPoll(request, capacityPolls);
