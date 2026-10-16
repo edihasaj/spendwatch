@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ManagedDatabaseError, PgConnection } from "../src/managed/libpq";
+import { ManagedPostgresDatabase } from "../src/managed/postgres-db";
 
 const path = process.env.SPENDWATCH_TEST_PG_CONFIG;
 const suite = path ? describe : describe.skip;
@@ -12,6 +13,23 @@ function connection(timeout?: number): PgConnection {
   return new PgConnection(options, timeout);
 }
 suite("native PostgreSQL transport", () => {
+  test("startup settings preserve read-only access, durability and query deadlines", () => {
+    const options = JSON.parse(readFileSync(path!, "utf8")) as Record<string, string>;
+    if (options.host !== "127.0.0.1" || options.port !== "15487") throw Error("Owned fixture required");
+    const db = new ManagedPostgresDatabase({
+      ...options, options: "-c synchronous_commit=off -c statement_timeout=0",
+    }, { readonly: true });
+    try {
+      expect(db.query(`SELECT current_setting('synchronous_commit') AS durability,
+        current_setting('default_transaction_read_only') AS readonly,
+        current_setting('statement_timeout') AS deadline,
+        current_setting('lock_timeout') AS locktime`).get()).toEqual({
+        durability: "on", readonly: "on", deadline: "15s", locktime: "10s",
+      });
+      expect(() => db.run("CREATE TABLE forbidden_write(id INTEGER)")).toThrow(ManagedDatabaseError);
+    } finally { db.close(); }
+  });
+
   test("preserves signed 64-bit values, blobs, empty blobs and Unicode", () => {
     const db = connection();
     try {
