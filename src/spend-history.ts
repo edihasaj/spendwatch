@@ -1,6 +1,6 @@
 // Per-calendar-month spend, persisted so the history dashboard can show closed
 // months after the transcripts behind them have rotated away.
-import { Database } from "bun:sqlite";
+import { Database } from "./database";
 import type { Report } from "./aggregate";
 import { monthLabel } from "./periods";
 import { archivedSourceLabels, archiveReport, archiveSource, initReportArchive } from "./spend-report-archive";

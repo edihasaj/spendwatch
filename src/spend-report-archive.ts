@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database } from "./database";
 import type { Report } from "./aggregate";
 import { mergeReports } from "./reports";
 
@@ -29,7 +29,8 @@ export function initReportArchive(db: Database): void {
 /** Bind old unlabeled measurements to the first installation, without copying totals. */
 export function archiveSource(db: Database, report: Report): string {
   const existing = db.query<{ installation_id: string; archive_source: string }, [string]>(
-    "SELECT installation_id, archive_source FROM spend_installation WHERE source = ? ORDER BY rowid",
+    `SELECT installation_id, archive_source FROM spend_installation WHERE source = ?
+     ORDER BY CASE WHEN archive_source = source THEN 0 ELSE 1 END, archive_source`,
   ).all(report.source);
   const id = report.installationId;
   if (!id && existing.length) return existing[0]!.archive_source;

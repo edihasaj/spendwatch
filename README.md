@@ -323,6 +323,27 @@ capacity-only projection produced by a trusted local collector. Keep credential
 acquisition outside Spendwatch so an exported dashboard never needs account
 tokens.
 
+`capacity-current` deduplicates local profiles before contacting a provider and
+reserves at most one attempt per provider and account every five minutes. Its
+SQLite cache retains the original sample time. Failures back off; an HTTP 429
+starts a one-hour cooldown, doubles on repeated rate limits up to four hours,
+and honors a longer `Retry-After`. A crashed read still consumes its reservation.
+
+For several machines, configure one private dashboard server as their shared
+coordinator using `SPENDWATCH_CAPACITY_COORDINATOR=https://your-dashboard/`, or
+`{"coordinator":"https://your-dashboard/"}` in
+`~/.config/spendwatch/polling.json`. The server keeps account reservations,
+sanitized capacity results and cooldowns in its existing SQLite database.
+Machines share cached results instead of repeating provider reads. If the
+coordinator is unavailable, collectors use cached data without contacting
+providers. Credentials stay on the source machine. Without a coordinator, the
+same gate applies locally in `~/.local/share/spendwatch/capacity-poll.db`
+(`SPENDWATCH_CAPACITY_CACHE` overrides that path).
+
+Collection must still run periodically to keep capacity current; refreshing the
+browser only renders stored readings. A capacity-only worker can run separately
+from transcript and spend-history collection.
+
 Collectors may also emit sanitized `authentication-required` records. The
 dashboard then shows provider-specific sign-in links for Codex, Claude, or
 Copilot and opens the matching local setup command. API credentials and OAuth

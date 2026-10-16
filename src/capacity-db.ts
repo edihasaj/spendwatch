@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database } from "./database";
 import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import type { CapacityProvider, CodexLimitAccount, LimitWindow } from "./limits";
