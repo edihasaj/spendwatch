@@ -1,16 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { importCapacityHistory, loadCapacityHistory, writeCapacitySnapshot } from "../src/capacity-db";
 import { renderHistoryHtml } from "../src/history";
 import { renderLimitsHtml, type CodexLimitAccount } from "../src/limits";
 import { attachSessionEquivalentForecasts } from "../src/session-equivalents";
+import { tempDir } from "./tmp";
 
 describe("capacity history", () => {
   test("stores live and imported samples idempotently", () => {
-    const dir = mkdtempSync(join(tmpdir(), "spendwatch-capacity-"));
+    const dir = tempDir("spendwatch-capacity-");
     const db = join(dir, "history.db");
     const input = join(dir, "history.jsonl");
     const account: CodexLimitAccount = {
@@ -52,7 +52,7 @@ describe("capacity history", () => {
   });
 
   test("stores Copilot credit history", () => {
-    const dir = mkdtempSync(join(tmpdir(), "spendwatch-copilot-"));
+    const dir = tempDir("spendwatch-copilot-");
     const db = join(dir, "history.db");
     writeCapacitySnapshot(db, [{
       provider: "copilot",
@@ -95,7 +95,7 @@ describe("capacity history", () => {
   });
 
   test("stores API balances in account history", () => {
-    const dir = mkdtempSync(join(tmpdir(), "spendwatch-balance-"));
+    const dir = tempDir("spendwatch-balance-");
     const dbPath = join(dir, "history.db");
     writeCapacitySnapshot(dbPath, [{
       provider: "lokai",
@@ -123,7 +123,7 @@ describe("capacity history", () => {
   });
 
   test("learns weekly burn per completed five-hour session", () => {
-    const dir = mkdtempSync(join(tmpdir(), "spendwatch-equivalent-"));
+    const dir = tempDir("spendwatch-equivalent-");
     const db = join(dir, "history.db");
     const weeklyReset = "2026-08-16T00:00:00Z";
     for (let index = 0; index < 4; index++) {
