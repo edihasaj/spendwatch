@@ -130,7 +130,9 @@ export function pollWatched(built: Built, statuses: SourceStatus[], a: BuildOpti
       else found.set(reader, [f]);
     }
     // A rollout that left the roots the config names (finished, and filed away) still has decisions the ledger must hold.
-    if (st.carry) for (const reader of [slot.reader, built.claims]) gone.set(reader, reader.renewAbsent(found.get(reader) ?? [], st.carry));
+    // Only Codex files ever reach the claims reader, so only its status may carry into it: a second status with a
+    // `carry` would hand it the same rollouts' decisions twice.
+    if (st.carry) for (const reader of st.id === "codex" ? [slot.reader, built.claims] : [slot.reader]) gone.set(reader, reader.renewAbsent(found.get(reader) ?? [], st.carry));
   }
   for (const [reader, absent] of gone) changed += reader.settleAbsent(absent);
   for (const st of pollOrder(statuses)) {

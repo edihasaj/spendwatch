@@ -1,13 +1,17 @@
-// What a rollout tells the gateway ledger about one routed call, and in which order: the types the ledger's index
-// contract (gateway.ts) and the Codex parser (codex.ts) share.
+// What a transcript tells the gateway ledger about one routed call, and in which order: the types the ledger's index
+// contract (gateway.ts) and the parsers that read one (codex.ts, claude-routed.ts) share.
 
 /** How far apart the ledger's clock and the transcript's may be for one call. */
 export const CLAIM_WINDOW_MS = 30_000;
 
+/** The model label of a gateway-marked call that this Mac's ledger cannot vouch for. */
+export const UNCONFIRMED = "gateway-routed, not in this Mac's ledger";
+
 export interface ClaimOptions {
   /**
-   * Also match the ledger's own billed rows (marked `resp_gl_*`). Only for a transcript line that
-   * carries no response id to compare, such as a token_count: with an id, `covers` already decides.
+   * Also match the ledger's own Responses-marked rows (`resp_gl_*`; a `msg_gl_*` row is matched by its id alone, see
+   * gateway.ts). Only for a transcript line that carries no response id to compare, such as a token_count: with an id,
+   * `covers` already decides.
    */
   gatewayRows?: boolean;
   /**

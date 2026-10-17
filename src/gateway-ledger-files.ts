@@ -4,8 +4,16 @@ import { closeSync, fstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { PROVIDER_TYPES, vendorIn, type GatewayVendor } from "./gateway-config";
 
-/** A gateway-routed response carries this marker on its id; anything else is an ordinary provider call. */
-export const MARKER = "resp_gl_";
+/** The marker on a Responses id: Codex keeps it in its rollout. */
+export const RESPONSES_MARKER = "resp_gl_";
+/** The marker on a Messages id: Claude Code keeps it as the message id in its transcript. */
+export const MESSAGES_MARKER = "msg_gl_";
+/** Every prefix the gateway marks a billed call's id with; each is followed by the same request id without dashes. */
+export const MARKERS = [RESPONSES_MARKER, MESSAGES_MARKER] as const;
+export const markerOf = (id: string | undefined): string | undefined => id ? MARKERS.find((marker) => id.startsWith(marker)) : undefined;
+export const isMarked = (id: string | undefined): id is string => markerOf(id) !== undefined;
+/** The gateway request id a marked id carries: the part after its marker ("" for an unmarked id). */
+export const markedId = (id: string): string => id.slice(markerOf(id)?.length ?? id.length);
 export const GATEWAY_ORIGIN = "gateway";
 export const TELEMETRY_ORIGIN = "telemetry";
 
