@@ -10,15 +10,15 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "n
 import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Event } from "./parse";
-import { parseLine } from "./parse";
-import { newCodexCtx, parseCodexLine, settleRouted, UNCONFIRMED, type CodexCtx } from "./codex";
-import { claudeGatewayWarning, newClaudeCtx, settleClaudeRouted, type ClaudeCtx } from "./claude-routed";
+import { newCodexCtx, parseCodexLine, settleRouted, type CodexCtx } from "./codex";
+import { claudeGatewayWarning, type ClaudeCtx } from "./claude-routed";
+import { carryLedger, claudeFile, gatewayWarning } from "./gateway-sources";
 import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
 import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
 import { walkJsonl } from "./scan";
 import { collectCopilot, defaultCopilotRoots } from "./copilot";
-import { GatewayIndex, type GatewayLedger, type LedgerDecision } from "./gateway";
+import { GatewayIndex, type GatewayLedger } from "./gateway";
 
 export interface SourceFile {
   path: string;
@@ -287,26 +287,10 @@ function collectClaude(dir: string, account: string, sinceMs: number, project?: 
       if (!f.endsWith(".jsonl")) continue;
       const path = join(dir, proj, f);
       if (!mtimeOk(path, sinceMs)) continue;
-      // A marked message is settled against the ledger, as a rollout's marked record is: what one line decided, and
-      // what a later line of the same message repeats, belongs to this file's parser, which watch keeps between ticks.
-      const ctx = newClaudeCtx(gateway);
-      let renewed = false;
-      files.push({ path, project: projectName, source: "claude", account: acct, parse: (text: string, kept: ClaudeCtx) => parseLine(text, kept), ctx,
-        settle: (kept: ClaudeCtx, final: boolean) => settleClaudeRouted(kept, final),
-        // Once per discovery: what the kept state decided since is already known to this ledger.
-        renew: (kept: ClaudeCtx) => { if (renewed) return; renewed = true; carryLedger(kept, ctx.gateway); } });
+      files.push(claudeFile(path, projectName, acct, gateway));
     }
   }
   return files;
-}
-
-/**
- * The reloaded ledger has not seen what a transcript already did: rows it claimed, and calls it billed before their rows
- * existed. It gets them, and the transcript carries on against it.
- */
-function carryLedger(kept: { gateway?: GatewayIndex; decisions?: LedgerDecision[] }, gateway?: GatewayIndex): void {
-  kept.gateway = gateway;
-  gateway?.replay?.(kept.decisions ?? []);
 }
 
 function collectCodex(dir: string, account: string, sinceMs: number, gateway?: GatewayLedger): SourceFile[] {
@@ -391,24 +375,27 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   const gateway = gatewayOn ? GatewayIndex.load({ sinceMs: opts.sinceMs, stateDir: gatewayRoot?.path }) : undefined;
   const ledger = !!gateway?.present;
 
-  if (want("claude")) {
+  // A report must not depend on which agents were asked for: the ledger bills its `msg_gl_*` rows for Claude Code
+  // calls, so when it holds any, the transcripts are still read when Claude was not asked for — for those claims
+  // only, reporting nothing. Like the Codex claim-only status below, this is decided at discovery: a `watch
+  // --agents copilot` started before this Mac's ledger holds a Messages row reads no Claude claims until restarted.
+  if (want("claude") || gateway?.hasMessages()) {
     const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project, gateway));
-    const rows = gateway?.files("claude") ?? [];
-    const claude: SourceStatus = {
-      id: "claude",
-      present: claudeRoots.some((r) => existsSync(r.path)) || rows.length > 0,
-      parseable: true,
-      ledger,
-      files: [...files, ...rows],
-      ...(gateway ? { carry: (kept: ClaudeCtx) => carryLedger(kept, gateway) } : {}),
-    };
-    // Asked after the transcripts have been read, because only the parser knows what a message recorded.
-    if (gateway) Object.defineProperty(claude, "warning", {
-      get: () => claudeGatewayWarning(files.map((f) => f.ctx as ClaudeCtx)),
-      enumerable: true,
-      configurable: true,
-    });
-    out.push(claude);
+    const carry = gateway ? { carry: (kept: ClaudeCtx) => carryLedger(kept, gateway) } : {};
+    if (!want("claude")) {
+      // Transcripts only: the ledger's own rows are its reports, and a status that reports nothing has no warning either.
+      out.push({ id: "claude", present: claudeRoots.some((r) => existsSync(r.path)), parseable: true, ledger, claimOnly: true, files, ...carry });
+    } else {
+      const rows = gateway?.files("claude") ?? [];
+      const claude: SourceStatus = { id: "claude", present: claudeRoots.some((r) => existsSync(r.path)) || rows.length > 0, parseable: true, ledger, files: [...files, ...rows], ...carry };
+      // Asked after the transcripts have been read, because only the parser knows what a message recorded.
+      if (gateway) Object.defineProperty(claude, "warning", {
+        get: () => claudeGatewayWarning(files.map((f) => f.ctx as ClaudeCtx)),
+        enumerable: true,
+        configurable: true,
+      });
+      out.push(claude);
+    }
   }
 
   // A report must not depend on which agents were asked for: the ledger's telemetry rows count only once a
@@ -478,17 +465,6 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   }
 
   return out;
-}
-
-/** What the rollouts' gateway-routed calls need said about how they were counted, if anything. */
-function gatewayWarning(contexts: CodexCtx[]): string | undefined {
-  const routed = contexts.filter((ctx) => ctx?.modelProvider === "subscription_gateway");
-  // No count here: these files can reach outside the report's window, and the labelled model rows carry the figures.
-  const notes = [
-    routed.some((ctx) => ctx.unconfirmed) ? `some gateway-routed calls in these rollouts had no row in this Mac's gateway ledger, so they are counted under Codex as "<model> (${UNCONFIRMED})"; where this report is combined with the report of the Mac whose gateway served them (--input, or the spend archive), that Mac's ledger bills them and they leave Codex` : "",
-    routed.some((ctx) => ctx.lastCount !== undefined) ? "gateway-routed rollouts recorded token_count without token_usage_record; those calls were matched against this Mac's gateway ledger by model, token counts and time, and a call it does not hold is counted from the rollout" : "",
-  ].filter(Boolean);
-  return notes.length ? notes.join("; ") : undefined;
 }
 
 /**

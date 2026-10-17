@@ -55,12 +55,18 @@ export function matchesProject(project: string, filter?: string): boolean {
  * first read and every `watch` tick ask the same question, so a filter holds for as long as the command runs.
  */
 export function readerFor(st: SourceStatus, f: SourceFile, a: BuildOptions): "report" | "claims" | undefined {
-  // Claude and Grok can pre-filter by project (it's in the dir name). A gateway ledger file is not a project's
-  // transcript: its rows carry the project "gateway", and Copilot and Codex post-filter only their project lists.
-  if ((st.id === "claude" || st.id === "grok") && !f.key?.startsWith("gateway:") && !matchesProject(f.project, a.project)) return undefined;
-  // A rollout a filter leaves out of the Codex report still has to claim what it shares with the ledger,
-  // or the Claude and Copilot rows it vouches for would depend on which account was asked about.
-  if (a.account && !f.account.toLowerCase().includes(a.account.toLowerCase())) return st.id === "codex" && st.ledger ? "claims" : undefined;
+  // A gateway ledger file is not a project's transcript: its rows carry the project "gateway", and Copilot and Codex
+  // post-filter only their project lists. Claude and Grok can pre-filter by project (it's in the dir name).
+  const transcript = !f.key?.startsWith("gateway:");
+  // A transcript a filter leaves out of its report still has to claim what it shares with the ledger, or the rows
+  // it vouches for would depend on which project or account was asked about. Codex has done this all along; a Claude
+  // transcript does too once the ledger can bill its calls (its `msg_gl_*` rows).
+  if ((st.id === "claude" || st.id === "grok") && transcript && !matchesProject(f.project, a.project)) {
+    return st.id === "claude" && st.ledger ? "claims" : undefined;
+  }
+  if (a.account && !f.account.toLowerCase().includes(a.account.toLowerCase())) {
+    return (st.id === "codex" || st.id === "claude" && transcript) && st.ledger ? "claims" : undefined;
+  }
   return "report";
 }
 
@@ -115,6 +121,9 @@ export function pollWatched(built: Built, statuses: SourceStatus[], a: BuildOpti
     const target = readerFor(st, f, a);
     return target === "report" ? slot.reader : target === "claims" ? built.claims : undefined;
   };
+  // The first status `carry` seen: they all hand kept state this tick's one reloaded ledger, and the claims reader
+  // now holds files of two statuses, so it is carried once, after the loop, not once per status.
+  let claimsCarry: ((kept: any) => void) | undefined;
   // This tick's ledger is new, and has to give each rollout's earlier decisions back their rows before any rollout
   // makes a new one: a rollout read first would otherwise take a row another rollout's earlier call held.
   for (const st of pollOrder(statuses)) {
@@ -129,11 +138,13 @@ export function pollWatched(built: Built, statuses: SourceStatus[], a: BuildOpti
       if (list) list.push(f);
       else found.set(reader, [f]);
     }
-    // A rollout that left the roots the config names (finished, and filed away) still has decisions the ledger must hold.
-    // Only Codex files ever reach the claims reader, so only its status may carry into it: a second status with a
-    // `carry` would hand it the same rollouts' decisions twice.
-    if (st.carry) for (const reader of st.id === "codex" ? [slot.reader, built.claims] : [slot.reader]) gone.set(reader, reader.renewAbsent(found.get(reader) ?? [], st.carry));
+    // A file that left the roots the config names (finished, and filed away) still has decisions the ledger must hold.
+    if (st.carry) {
+      claimsCarry ??= st.carry;
+      gone.set(slot.reader, slot.reader.renewAbsent(found.get(slot.reader) ?? [], st.carry));
+    }
   }
+  if (claimsCarry) gone.set(built.claims, built.claims.renewAbsent(found.get(built.claims) ?? [], claimsCarry));
   for (const [reader, absent] of gone) changed += reader.settleAbsent(absent);
   for (const st of pollOrder(statuses)) {
     const slot = built.readers.get(st.id);

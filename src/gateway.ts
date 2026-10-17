@@ -26,7 +26,7 @@ import { accountLabel, copilotAccountIn } from "./copilot";
 import { claudeAccount, claudeAccountIn, type SourceFile } from "./sources";
 import type { Event } from "./parse";
 import { providerMap, readGatewayConfig, resolveStateDirectory, type AuthDirectory, type GatewayVendor } from "./gateway-config";
-import { callKey, dedupe, GATEWAY_ORIGIN, ledgerFiles, markerOf, readRows, RESPONSES_MARKER, TELEMETRY_ORIGIN, type LedgerRow, type RowHolder } from "./gateway-ledger-files";
+import { callKey, dedupe, GATEWAY_ORIGIN, ledgerFiles, markerOf, MESSAGES_MARKER, readRows, RESPONSES_MARKER, TELEMETRY_ORIGIN, type LedgerRow, type RowHolder } from "./gateway-ledger-files";
 import { RowMatcher, stayOn } from "./gateway-match";
 import { billedRow, counts, eventsFor } from "./gateway-events";
 import { CLAIM_WINDOW_MS, type BilledCall, type ClaimOptions, type LedgerDecision } from "./gateway-decisions";
@@ -473,6 +473,11 @@ export class GatewayLedger implements GatewayIndex {
   /** Whether any telemetry row is waiting for a rollout to claim it, so reading rollouts can change a report. */
   hasClaimable(): boolean {
     return this.rows.some((row) => row.origin === TELEMETRY_ORIGIN && row.session === true);
+  }
+
+  /** Whether this Mac's ledger bills any Claude Code call: a `msg_gl_*` row a transcript's message id can point at. */
+  hasMessages(): boolean {
+    return this.rows.some((row) => billedRow(row) && markerOf(row.responseId) === MESSAGES_MARKER);
   }
 }
 
