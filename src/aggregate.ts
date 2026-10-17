@@ -1,5 +1,5 @@
 // Folds parse events into per-tool / per-prompt / per-model / per-project spend.
-import type { Event } from "./parse";
+import type { Event, GatewayMark } from "./parse";
 import type { Period } from "./periods";
 import { contextCost, estTokens, usageCost, type Usage } from "./pricing";
 import { mergeProjectRows } from "./projects";
@@ -12,12 +12,14 @@ interface StreamState {
   sessionId: string;
   sidechain: boolean;
   model?: string;
+  observed: number; // calls as the agent counted them, repeats included
+  routed: Set<string>; // gateway-routed calls this read billed through the ledger; ids, because the ledger is re-read in watch
   nCalls: number;
   callIdx: Map<string, number>; // requestId -> 0-based call index
   currentPromptKey?: string;
   toolUse: Map<string, { name: string; argChars: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string }>;
   results: Array<{ name: string; tokens: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string; error?: boolean; exit?: number }>;
-  usage: Map<string, { model?: string; usage: Usage; costUsd?: number; promptKey?: string; lastTs: number }>;
+  usage: Map<string, { model?: string; usage: Usage; costUsd?: number; promptKey?: string; lastTs: number; gateway?: GatewayMark }>;
   firstUserText?: string;
 }
 
@@ -71,6 +73,24 @@ export interface ModelRow {
   cacheWriteTok: number;
   cost: number;
 }
+/**
+ * A gateway-marked call a Codex or Claude report billed itself because no ledger on its Mac held the row: everything
+ * needed to take it back out of the report's totals and rows, and nothing about its content. See gateway-settle.ts.
+ */
+export interface UnconfirmedCall {
+  /** The gateway's request id without dashes: the part after the marker, of either family, on the call's id. */
+  id: string;
+  ts: number;
+  model: string;
+  account: string;
+  project: string;
+  tokens: number;
+  inTok: number;
+  outTok: number;
+  cacheReadTok: number;
+  cacheWriteTok: number;
+  cost: number;
+}
 export interface ReportPeriod {
   key: string;
   label: string;
@@ -88,6 +108,27 @@ export interface Report {
   totalTokens: number;
   totalCost: number;
   apiCalls: number;
+  /** Calls as the agent counted them. Absent on reports written before this existed. */
+  observedCalls?: number;
+  /**
+   * Gateway-routed calls whose bill this report assigned through the gateway ledger: for Codex, the rollout
+   * copies it dropped because a ledger row bills them; for Claude and Copilot, the ledger rows it counted.
+   * The archive never lets a read that routed fewer calls replace one that routed more. Absent when none.
+   */
+  routedCalls?: number;
+  /**
+   * True when this Mac's gateway ledger was read for this report, so the routed turns it holds were counted from
+   * it once. The archive uses it to recognise the month the ledger takes over (see archive-ledger.ts).
+   */
+  ledger?: boolean;
+  /**
+   * Codex and Claude: gateway-marked calls this report billed because no ledger on this Mac held their row, typically
+   * turns another Mac's gateway served. Where reports of several Macs meet, a call whose id a serving Mac's report
+   * billed is taken out of this report, so it is counted once, on the serving Mac. Absent when none.
+   */
+  gatewayUnconfirmed?: UnconfirmedCall[];
+  /** Claude and Copilot only: ids of the gateway-marked calls this report billed from this Mac's ledger. */
+  gatewayBilled?: string[];
   sessions: number;
   tools: ToolRow[];
   bash: ToolRow[];
@@ -120,6 +161,11 @@ export class Aggregator {
     return ts < this.period.from || ts >= this.period.to;
   }
 
+  /** Forgets everything a file's stream folded, for a file whose events are a snapshot that replaces the last one. */
+  reset(fileKey: string): void {
+    this.streams.delete(fileKey);
+  }
+
   stream(fileKey: string, project: string, source = "claude", account = "default"): (e: Event) => void {
     let s = this.streams.get(fileKey);
     if (!s) {
@@ -129,6 +175,8 @@ export class Aggregator {
         account,
         sessionId: "?",
         sidechain: fileKey.includes("agent-"),
+        observed: 0,
+        routed: new Set(),
         nCalls: 0,
         callIdx: new Map(),
         toolUse: new Map(),
@@ -171,13 +219,21 @@ export class Aggregator {
         s.model = e.model ?? s.model;
         if (!s.callIdx.has(e.requestId)) s.callIdx.set(e.requestId, s.nCalls++);
         // Streamed responses rewrite the same requestId with growing usage — keep latest.
-        s.usage.set(e.requestId, { model: e.model, usage: e.usage, costUsd: e.costUsd, promptKey: s.currentPromptKey, lastTs: e.ts });
+        s.usage.set(e.requestId, { model: e.model, usage: e.usage, costUsd: e.costUsd, promptKey: s.currentPromptKey, lastTs: e.ts, gateway: e.gateway });
         break;
       }
       case "tooluse": {
         const idx = s.callIdx.get(e.requestId) ?? s.nCalls;
         s.toolUse.set(e.id, { name: e.name, argChars: e.argChars, idx, promptKey: s.currentPromptKey, sub: e.sub, deep: e.deep, detail: e.detail });
         break;
+      }
+      case "observed": {
+        s.observed++;
+        return;
+      }
+      case "routed": {
+        s.routed.add(e.id);
+        return;
       }
       case "toolresult": {
         const tu = s.toolUse.get(e.id);
@@ -215,9 +271,20 @@ export class Aggregator {
     let totalCost = 0;
     let totalTokens = 0;
     let apiCalls = 0;
+    let observedCalls = 0;
+    let routedCalls = 0;
     let sinceTs = Infinity;
+    const gatewayUnconfirmed: UnconfirmedCall[] = [];
+    const gatewayBilled: string[] = [];
 
     for (const s of this.streams.values()) {
+      // Streams from parsers that never emit `observed` (Claude, Grok, pi) still
+      // know how many calls they folded, so fall back to those — and to the routed calls a
+      // rollout handed to the ledger, which it made all the same (a ledger row is both).
+      let routedOnly = 0;
+      for (const id of s.routed) if (!s.usage.has(id)) routedOnly++;
+      observedCalls += s.observed || s.usage.size + routedOnly;
+      routedCalls += s.routed.size;
       sessions.add(s.sessionId);
       sources.add(s.source);
       let acc = accounts.get(s.account);
@@ -247,6 +314,11 @@ export class Aggregator {
         m.cacheReadTok += u.usage.cacheRead;
         m.cacheWriteTok += u.usage.cache5m + u.usage.cache1h;
         m.cost += cost;
+        if (u.gateway?.role === "billed") gatewayBilled.push(u.gateway.id);
+        else if (u.gateway) gatewayUnconfirmed.push({
+          id: u.gateway.id, ts: u.lastTs, model: mk, account: s.account, project: s.project, tokens,
+          inTok: u.usage.input, outTok: u.usage.output, cacheReadTok: u.usage.cacheRead, cacheWriteTok: u.usage.cache5m + u.usage.cache1h, cost,
+        });
         if (u.promptKey) {
           const p = this.promptRow(prompts, u.promptKey);
           if (p) {
@@ -336,6 +408,10 @@ export class Aggregator {
       totalTokens,
       totalCost,
       apiCalls,
+      observedCalls,
+      ...(routedCalls ? { routedCalls } : {}),
+      ...(gatewayUnconfirmed.length ? { gatewayUnconfirmed } : {}),
+      ...(gatewayBilled.length ? { gatewayBilled } : {}),
       sessions: sessions.size,
       tools: by([...tools.values()], (t) => t.ctxCost),
       bash: by([...bash.values()], (t) => t.ctxCost),

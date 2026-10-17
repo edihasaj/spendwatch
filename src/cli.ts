@@ -5,10 +5,8 @@ import { writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import packageMetadata from "../package.json";
 import { addAccount, type AccountAddOptions, type AccountProvider } from "./accounts";
-import { Aggregator, type Report } from "./aggregate";
+import type { Report } from "./aggregate";
 import {runTokenCommand} from "./token-summary";
-import { MonthlyAggregator } from "./monthly";
-import { rollingDays } from "./periods";
 import type { Period } from "./periods";
 import { groupImported, newestPopulated, primaryPeriod, resolvePeriods } from "./report-window";
 import { loadMonthlySpend, writeMonthlySpend } from "./spend-history";
@@ -29,11 +27,12 @@ import { attachSessionEquivalentForecasts } from "./session-equivalents";
 import { serveDashboard, testBackgroundPush } from "./push-server";
 import { renderBrief, renderOverview, renderReport } from "./render";
 import { labelReports, loadReports, type AccountGrouping } from "./reports";
+import { settledAmong } from "./gateway-settle";
 import { runRouteCommand } from "./route-cli";
 import { runRunCommand } from "./run-cli";
 import { runEvalCommand } from "./eval-cli";
-import { IncrementalReader } from "./scan";
-import { discover, type SourceStatus } from "./sources";
+import { build, pollWatched, reportsByPeriod, reportsFrom, watchPeriod } from "./build";
+import { discover } from "./sources";
 import { reportOperationalError } from "./telemetry";
 
 interface Args {
@@ -255,8 +254,9 @@ sources:
   grok     ~/.grok/sessions/**/updates.jsonl     (token usage ✓)
   pi       ~/.pi/agent/sessions/*/*.jsonl        (token usage ✓)
   omp      ~/.omp/agent/sessions/*/*.jsonl       (oh-my-pi, token usage ✓)
-  copilot  ~/.config/github-copilot             (binary store, no usage)
-  gemini   ~/.gemini                             (when present)
+  copilot  ~/.copilot/session-store.db           (token usage ✓)
+  gemini   ~/.gemini                             (when present, or a gemini root of an explicit config)
+  gateway  <gateway state>/usage/*.jsonl         (subscription ledger; SPENDWATCH_GATEWAY_SOURCE=off to skip)
 
 multi-account:
   Accounts are auto-detected (Claude email, Codex JWT, Grok auth.json). For roots
@@ -272,78 +272,16 @@ multi-account:
   return a;
 }
 
-function matchesProject(project: string, filter?: string): boolean {
-  return !filter || project.toLowerCase().includes(filter.toLowerCase());
-}
-
-type Sink = Aggregator | MonthlyAggregator;
-
-interface Built {
-  statuses: SourceStatus[];
-  readers: Map<string, { reader: IncrementalReader; sink: Sink; status: SourceStatus }>;
-  periods: Period[];
-}
-
-function build(a: Args, periods: Period[]): Built {
-  const sinceMs = Math.min(...periods.map((period) => period.from));
-  // Codex project lives inside the file, so don't pre-filter codex by project name.
-  const statuses = discover({ sinceMs, agents: a.agents, project: undefined });
-  const readers = new Map<string, { reader: IncrementalReader; sink: Sink; status: SourceStatus }>();
-  for (const st of statuses) {
-    const sink: Sink = periods.length === 1 && !periods[0]!.month
-      ? new Aggregator(periods[0])
-      : new MonthlyAggregator(periods);
-    const reader = new IncrementalReader(sink);
-    for (const f of st.files) {
-      // Claude and Grok can pre-filter by project (it's in the dir name).
-      if ((st.id === "claude" || st.id === "grok") && !matchesProject(f.project, a.project)) continue;
-      if (a.account && !f.account.toLowerCase().includes(a.account.toLowerCase())) continue;
-      reader.poll(f);
-      reader.flush(f);
-    }
-    readers.set(st.id, { reader, sink, status: st });
-  }
-  return { statuses, readers, periods };
-}
-
-function applyFilters(r: Report, a: Args): Report {
-  // Post-filter projects for codex/gemini (project known only after parse).
-  if (a.project) {
-    r.prompts = r.prompts.filter((p) => matchesProject(p.project, a.project));
-    r.projects = r.projects.filter((p) => matchesProject(p.project, a.project));
-  }
-  if (a.account) r.accounts = r.accounts.filter((ac) => ac.account.toLowerCase().includes(a.account!.toLowerCase()));
-  return r;
-}
-
-/** One entry per period, in the order the periods were resolved (oldest first). */
-function reportsByPeriod(built: Built, a: Args): Map<string, Report[]> {
-  const out = new Map<string, Report[]>(built.periods.map((period) => [period.key, []]));
-  for (const { sink, status } of built.readers.values()) {
-    if (!status.parseable) continue;
-    if (sink instanceof MonthlyAggregator) {
-      for (const [key, report] of sink.reports(a.top)) out.get(key)?.push(applyFilters(report, a));
-    } else {
-      out.get(built.periods[0]!.key)?.push(applyFilters(sink.report(a.top), a));
-    }
-  }
-  return out;
-}
-
-function reportsFrom(built: Built, a: Args): Report[] {
-  return reportsByPeriod(built, a).get(primaryPeriod(built.periods).key) ?? [];
-}
-
 async function report(a: Args) {
   const periods = resolvePeriods(a, nowMs());
   const primary = primaryPeriod(periods);
-  const built = a.inputs.length ? { statuses: [], readers: new Map(), periods } : build(a, periods);
+  const built = a.inputs.length ? undefined : build(a, periods);
   // Imported reports are already aggregated, so the period each machine recorded
   // is the only truth about which month they belong to. `--label` stays a
   // local-export concern: those reports were labelled when they were written.
-  let byPeriod = a.inputs.length
-    ? groupImported(loadReports(a.inputs), primary)
-    : new Map([...reportsByPeriod(built, a)].map(([key, rows]) => [key, labelReports(rows, a.label)]));
+  let byPeriod = built
+    ? new Map([...reportsByPeriod(built, a)].map(([key, rows]) => [key, labelReports(rows, a.label)]))
+    : groupImported(loadReports(a.inputs), primary);
   if (!a.inputs.length && a.installationId) {
     byPeriod = new Map([...byPeriod].map(([key, rows]) => [key, rows.map((row) => ({ ...row, installationId: a.installationId }))]));
   }
@@ -358,7 +296,9 @@ async function report(a: Args) {
   // for, show the newest one it actually contains rather than silently emptying
   // the page because the collector's calendar has already moved on.
   const shown = a.inputs.length && !a.month && !a.daysExplicit ? newestPopulated(byPeriod, primary.key) : primary.key;
-  const reports = byPeriod.get(shown) ?? [];
+  const measured = byPeriod.get(shown) ?? [];
+  // Shown with each routed turn counted once where several Macs meet; `--json` passes the reports on as measured.
+  const reports = settledAmong(measured, [...byPeriod.values()].flat());
   if (a.json) {
     // Every measured period ships in one payload so a collector can merge months
     // from several machines without a second pass over the transcripts. Imported
@@ -368,8 +308,8 @@ async function report(a: Args) {
     const payload = a.inputs.length
       ? [...byPeriod.values()].flat()
       : periods.length > 1
-        ? [...byPeriod.values()].flat().filter((report) => report.apiCalls > 0)
-        : reports;
+        ? [...byPeriod.values()].flat().filter((report) => (report.observedCalls ?? report.apiCalls) > 0)
+        : measured;
     // Wait for slow consumers such as SSH to drain large reports before exit.
     await new Promise<void>((resolve, reject) => {
       process.stdout.write(JSON.stringify(payload, null, 2) + "\n", (error) =>
@@ -385,10 +325,11 @@ async function report(a: Args) {
     const buf: string[] = [];
     if (live.length > 1) buf.push(renderOverview(reports));
     for (const r of live) buf.push(renderReport(r, { heading: false }));
-    // Footnotes for sources present but not parseable / no data.
-    for (const st of built.statuses) {
+    // Footnotes: why a present source reported nothing, and how a reporting source counted some of its calls.
+    for (const st of built?.statuses ?? []) {
       const had = live.some((r) => r.source === st.id);
       if (!had && st.note) buf.push(`\x1b[2m· ${st.id}: ${st.note}\x1b[0m`);
+      if (st.warning) buf.push(`\x1b[2m· ${st.id}: ${st.warning}\x1b[0m`);
     }
     process.stdout.write(buf.join("\n\n") + "\n");
   }
@@ -527,7 +468,7 @@ function watch(a: Args) {
   // Watch is a live tail, so it stays on a rolling window rather than resetting
   // to an empty screen at midnight on the first of the month.
   if (!a.daysExplicit) a.days = 1;
-  const built = build(a, [rollingDays(Date.now(), a.days)]);
+  const built = build(a, [watchPeriod(Date.now(), a.days)], { watching: true });
   const sinceMs = Date.now() - a.days * 86400_000;
   const draw = () => {
     const reports = reportsFrom(built, a).filter((r) => r.apiCalls > 0);
@@ -538,13 +479,7 @@ function watch(a: Args) {
   };
   draw();
   setInterval(() => {
-    let changed = 0;
-    for (const st of discover({ sinceMs, agents: a.agents })) {
-      const slot = built.readers.get(st.id);
-      if (!slot) continue;
-      for (const f of st.files) changed += slot.reader.poll(f);
-    }
-    if (changed > 0) draw();
+    if (pollWatched(built, discover({ sinceMs, agents: a.agents }), a) > 0) draw();
   }, a.interval);
 }
 
