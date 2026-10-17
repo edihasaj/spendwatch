@@ -188,9 +188,11 @@ export class ManagedPostgresDatabase {
       if (word(tokens[0], "BEGIN")) this.begin();
       else if (word(tokens[0], "COMMIT") || word(tokens[0], "END")) this.commit();
       else if (word(tokens[0], "ROLLBACK") && tokens.length === 1) this.rollback();
-      else this.execute(statement, [], "rows");
-      if (word(tokens[0], "CREATE") || word(tokens[0], "ALTER") || word(tokens[0], "DROP")) this.catalog.clear();
-      if (word(tokens[0], "CREATE") || word(tokens[0], "ALTER") || word(tokens[0], "DROP")) this.sampleOrigin = undefined;
+      else if (word(tokens[0], "CREATE") || word(tokens[0], "ALTER") || word(tokens[0], "DROP")) {
+        // A failed DDL statement can mean another connection already changed the schema, so drop the cached columns either way.
+        try { this.execute(statement, [], "rows"); }
+        finally { this.catalog.clear(); this.sampleOrigin = undefined; }
+      } else this.execute(statement, [], "rows");
     }
   }
 
