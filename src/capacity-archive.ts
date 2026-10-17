@@ -1,8 +1,12 @@
-import { Database } from "bun:sqlite";
+import { Database, isManagedDatabase } from "./database";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { openCapacityDatabase } from "./capacity-db";
+import { createManagedArchive, archiveFingerprints } from "./managed/archive-snapshot";
+import { deleteManagedArchived, restoreManagedArchive } from "./managed/archive-mutations";
+import { persistManagedArchive } from "./managed/archive-persist";
+import type { ManagedPostgresDatabase } from "./managed/postgres-db";
 
 const DAY_MS = 86_400_000;
 const WINDOW_COLUMNS = [
@@ -82,6 +86,9 @@ async function gunzip(source: string, destination: string): Promise<void> {
 }
 
 function createArchive(database: string, destination: string, cutoff: number, createdAt: string): ArchiveMetadata {
+  if (isManagedDatabase(database)) {
+    return createManagedArchive(database, destination, cutoff, createdAt, WINDOW_COLUMNS, ACCOUNT_COLUMNS);
+  }
   const db = openCapacityDatabase(database);
   try {
     db.prepare("ATTACH DATABASE ? AS archive").run(destination);
@@ -100,6 +107,7 @@ function createArchive(database: string, destination: string, cutoff: number, cr
 }
 
 function deleteArchived(database: string, restoredArchive: string, metadata: ArchiveMetadata): { windows: number; accounts: number } {
+  if (isManagedDatabase(database)) return deleteManagedArchived(database, restoredArchive, metadata);
   const db = openCapacityDatabase(database);
   try {
     db.prepare("ATTACH DATABASE ? AS archive").run(restoredArchive);
@@ -125,14 +133,15 @@ function deleteArchived(database: string, restoredArchive: string, metadata: Arc
 
 export async function archiveCapacityHistory(options: CapacityArchiveOptions): Promise<CapacityArchiveResult> {
   const database = resolve(options.database);
-  if (!existsSync(database) || !statSync(database).isFile()) throw new Error(`SQLite database not found: ${database}`);
+  const managed = isManagedDatabase(database);
+  if (!managed && (!existsSync(database) || !statSync(database).isFile())) throw new Error(`SQLite database not found: ${database}`);
   const now = options.now ?? Date.now();
   const keepDays = options.keepDays ?? 365;
   if (!Number.isInteger(keepDays) || keepDays < 30) throw new Error("keep-days must be an integer of at least 30");
   const cutoff = options.before ?? now - keepDays * DAY_MS;
   if (!Number.isFinite(cutoff) || cutoff >= now) throw new Error("archive cutoff must be in the past");
-  const sizeBefore = statSync(database).size;
   const db = openCapacityDatabase(database);
+  const sizeBefore = managed ? (db as unknown as ManagedPostgresDatabase).storageBytes() : statSync(database).size;
   const eligible = { windows: countBefore(db, "capacity_history", cutoff), accounts: countBefore(db, "capacity_account_history", cutoff) };
   db.close();
   const base: CapacityArchiveResult = {
@@ -160,13 +169,27 @@ export async function archiveCapacityHistory(options: CapacityArchiveOptions): P
     await gunzip(finalPath, restored);
     const restoredMetadata = archiveMetadata(restored);
     if (JSON.stringify(metadata) !== JSON.stringify(restoredMetadata)) throw new Error("archive restore-drill metadata mismatch");
+    if (managed) {
+      archiveFingerprints(restored);
+      // Only a supervisor-confirmed independent off-machine copy permits deletion.
+      await persistManagedArchive(finalPath);
+    }
     const deleted = deleteArchived(database, restored, metadata);
     pruned = true;
     if (options.vacuum !== false) {
       const compact = openCapacityDatabase(database);
-      try { compact.exec("VACUUM"); } finally { compact.close(); }
+      try {
+        if (managed) (compact as unknown as ManagedPostgresDatabase).compactHistory();
+        else compact.exec("VACUUM");
+      } finally { compact.close(); }
     }
-    return { ...base, dryRun: false, archive: finalPath, deleted, bytes: { before: sizeBefore, after: statSync(database).size } };
+    let sizeAfter: number;
+    if (managed) {
+      const current = new Database(database, { readonly: true });
+      try { sizeAfter = (current as unknown as ManagedPostgresDatabase).storageBytes(); }
+      finally { current.close(); }
+    } else sizeAfter = statSync(database).size;
+    return { ...base, dryRun: false, archive: finalPath, deleted, bytes: { before: sizeBefore, after: sizeAfter } };
   } catch (error) {
     if (!pruned && existsSync(finalPath)) rmSync(finalPath);
     throw error;
@@ -185,6 +208,10 @@ export async function restoreCapacityArchive(databaseInput: string, archiveInput
     archiveMetadata(restored);
     const db = openCapacityDatabase(database);
     try {
+      if (isManagedDatabase(database)) {
+        const inserted = restoreManagedArchive(database, restored, WINDOW_COLUMNS, ACCOUNT_COLUMNS);
+        return { archive, ...inserted };
+      }
       db.prepare("ATTACH DATABASE ? AS archive").run(restored);
       const inserted = db.transaction(() => ({
         windows: Number(db.prepare(`INSERT OR IGNORE INTO main.capacity_history(${WINDOW_COLUMNS.join(",")}) SELECT ${WINDOW_COLUMNS.join(",")} FROM archive.capacity_history`).run().changes),
