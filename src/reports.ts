@@ -63,6 +63,8 @@ export function sourceLabel(source: string): string {
     pi: "pi",
     omp: "oh-my-pi",
     copilot: "Copilot",
+    mission: "Mission Runtime",
+    autoreview: "AutoReview",
     gemini: "Gemini",
   };
   const agentLabel = known[agent] ?? agent;
