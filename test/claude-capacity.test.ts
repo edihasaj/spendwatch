@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   classifyReadFailure,
@@ -14,6 +13,7 @@ import {
   refreshedCredentialsFrom,
 } from "../src/claude-capacity";
 import { staleAfterMs, windowFreshness } from "../src/capacity-freshness";
+import { tempDir } from "./tmp";
 
 const usage = {
   five_hour: { utilization: 100, resets_at: "2026-08-18T16:09:59.773984+00:00" },
@@ -52,7 +52,7 @@ describe("Claude capacity", () => {
   });
 
   test("discovers the default profile and named profiles", () => {
-    const base = mkdtempSync(join(tmpdir(), "spendwatch-claude-"));
+    const base = tempDir("spendwatch-claude-");
     const write = (home: string, metadata: string, email: string, plan: string) => {
       mkdirSync(home, { recursive: true });
       writeFileSync(join(home, ".credentials.json"), JSON.stringify({
@@ -110,7 +110,7 @@ describe("Claude token refresh", () => {
   });
 
   test("writes credentials back without discarding unrelated fields", () => {
-    const home = mkdtempSync(join(tmpdir(), "claude-creds-"));
+    const home = tempDir("claude-creds-");
     const path = join(home, ".credentials.json");
     writeFileSync(path, JSON.stringify({
       claudeAiOauth: { accessToken: "old", refreshToken: "old-r", expiresAt: 1, subscriptionType: "max", rateLimitTier: "tier-x" },

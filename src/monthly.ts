@@ -9,6 +9,8 @@ import { monthKeyOf, type Period } from "./periods";
 
 export interface EventSink {
   stream(fileKey: string, project: string, source?: string, account?: string): (event: Event) => void;
+  /** Forgets what a file's stream folded, so the next fold of that file starts afresh. */
+  reset(fileKey: string): void;
 }
 
 interface StreamRouter {
@@ -21,6 +23,11 @@ export class MonthlyAggregator implements EventSink {
 
   constructor(periods: Period[]) {
     this.months = new Map(periods.map((period) => [period.key, { period, agg: new Aggregator(period, false) }]));
+  }
+
+  reset(fileKey: string): void {
+    this.routers.delete(fileKey);
+    for (const { agg } of this.months.values()) agg.reset(fileKey);
   }
 
   stream(fileKey: string, project: string, source = "claude", account = "default"): (event: Event) => void {
