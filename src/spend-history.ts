@@ -95,7 +95,7 @@ export function writeMonthlySpend(
         tokens = excluded.tokens, cost = excluded.cost, calls = excluded.calls,
         observed_calls = excluded.observed_calls, ledger = excluded.ledger, routed_calls = excluded.routed_calls,
         sessions = excluded.sessions, first_ts = excluded.first_ts, updated_at = excluded.updated_at
-      WHERE ${force ? "1" : fullerRead("spend_month")}
+      WHERE ${force ? "1 = 1" : fullerRead("spend_month")}
     `);
     // A source rewrites its own project rows wholesale, so a project that went
     // quiet disappears from the month instead of lingering at a stale total.
