@@ -3,7 +3,9 @@
 import { Database } from "./database";
 import type { Report } from "./aggregate";
 import { monthLabel } from "./periods";
-import { archivedSourceLabels, archiveReport, archiveSource, initReportArchive } from "./spend-report-archive";
+import { planLedgerMonths } from "./archive-ledger";
+import { archivedCoverage, byMonthSource, callTotals, settledDifference } from "./gateway-settle";
+import { addArchiveColumns, archivedSourceLabels, archiveReport, archiveSource, fullerRead, initReportArchive } from "./spend-report-archive";
 import {archiveTokenDays} from "./token-days";
 
 const SCHEMA = `
@@ -13,6 +15,9 @@ CREATE TABLE IF NOT EXISTS spend_month (
   tokens INTEGER NOT NULL,
   cost REAL NOT NULL,
   calls INTEGER NOT NULL,
+  observed_calls INTEGER,
+  ledger INTEGER,
+  routed_calls INTEGER,
   sessions INTEGER NOT NULL,
   first_ts INTEGER,
   updated_at INTEGER NOT NULL,
@@ -67,7 +72,10 @@ export interface MonthlySpend {
  * only rewritten when the incoming run saw at least as many calls as the one
  * already stored. Session files rotate away, so re-reading July next year finds
  * less of it than today — the archive should keep the fullest measurement it
- * ever made, while still accepting a genuine correction upward.
+ * ever made, while still accepting a genuine correction upward. A read that billed fewer
+ * routed calls through the gateway ledger never replaces one that billed more (see
+ * `fullerRead`), and the month the ledger takes over moves its sources together (see
+ * `planLedgerMonths`).
  */
 export function writeMonthlySpend(
   path: string,
@@ -79,13 +87,15 @@ export function writeMonthlySpend(
     db.exec("PRAGMA journal_mode = WAL;");
     db.exec(SCHEMA);
     initReportArchive(db);
-    const upsert = db.prepare(`
-      INSERT INTO spend_month(month, source, tokens, cost, calls, sessions, first_ts, updated_at)
-      VALUES (?,?,?,?,?,?,?,?)
+    addArchiveColumns(db, "spend_month");
+    const upsert = (force: boolean) => db.prepare(`
+      INSERT INTO spend_month(month, source, tokens, cost, calls, observed_calls, ledger, routed_calls, sessions, first_ts, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(month, source) DO UPDATE SET
         tokens = excluded.tokens, cost = excluded.cost, calls = excluded.calls,
+        observed_calls = excluded.observed_calls, ledger = excluded.ledger, routed_calls = excluded.routed_calls,
         sessions = excluded.sessions, first_ts = excluded.first_ts, updated_at = excluded.updated_at
-      WHERE excluded.calls >= spend_month.calls
+      WHERE ${force ? "1" : fullerRead("spend_month")}
     `);
     // A source rewrites its own project rows wholesale, so a project that went
     // quiet disappears from the month instead of lingering at a stale total.
@@ -97,17 +107,32 @@ export function writeMonthlySpend(
     const months = new Set<string>();
     let rows = 0;
     const tx = db.transaction(() => {
+      // Decided before anything is written: the sources of a month the ledger takes over move together.
+      const together = planLedgerMonths(db, reports);
       for (const report of reports) {
-        if (!report.period?.month || report.apiCalls <= 0) continue;
+        // A month whose every call was routed to the gateway bills nothing here but still observed calls:
+        // it has to replace a stale row that counted those turns, so observed calls decide, not billed ones.
+        if (!report.period?.month || (report.observedCalls ?? report.apiCalls) <= 0) continue;
+        const verdict = together.get(report);
+        // Left out with its month's other sources: nothing of it is written, its days included.
+        if (verdict === "reject") continue;
+        const force = verdict === "accept";
         const source = archiveSource(db, report);
-        archiveTokenDays(db, report, source);
-        archiveReport(db, report, source, opts.generatedAt);
-        const result = upsert.run(
+        // The full report decides first: its acceptance says whether this run
+        // really saw the whole month, which picks the daily detail's mode.
+        const outcome = archiveReport(db, report, source, opts.generatedAt, force);
+        // Days from reads that bill routed turns in different sources must not be maxed into each other, or
+        // those turns would count twice; such a read leaves the days alone.
+        if (outcome !== "placement") archiveTokenDays(db, report, source, outcome === "accepted" ? "replace" : "merge");
+        const result = upsert(force).run(
           report.period.key,
           source,
           Math.round(report.totalTokens),
           report.totalCost,
           report.apiCalls,
+          report.observedCalls ?? report.apiCalls,
+          report.ledger ? 1 : 0,
+          report.routedCalls ?? 0,
           report.sessions,
           report.sinceTs || null,
           opts.generatedAt,
@@ -150,7 +175,10 @@ interface Row {
   updatedAt: number;
 }
 
-/** Every recorded month, newest first, with its per-source and per-project breakdown. */
+/**
+ * Every recorded month, newest first, with its per-source and per-project breakdown. A Codex call another Mac's
+ * gateway billed is taken out of the client's rows here, as `loadArchivedReports` takes it out of its report.
+ */
 export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 12): MonthlySpend[] {
   const db = new Database(path, { readonly: true, create: false });
   try {
@@ -165,12 +193,18 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
         FROM spend_month ORDER BY month DESC, tokens DESC
       `)
       .all();
-    const projectRows = db
-      .query<{ month: string; project: string; tokens: number; cost: number }, []>(`
-        SELECT month, project, SUM(tokens) AS tokens, SUM(cost) AS cost
-        FROM spend_month_project GROUP BY month, project ORDER BY month DESC, tokens DESC
-      `)
-      .all();
+    const coverage = archivedCoverage(db);
+    for (const row of rows) {
+      const calls = byMonthSource(coverage, row.month, row.source);
+      if (!calls.length) continue;
+      const covered = callTotals(calls);
+      // Never below zero: the calls were part of this read, so a smaller row is not the read they came from.
+      row.tokens = Math.max(0, row.tokens - covered.tokens);
+      row.cost = Math.max(0, settledDifference(row.cost, covered.cost));
+      row.calls = Math.max(0, row.calls - covered.calls);
+    }
+    if (coverage.size) rows.sort((a, b) => b.month.localeCompare(a.month) || b.tokens - a.tokens);
+    const projectRows = monthProjects(db, coverage);
     const months = new Map<string, MonthlySpend>();
     for (const row of rows) {
       let month = months.get(row.month);
@@ -219,4 +253,24 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
   } finally {
     db.close();
   }
+}
+
+/** Project totals per month across sources, largest first, less the calls another Mac's gateway billed. */
+function monthProjects(db: Database, coverage: ReturnType<typeof archivedCoverage>): Array<{ month: string; project: string; tokens: number; cost: number }> {
+  const totals = new Map<string, { month: string; project: string; tokens: number; cost: number }>();
+  const rows = db.query<{ month: string; source: string; project: string; tokens: number; cost: number }, []>(
+    "SELECT month, source, project, tokens, cost FROM spend_month_project",
+  ).all();
+  for (const row of rows) {
+    const calls = byMonthSource(coverage, row.month, row.source).filter((call) => call.project.toLowerCase() === row.project.toLowerCase());
+    const covered = callTotals(calls);
+    const key = JSON.stringify([row.month, row.project]);
+    const total = totals.get(key) ?? { month: row.month, project: row.project, tokens: 0, cost: 0 };
+    total.tokens += calls.length ? Math.max(0, row.tokens - covered.tokens) : row.tokens;
+    total.cost += calls.length ? Math.max(0, settledDifference(row.cost, covered.cost)) : row.cost;
+    totals.set(key, total);
+  }
+  return [...totals.values()]
+    .filter((row) => row.tokens > 0 || row.cost > 0)
+    .sort((a, b) => b.month.localeCompare(a.month) || b.tokens - a.tokens);
 }

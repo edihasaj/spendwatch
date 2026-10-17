@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { Aggregator } from "../src/aggregate";
 import { IncrementalReader } from "../src/scan";
@@ -8,6 +7,7 @@ import { humanProject, projectFromCwd } from "../src/projects";
 import { parseLine, commandPath } from "../src/parse";
 import { newCodexCtx, parseCodexLine } from "../src/codex";
 import type { SourceFile } from "../src/sources";
+import { tempDir } from "./tmp";
 
 const SESS = "11111111-1111-1111-1111-111111111111";
 const TS = "2026-06-10T10:00:00.000Z";
@@ -37,13 +37,22 @@ function entries(): string[] {
 }
 
 function makeFixture(): { file: string } {
-  const root = mkdtempSync(join(tmpdir(), "spendwatch-"));
+  const root = tempDir("spendwatch-");
   const file = join(root, `${SESS}.jsonl`);
   writeFileSync(file, entries().join("\n") + "\n");
   return { file };
 }
 
 describe("claude aggregate from fixture", () => {
+  test("sources that never emit observed events count the calls they folded", () => {
+    const { file } = makeFixture();
+    const agg = new Aggregator();
+    new IncrementalReader(agg).poll(claudeFile(file));
+    // Claude has no repeated-event noise to see through, so observed calls are its billed ones: an archive of
+    // a Claude-only month would otherwise freeze at zero observed calls.
+    expect(agg.report()).toMatchObject({ apiCalls: 2, observedCalls: 2 });
+  });
+
   test("exact costs, tool ctx cost, prompt attribution", () => {
     const { file } = makeFixture();
     const agg = new Aggregator();
@@ -127,7 +136,7 @@ describe("codex aggregate from fixture", () => {
   }
 
   test("token usage, deep command, project from cwd", () => {
-    const root = mkdtempSync(join(tmpdir(), "spendwatch-cx-"));
+    const root = tempDir("spendwatch-cx-");
     const file = join(root, "rollout-x.jsonl");
     writeFileSync(file, codexEntries().join("\n") + "\n");
     const agg = new Aggregator();
@@ -154,7 +163,7 @@ describe("codex aggregate from fixture", () => {
 
 describe("friction + automate targets", () => {
   test("error rate and exit-127 surface in targets", () => {
-    const root = mkdtempSync(join(tmpdir(), "spendwatch-fr-"));
+    const root = tempDir("spendwatch-fr-");
     const file = join(root, `${SESS}.jsonl`);
     const lines: string[] = [];
     const push = (cmd: string, id: string, isErr: boolean) => {
@@ -214,7 +223,7 @@ describe("sqlite snapshot", () => {
     new IncrementalReader(agg).poll(claudeFile(file, "work@co.com"));
     const report = agg.report();
 
-    const dbPath = join(mkdtempSync(join(tmpdir(), "spendwatch-db-")), "s.db");
+    const dbPath = join(tempDir("spendwatch-db-"), "s.db");
     const { runId, rows } = writeSnapshot(dbPath, [report], { generatedAt: 1_700_000_000_000, days: 30 });
     expect(runId).toBe(1);
     expect(rows).toBeGreaterThan(0);
