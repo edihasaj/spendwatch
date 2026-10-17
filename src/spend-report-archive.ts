@@ -40,9 +40,18 @@ const ARCHIVE_TABLES: readonly string[] = ["spend_month", "spend_report"];
 export function addArchiveColumns(db: Database, table: string): void {
   // The name is interpolated into the PRAGMA and the ALTER, so only these two tables may be asked about.
   if (!ARCHIVE_TABLES.includes(table)) throw new Error(`not an archive table: ${table}`);
-  const stored = new Set(db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+  const columns = (): Set<string> => new Set(db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+  const stored = columns();
   for (const column of ["observed_calls", "ledger", "routed_calls"]) {
-    if (!stored.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} INTEGER`);
+    if (stored.has(column)) continue;
+    try {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} INTEGER`);
+    } catch (error) {
+      // Two writers that open an archive from before these columns at the same time can both find a column missing,
+      // and the second ALTER then fails because the first one added it. That is the state this wants: only a column
+      // that is still missing afterwards is an error.
+      if (!columns().has(column)) throw error;
+    }
   }
 }
 
