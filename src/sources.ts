@@ -18,6 +18,8 @@ import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
 import { walkJsonl } from "./scan";
 import { collectCopilot, defaultCopilotRoots } from "./copilot";
+import { defaultMissionRoots, readMission } from "./mission";
+import { collectAutoreview } from "./autoreview";
 import { GatewayIndex, type GatewayLedger } from "./gateway";
 
 export interface SourceFile {
@@ -452,6 +454,29 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
     const present = roots.some((r) => existsSync(r.path)) || rows.length > 0;
     out.push({ id: "copilot", present, parseable: all.length > 0, ledger, files: all,
       note: present && !all.length ? "no readable per-request usage for this period" : undefined });
+  }
+
+  // Mission Runtime keeps each attempt's own usage record in its authority SQLite store.
+  if (want("mission")) {
+    const roots = cfg ? cfg.filter((r) => r.agent === "mission") : defaultMissionRoots().map((path) => ({ agent: "mission", path, account: undefined }));
+    const reads = roots.map((r) => readMission(r.path, opts.sinceMs, r.account, opts.project));
+    const present = roots.some((r) => existsSync(r.path));
+    const unreadable = reads.some((read) => read.unreadable);
+    out.push({ id: "mission", present, parseable: present, files: reads.flatMap((read) => read.files),
+      note: !present ? "not installed" : unreadable ? "store could not be read" : undefined });
+  }
+
+  // AutoReview's Cloudflare job ledger has no default location: only a config root enables it. Asked for by name
+  // without one, it says what is missing instead of vanishing from the report.
+  if (want("autoreview")) {
+    const roots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "autoreview") : [];
+    if (roots.length > 0) {
+      const files = roots.flatMap((r) => collectAutoreview(r.path, opts.sinceMs, r.account, opts.project));
+      const present = roots.some((r) => existsSync(r.path));
+      out.push({ id: "autoreview", present, parseable: present, note: present ? undefined : "ledger file not found", files });
+    } else if (opts.agents?.has("autoreview")) {
+      out.push({ id: "autoreview", present: false, parseable: false, note: "needs an autoreview root in the config", files: [] });
+    }
   }
 
   // Gemini CLI — ~/.gemini (logs/telemetry); structure TBD. Like every other agent, an explicit config names where
