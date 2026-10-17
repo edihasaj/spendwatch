@@ -120,3 +120,27 @@ describe("archivedCoverage without the SQLite JSON functions", () => {
     db.close();
   });
 });
+
+describe("addArchiveColumns with a concurrent writer", () => {
+  /** A database whose first column list predates the columns, as another writer adds them just before this ALTER runs. */
+  const racing = (afterwards: string[]) => {
+    let reads = 0;
+    const altered: string[] = [];
+    const db = {
+      query: () => ({ all: () => (reads++ === 0 ? [] : afterwards).map((name) => ({ name })) }),
+      exec: (sql: string) => { altered.push(sql); throw new Error("duplicate column name"); },
+    } as unknown as Database;
+    return { db, altered };
+  };
+
+  test("a column another writer added in the meantime is not an error", () => {
+    const { db, altered } = racing(["observed_calls", "ledger", "routed_calls"]);
+    expect(() => addArchiveColumns(db, "spend_month")).not.toThrow();
+    expect(altered.length).toBe(3);
+  });
+
+  test("a column that is still missing after a failed ALTER is", () => {
+    const { db } = racing(["observed_calls"]);
+    expect(() => addArchiveColumns(db, "spend_month")).toThrow("duplicate column name");
+  });
+});
