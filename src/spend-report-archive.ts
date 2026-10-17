@@ -29,6 +29,8 @@ export function initReportArchive(db: Database): void {
   addArchiveColumns(db, "spend_report");
 }
 
+const ARCHIVE_TABLES: readonly string[] = ["spend_month", "spend_report"];
+
 /**
  * Archives predate these columns; ALTER is the only way to add them without a rebuild.
  * - `observed_calls`: the calls the agent itself counted; see `fullerRead`.
@@ -36,11 +38,11 @@ export function initReportArchive(db: Database): void {
  * - `routed_calls`: the gateway-routed calls that read billed through the ledger (NULL on older rows: none).
  */
 export function addArchiveColumns(db: Database, table: string): void {
+  // The name is interpolated into the PRAGMA and the ALTER, so only these two tables may be asked about.
+  if (!ARCHIVE_TABLES.includes(table)) throw new Error(`not an archive table: ${table}`);
+  const stored = new Set(db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((row) => row.name));
   for (const column of ["observed_calls", "ledger", "routed_calls"]) {
-    const named = db.query<{ name: string }, [string, string]>(
-      "SELECT name FROM pragma_table_info(?) WHERE name = ?",
-    ).get(table, column);
-    if (!named) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} INTEGER`);
+    if (!stored.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} INTEGER`);
   }
 }
 
@@ -61,7 +63,7 @@ export const fullerRead = (table: string) =>
  */
 export function storedArchiveSource(db: Database, source: string, installationId?: string): string | undefined {
   const existing = db.query<{ installation_id: string; archive_source: string }, [string]>(
-    "SELECT installation_id, archive_source FROM spend_installation WHERE source = ? ORDER BY rowid",
+    `SELECT installation_id, archive_source FROM spend_installation WHERE source = ? ORDER BY CASE WHEN archive_source = source THEN 0 ELSE 1 END, archive_source`,
   ).all(source);
   if (!existing.length) return source;
   if (!installationId) return existing[0]!.archive_source;
