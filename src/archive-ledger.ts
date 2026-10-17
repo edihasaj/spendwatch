@@ -1,5 +1,6 @@
 // The month a gateway ledger takes over. A read with this Mac's ledger moves the routed turns out of the Codex
-// report and into the Claude or Copilot report of the same Mac and month. Sources are archived one by one, each
+// report (and out of the Claude Code transcripts in the Claude report) and into the Claude or Copilot ledger rows of
+// the same Mac and month. Sources are archived one by one, each
 // keeping its fullest read, so a month first archived without the ledger could end up half moved: Codex
 // accepting the new read while Claude keeps the old one (its transcripts rotated) loses the routed turns, and
 // the opposite counts them twice. So the first time any of those sources takes a read with routed turns, they
@@ -81,8 +82,9 @@ export function planLedgerMonths(db: Database, reports: Report[]): Map<Report, V
       const offers = [...(group.incoming.get(source) ?? [])].sort((a, b) => observedOf(b) - observedOf(a));
       return { source, incoming: offers[0], rest: offers.slice(1), stored };
     });
-    // Codex is where routed turns leave from. Claude and Copilot matter when routed turns reach them, or when this
-    // run did not read them, so nothing says whether they do; a read of one that routed nothing is its own affair.
+    // Codex is where routed turns leave from. Claude and Copilot matter when routed turns reach them (or, for Claude,
+    // leave its transcripts), or when this run did not read them, so nothing says whether they do; a read of one that
+    // routed nothing is its own affair.
     const involved = members.filter((m) => m.source === "codex" || routedOf(m.incoming) > 0
       || m.stored.some((row) => row.routed > 0) || (!m.incoming && m.stored.length > 0));
     const takesOver = involved.some((m) => routedOf(m.incoming) > 0) && involved.some((m) => m.stored.some((row) => !row.ledger));

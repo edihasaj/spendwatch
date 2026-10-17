@@ -74,11 +74,11 @@ export interface ModelRow {
   cost: number;
 }
 /**
- * A gateway-marked call a Codex report billed itself because no ledger on its Mac held the row: everything needed to
- * take it back out of the report's totals and rows, and nothing about its content. See gateway-settle.ts.
+ * A gateway-marked call a Codex or Claude report billed itself because no ledger on its Mac held the row: everything
+ * needed to take it back out of the report's totals and rows, and nothing about its content. See gateway-settle.ts.
  */
 export interface UnconfirmedCall {
-  /** The gateway's request id without dashes: the part of `resp_gl_<id>` after the marker. */
+  /** The gateway's request id without dashes: the part after the marker, of either family, on the call's id. */
   id: string;
   ts: number;
   model: string;
@@ -122,7 +122,7 @@ export interface Report {
    */
   ledger?: boolean;
   /**
-   * Codex only: gateway-marked calls this report billed because no ledger on this Mac held their row, typically
+   * Codex and Claude: gateway-marked calls this report billed because no ledger on this Mac held their row, typically
    * turns another Mac's gateway served. Where reports of several Macs meet, a call whose id a serving Mac's report
    * billed is taken out of this report, so it is counted once, on the serving Mac. Absent when none.
    */

@@ -1,9 +1,9 @@
 // Where the reports of several Macs meet.
 //
-// A Codex client whose turn another Mac's gateway served keeps that turn in its own report, labelled, because
-// nothing on the client proves that a ledger counts it (see codex.ts). The serving Mac's report bills the same turn
-// from its ledger. Both reports name the call by the same content-free id (the part of `resp_gl_<id>` after the
-// marker), so wherever their reports are combined, the client's copy is taken out here: each routed turn is then
+// A Codex or Claude client whose turn another Mac's gateway served keeps that turn in its own report, labelled,
+// because nothing on the client proves that a ledger counts it (see codex.ts and claude-routed.ts). The serving Mac's
+// report bills the same turn from its ledger. Both reports name the call by the same content-free id (the part after
+// the marker, of either family), so wherever their reports are combined, the client's copy is taken out here: each routed turn is then
 // counted once, on the serving Mac, under the provider's account. A client turn that no report in the set billed
 // stays where it is, so a serving Mac that does not run Spendwatch loses nothing.
 //
