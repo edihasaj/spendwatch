@@ -15,6 +15,14 @@ describe("model pricing", () => {
     expect(long).toBeCloseTo((101 * 4 + 10 * 18 + 271_900 * 0.4) / 1e6, 8);
   });
 
+  test("prices a gateway ledger model by the model itself, not the subscription it ran on", () => {
+    // The gateway ledger labels rows by their alias, with the vendor only in a
+    // suffix, so these must keep the rates above rather than a vendor default.
+    expect(priceFor("codex/gpt-6.1-sol")).toMatchObject({ input: 1.25, output: 10 });
+    expect(priceFor("copilot/claude-opus-5.5")).toMatchObject({ input: 5, output: 25 });
+    expect(priceFor("claude-opus-5.5 (telemetry backfill)")).toMatchObject({ input: 5, output: 25 });
+  });
+
   test("uses DeepSeek cache-hit pricing instead of a generic multiplier", () => {
     const cost = usageCost("deepseek-v4-flash", { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cache5m: 0, cache1h: 0 });
     expect(cost).toBeCloseTo(0.14 + 0.28 + 0.0028, 8);

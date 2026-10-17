@@ -1,6 +1,8 @@
 // Parses Claude Code transcript JSONL lines into spend-relevant events.
 import type { Usage } from "./pricing";
 import { projectFromCwd } from "./projects";
+import { isMarked, markedId } from "./gateway-ledger-files";
+import { routedMessage, type ClaudeCtx } from "./claude-routed";
 
 // {sub, deep} for a shell command, for spreading onto a tooluse event.
 export function cmdParts(command: string): { sub: string; deep: string } {
@@ -43,12 +45,32 @@ export function toolDetail(name: string, input: any): string | undefined {
   }
 }
 
+/**
+ * A call the subscription gateway marked as billed on a subscription: `resp_gl_<id>` for a Responses request, whose id
+ * Codex keeps in its rollout, or `msg_gl_<id>` for a Messages one, whose id Claude Code keeps as the message id of its
+ * transcript line. `id` is the part after either marker, the gateway's request id without dashes, and nothing else
+ * about the call. A serving Mac's ledger row is "billed"; the copy a rollout or a transcript kept because no ledger on
+ * its own Mac holds that row is "unconfirmed". When reports of several Macs meet, an unconfirmed call whose id another
+ * report billed is taken out of the client's report (see gateway-settle.ts).
+ */
+export interface GatewayMark {
+  id: string;
+  role: "billed" | "unconfirmed";
+}
+
 export type Event =
   | { t: "prompt"; sessionId: string; promptId: string; text: string; sidechain: boolean; ts: number }
-  | { t: "api"; sessionId: string; requestId: string; model?: string; usage: Usage; costUsd?: number; sidechain: boolean; ts: number }
+  | { t: "api"; sessionId: string; requestId: string; model?: string; usage: Usage; costUsd?: number; sidechain: boolean; ts: number; gateway?: GatewayMark }
   | { t: "tooluse"; sessionId: string; requestId: string; id: string; name: string; argChars: number; sub?: string; deep?: string; detail?: string; ts: number }
   | { t: "toolresult"; sessionId: string; id: string; chars: number; error?: boolean; exit?: number; ts: number }
-  | { t: "meta"; sessionId: string; project?: string; model?: string; ts: number };
+  | { t: "meta"; sessionId: string; project?: string; model?: string; ts: number }
+  /** A call the agent observed, before any dedup — the CLI's own call count. */
+  | { t: "observed"; sessionId: string; ts: number }
+  /**
+   * A gateway-routed call whose bill this read assigned through the gateway ledger: a ledger row that billed it,
+   * or a rollout copy dropped because a ledger row bills it. `id` names the call within its stream.
+   */
+  | { t: "routed"; sessionId: string; id: string; ts: number };
 
 // "<command-name>/goal</command-name>...<command-args>x</command-args>..." -> "/goal x"
 export function cleanPromptText(text: string): string {
@@ -127,7 +149,7 @@ function blockChars(content: unknown): number {
   return content == null ? 0 : JSON.stringify(content).length;
 }
 
-export function* parseLine(line: string): Generator<Event> {
+export function* parseLine(line: string, ctx?: ClaudeCtx): Generator<Event> {
   if (!line || line[0] !== "{") return;
   let d: any;
   try {
@@ -152,21 +174,23 @@ export function* parseLine(line: string): Generator<Event> {
     if (m.usage) {
       const u = m.usage;
       const cc = u.cache_creation ?? {};
-      yield {
-        t: "api",
-        sessionId,
-        requestId,
-        model: m.model,
-        usage: {
-          input: u.input_tokens ?? 0,
-          output: u.output_tokens ?? 0,
-          cacheRead: u.cache_read_input_tokens ?? 0,
-          cache5m: cc.ephemeral_5m_input_tokens ?? (cc.ephemeral_1h_input_tokens != null ? 0 : (u.cache_creation_input_tokens ?? 0)),
-          cache1h: cc.ephemeral_1h_input_tokens ?? 0,
-        },
-        sidechain,
-        ts,
+      const usage: Usage = {
+        input: u.input_tokens ?? 0,
+        output: u.output_tokens ?? 0,
+        cacheRead: u.cache_read_input_tokens ?? 0,
+        cache5m: cc.ephemeral_5m_input_tokens ?? (cc.ephemeral_1h_input_tokens != null ? 0 : (u.cache_creation_input_tokens ?? 0)),
+        cache1h: cc.ephemeral_1h_input_tokens ?? 0,
       };
+      // Claude Code's message id is where the gateway's mark for a Messages call is kept. With a ledger to ask, the
+      // line is settled against it, exactly as a marked Codex rollout record is (claude-routed.ts).
+      const messageId = typeof m.id === "string" ? m.id : undefined;
+      if (isMarked(messageId) && ctx?.gateway) {
+        yield* routedMessage(ctx, { id: messageId, sessionId, requestId, model: m.model, usage, sidechain, ts });
+      } else {
+        // Without the gateway source, the call keeps its id here, unlabelled but for the mark, so a serving Mac's
+        // report can still settle it, as a Codex rollout's marked record does.
+        yield { t: "api", sessionId, requestId, model: m.model, usage, sidechain, ts, ...(isMarked(messageId) ? { gateway: { id: markedId(messageId), role: "unconfirmed" as const } } : {}) };
+      }
     }
     if (Array.isArray(m.content)) {
       for (const c of m.content) {
