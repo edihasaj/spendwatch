@@ -1,16 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { collectCopilot } from '../src/copilot';
 import { Aggregator } from '../src/aggregate';
 import { MonthlyAggregator } from '../src/monthly';
 import { IncrementalReader } from '../src/scan';
 import { monthPeriod } from '../src/periods';
+import { tempDir } from './tmp';
 
 function fixture(): { path: string; db: Database } {
-  const path = join(mkdtempSync(join(tmpdir(), 'spendwatch-copilot-')), 'session-store.db');
+  const path = join(tempDir('spendwatch-copilot-'), 'session-store.db');
   const db = new Database(path);
   db.exec(`CREATE TABLE sessions(id TEXT PRIMARY KEY,cwd TEXT);
     CREATE TABLE assistant_usage_events(id INTEGER PRIMARY KEY,session_id TEXT,model TEXT,
