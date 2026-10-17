@@ -125,22 +125,43 @@ export function withoutCalls(report: Report, calls: UnconfirmedCall[]): Report {
 export function archivedCoverage(db: Database): Map<string, UnconfirmedCall[]> {
   const out = new Map<string, UnconfirmedCall[]>();
   if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spend_report'").get()) return out;
-  const marked = (field: string) => `
-    FROM (SELECT month, source, report_json FROM spend_report
-          WHERE instr(report_json, '"${field}"') > 0 AND json_valid(report_json)) r,
-         json_each(r.report_json, '$.${field}') j`;
-  const billed = new Set(db.query<{ id: string }, []>(`SELECT DISTINCT j.value AS id ${marked("gatewayBilled")}`).all().map((row) => row.id));
-  if (!billed.size) return out;
-  const rows = db.query<{ month: string; source: string; call: string }, []>(`SELECT r.month, r.source, j.value AS call ${marked("gatewayUnconfirmed")}`).all();
+  // The LIKE stands in for the SQLite-only string and array-expansion probes; the arrays are read in TypeScript.
+  const rows = db.query<{ month: string; source: string; report_json: string }, []>(
+    `SELECT month, source, report_json FROM spend_report
+     WHERE report_json LIKE '%"gatewayBilled"%' OR report_json LIKE '%"gatewayUnconfirmed"%'
+     ORDER BY month, source`,
+  ).all();
+  const parsed: Array<{ month: string; source: string; report: { gatewayBilled?: unknown; gatewayUnconfirmed?: unknown } }> = [];
+  const billed = new Set<string>();
   for (const row of rows) {
-    const call = JSON.parse(row.call) as UnconfirmedCall;
-    if (!billed.has(call.id)) continue;
-    const key = JSON.stringify([row.month, row.source]);
-    const list = out.get(key) ?? [];
-    list.push(call);
-    out.set(key, list);
+    let report: unknown;
+    try {
+      report = JSON.parse(row.report_json);
+    } catch {
+      continue; // An unreadable row bills and settles nothing, as the old query's validity check skipped it.
+    }
+    if (typeof report !== "object" || report === null) continue;
+    parsed.push({ month: row.month, source: row.source, report: report as { gatewayBilled?: unknown; gatewayUnconfirmed?: unknown } });
+    for (const id of reportArray(report.gatewayBilled).filter((item): item is string => typeof item === "string")) billed.add(id);
+  }
+  if (!billed.size) return out;
+  for (const row of parsed) {
+    for (const item of reportArray(row.report.gatewayUnconfirmed)) {
+      if (typeof item !== "object" || item === null) continue; // A call is an object; anything else is not one.
+      const call = item as UnconfirmedCall;
+      if (!billed.has(call.id)) continue;
+      const key = JSON.stringify([row.month, row.source]);
+      const list = out.get(key) ?? [];
+      list.push(call);
+      out.set(key, list);
+    }
   }
   return out;
+}
+
+/** The items of a report's gateway array field, or nothing at all when the archived row stored no array there. */
+function reportArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
 }
 
 /** What a set of calls adds up to, for a monthly row that keeps only totals. */
