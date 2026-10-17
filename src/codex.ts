@@ -3,7 +3,11 @@
 import { cmdParts, type Event } from "./parse";
 import type { Usage } from "./pricing";
 import { projectFromCwd } from "./projects";
-import { CLAIM_WINDOW_MS, MARKER, nextDecisionSeq, type GatewayIndex, type LedgerDecision } from "./gateway";
+import { CLAIM_WINDOW_MS, isMarked, markedId, nextDecisionSeq, type GatewayIndex, type LedgerDecision } from "./gateway";
+// The label of a routed call no ledger here vouches for; the Claude Code parser (claude-routed.ts) shares it.
+import { UNCONFIRMED } from "./gateway-decisions";
+
+export { UNCONFIRMED };
 
 export interface CodexCtx {
   model?: string;
@@ -62,9 +66,6 @@ export function newCodexCtx(gateway?: GatewayIndex): CodexCtx {
   return { sid: `codex-${codexFallback++}`, promptN: 0, callN: 0, callName: new Map(), gateway };
 }
 
-/** The model label of a gateway-marked call that this Mac's ledger cannot vouch for. */
-export const UNCONFIRMED = "gateway-routed, not in this Mac's ledger";
-
 // Where a routed rollout call is billed. Only the provider named in session_meta routes, so every other rollout
 // keeps its events. A routed call is:
 //   - dropped, when a ledger row on this Mac bills it: the marked row with its response id, a telemetry row it
@@ -76,7 +77,7 @@ export const UNCONFIRMED = "gateway-routed, not in this Mac's ledger";
 // or the read ends. An unmarked record can only match a telemetry row, which the gateway imported once, so it is
 // decided at once.
 const routes = (ctx: CodexCtx): boolean => ctx.modelProvider === "subscription_gateway";
-const marked = (responseId?: string): responseId is string => !!responseId?.startsWith(MARKER);
+const marked = isMarked;
 
 /** True when a row on this Mac bills the call now; a claim is remembered for the next reloaded ledger. */
 function ledgerBills(ctx: CodexCtx, call: PendingCall): boolean {
@@ -125,7 +126,7 @@ function billHere(ctx: CodexCtx, call: PendingCall): Event | undefined {
   // that kept the gateway's id would be taken out where reports meet, against the very row that bills the other call.
   if (!marked(responseId) || ctx.gateway?.holds?.(responseId)) return apiEvent(ctx, `c${ctx.callN++}`, call.billedModel, call.usage, ts);
   ctx.unconfirmed = (ctx.unconfirmed ?? 0) + 1;
-  return apiEvent(ctx, responseId, `${call.billedModel ?? "unknown"} (${UNCONFIRMED})`, call.usage, ts, responseId.slice(MARKER.length));
+  return apiEvent(ctx, responseId, `${call.billedModel ?? "unknown"} (${UNCONFIRMED})`, call.usage, ts, markedId(responseId));
 }
 
 /**
@@ -256,7 +257,7 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
         return;
       }
       // With the gateway source off, a marked call still keeps its id, so the serving Mac's report can settle it.
-      const gatewayId = routes(ctx) && marked(responseId) ? responseId.slice(MARKER.length) : undefined;
+      const gatewayId = routes(ctx) && marked(responseId) ? markedId(responseId) : undefined;
       yield apiEvent(ctx, responseId, ctx.model, usage, ts, gatewayId);
       return;
     }

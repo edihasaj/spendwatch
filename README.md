@@ -111,7 +111,8 @@ WHERE month = '2026-10' AND source LIKE '%:codex%';
 unrouted month by about 6%), and turns the subscription gateway billed on a
 subscription are counted from its ledger instead of the rollout. `routed_calls`
 counts the second kind: for Codex, the rollout calls handed to the ledger; for
-Claude and Copilot, the ledger rows they billed. A month whose every call was
+Claude, the Claude Code transcript calls handed to it plus the ledger rows Claude
+billed; for Copilot, the ledger rows it billed. A month whose every call was
 routed has `calls` of 0 and a positive `observed_calls`; it is still archived, so
 it replaces an older read of that month that billed those turns in Codex. How the
 archive keeps routed turns in exactly one source is described under
@@ -569,11 +570,13 @@ spend report but not in `capacity` or `guard`.
 
 ### Subscription gateway
 
-A gateway can bill a Codex turn on a Copilot or Claude subscription instead of an
-API key (it serves Codex's `/v1/responses` requests only), and it keeps a month
-ledger of what it billed. Spendwatch reads that ledger as a source, so a routed
-turn is counted once — by the subscription that paid for it — instead of twice.
-Only Codex rollouts are deduped against it; no other agent's transcript is.
+A gateway can bill a coding agent's turn on a Copilot or Claude subscription
+instead of an API key, and it keeps a month ledger of what it billed. It serves
+Codex through `/v1/responses` and, from Harness Gateway 0.4.4, Claude Code and
+other Anthropic Messages clients through `/v1/messages`. Spendwatch reads that
+ledger as a source, so a routed turn is counted once — by the subscription that
+paid for it — instead of twice. Codex rollouts and Claude Code transcripts are
+deduped against it; no other agent's transcript is.
 
 Rows are read from `usage/usage-YYYY-MM.jsonl`, oldest month file first. The
 state directory is, in order:
@@ -599,18 +602,40 @@ root switches it on. `$SPENDWATCH_GATEWAY_PROVIDER_MAP` (`copilot=claude`, or
 JSON) retargets the provider names a telemetry row without a provider type can
 arrive with; a name mapped to anything but `claude` or `copilot` is dropped.
 
+**Marker family.** The gateway marks the id of every call it bills on a
+subscription with one of two prefixes, each followed by the same gateway request
+id without dashes: `resp_gl_<id>` on a Responses id, which Codex records in its
+rollout, and `msg_gl_<id>` on a Messages id, which Claude Code records as the
+message id in its transcript. Spendwatch treats both as one marker family and
+accepts either wherever it matches a marked id: in the ledger's billed rows, in
+Codex records, in Claude Code transcripts, and where the reports of several Macs
+are settled. A row or record with any other id is not marked.
+
 | the ledger says | what spendwatch does |
 |---|---|
-| gateway-origin row with a `resp_gl_*` response id | counts the row; a rollout record with exactly that response id is dropped |
-| a rollout record with a `resp_gl_*` id that this Mac's ledger holds no row for | keeps it in Codex as `<model> (gateway-routed, not in this Mac's ledger)`, says so under the report, and takes it out again wherever its report meets the serving Mac's (see *Several Macs*) |
+| gateway-origin row with a marked response id (`resp_gl_*` or `msg_gl_*`) | counts the row; a Codex rollout record or a Claude Code message with exactly that id is dropped |
+| a Codex record or Claude Code message with a marked id that this Mac's ledger holds no row for | keeps it in Codex or Claude as `<model> (gateway-routed, not in this Mac's ledger)`, priced from its tokens as before, says so under the report, and takes it out again wherever its report meets the serving Mac's (see *Several Macs*) |
 | telemetry row with `session: true` that a rollout claims — same model, same input and output tokens, within 30 seconds | counts the row once, and drops the rollout's copy |
 | telemetry row with `session: false` | counts the row directly: its request carried no Codex session id, so no rollout exists to dedupe against |
-| a rollout call with no response id (`token_count` only, from a Codex build without `token_usage_record`) that matches a billed gateway row the same way | counts the gateway row once, and drops the rollout's copy |
+| a rollout call with no response id (`token_count` only, from a Codex build without `token_usage_record`) that matches a billed `resp_gl_*` gateway row the same way | counts the gateway row once, and drops the rollout's copy |
 | an unmarked gateway row, or a telemetry row nothing claimed | leaves it to the transcript, which already bills it |
 
 A rollout's provider comes from its own `session_meta`, the first one in the
 file. A forked rollout copies its parent's `session_meta` after its own, and that
 one describes the parent thread, so it never changes which calls count as routed.
+
+Claude Code writes one transcript line per content block of a reply, each with
+the message id, so all the lines of one marked message are one call. They wait for
+the message's row together and are decided together, and a message billed from its
+transcript is billed once, with the usage of its last line. Claude Code writes
+those lines when the reply ends but stamps each one with the time its block began,
+so a line can reach the transcript more than a minute after its stamp. A message
+therefore waits for its row from the moment its line was read, but never from
+later than two minutes past its stamp, so a transcript read long after it was
+written is decided at once. A message id found in two transcripts is one call too, billed once, as a
+forked rollout's copies are. A `msg_gl_*` row is matched only by its id, never by
+model, tokens and time, because Claude Code records the id of every call; so a
+Codex `token_count` never stands on the row of a Claude Code call.
 
 Telemetry rows are not written per call. The gateway imports its pre-ledger
 request history once, when the ledger is first created, and `session` records
@@ -702,8 +727,8 @@ account in `.claude.json` inside it, a Copilot provider's (its `COPILOT_HOME`) t
 default account of that subscription (the signed-in Claude account, or the
 `gh` user), and a directory that holds no signed-in account is named after the
 directory, never folded into the default one. Each account gets its own stream.
-Rollouts are always read before the ledger, because a transcript can only give up
-a turn it has already asked the ledger about.
+Rollouts and Claude Code transcripts are always read before the ledger, because a
+transcript can only give up a turn it has already asked the ledger about.
 
 The gateway names its month files by UTC month, so spendwatch picks the files a
 window needs in UTC too; in a zone east of UTC the previous UTC month's file holds
@@ -744,9 +769,9 @@ or with a write in progress, is read again, because a size and a time cannot vou
 for it yet.
 
 The gateway appends a call's ledger row just after the response ends, so the
-rollout line can come first. A routed call with no row yet — a `resp_gl_*`
-record, or a `token_count` that could match a billed row — therefore waits for
-it instead of being billed at once: `watch` checks it against the ledger it
+rollout or transcript line can come first. A routed call with no row yet — a
+marked Codex record or Claude Code message, or a `token_count` that could match
+a billed row — therefore waits for it instead of being billed at once: `watch` checks it against the ledger it
 reloads on each tick, its first read included (a call younger than the claim
 window is left waiting there too), and a report first reads the rows the gateway
 appended since the report loaded the ledger, before it bills any call from the
@@ -757,7 +782,7 @@ account it had none for is left out and never covers a rollout call, and a
 gateway row for a call the ledger held only as the telemetry echo replaces the
 echo, as a fresh load would. This is the same whichever `--agents` were asked
 for, so a run limited to Codex bills the same Codex calls as the full one. The
-call is billed from the rollout (a record as
+call is billed from the rollout or transcript (a marked call as
 `(gateway-routed, not in this Mac's ledger)`) only when no row has come within
 the 30-second claim window, or when a report ends. A row that arrives later still
 does not bill it a second time, in the same read as well: the ledger remembers
@@ -766,16 +791,17 @@ one of them is that call's, not a second bill. While it waits, `watch` shows the
 call in neither tab.
 
 **Several Macs.** A routed turn is counted once, on the Mac whose gateway served
-it, under the provider's account. A Codex client whose turns another Mac's
-gateway served cannot prove from its own files that a ledger counts them (the
-rollout records no serving host), so its own report keeps them, labelled
+it, under the provider's account. A Codex or Claude Code client whose turns
+another Mac's gateway served cannot prove from its own files that a ledger
+counts them (neither a rollout nor a transcript records the serving host), so
+its own report keeps them, labelled
 `(gateway-routed, not in this Mac's ledger)`, says so under the report, and
-lists each such call by its gateway request id (the part of `resp_gl_<id>` after
-the marker) with its tokens, cost, model, account, project and time — nothing
+lists each such call by its gateway request id (the part of `resp_gl_<id>` or
+`msg_gl_<id>` after the marker) with its tokens, cost, model, account, project and time — nothing
 about its content. The serving Mac's Copilot or Claude report lists the ids it
 billed from its ledger. Wherever the two reports meet, the client's copy is taken
-out of its Codex totals, model, account, project and daily token rows, and the
-turn stays on the serving Mac:
+out of its Codex or Claude totals, model, account, project and daily token rows,
+and the turn stays on the serving Mac:
 
 - `report --input a.json,b.json`, in the text and HTML reports and their
   "All machines" view, across every month the inputs hold;
@@ -786,7 +812,7 @@ turn stays on the serving Mac:
 
 `report --json` passes the reports on as measured, so the collector that combines
 them can settle them against the others. A client turn that no report in the set
-billed stays in the client's Codex tab, so a serving Mac that does not run
+billed stays in the client's Codex or Claude tab, so a serving Mac that does not run
 Spendwatch loses nothing. A client with `SPENDWATCH_GATEWAY_SOURCE=off` still
 lists its marked calls (under their plain model name), so they are settled the
 same way. A rollout that records only `token_count` carries no id: it is matched
@@ -797,7 +823,8 @@ should be the same on every Mac.
 
 **The spend archive keeps routed turns in one source.** A month read with this
 Mac's ledger counts the routed turns it holds in the Claude and Copilot reports
-and drops them from Codex; read without it they stay in Codex. Each archived
+and drops them from Codex and from the Claude Code transcripts; read without it
+they stay there. Each archived
 report records whether the ledger was read (`ledger`) and how many routed calls it
 billed through it (`routed_calls`, in `spend_month` and `spend_report`):
 

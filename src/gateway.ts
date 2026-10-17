@@ -5,11 +5,11 @@
 // gateway, and once inside the transcript it proxied. Counting both would bill
 // one turn twice, so this index resolves the pair two ways:
 //
-//   * a gateway-origin row carrying a `resp_gl_*` id IS the billed record, so it
-//     is counted here, and a rollout record with that exact response id is
-//     dropped (`covers`). A marked record whose row this Mac's ledger does not
-//     hold is kept by the rollout: nothing here proves another ledger bills it.
-//     Both sides carry the id, so where a client's report meets the serving
+//   * a gateway-origin row carrying a marked id (`resp_gl_*` for a Responses request, `msg_gl_*` for a Messages one)
+//     IS the billed record, so it is counted here, and the transcript record with that exact id is dropped (`covers`):
+//     Codex keeps a Responses id in its rollout, and a Claude Code transcript line with exactly the row's `msg_gl_*` id
+//     is dropped the same way. A marked record whose row this Mac's ledger does not hold is kept by the transcript:
+//     nothing here proves another ledger bills it. Both sides carry the id, so where a client's report meets the serving
 //     Mac's, the client's copy is taken out there (gateway-settle.ts);
 //   * a transcript turn with no gateway row of its own is matched against a
 //     telemetry-origin row by `claim()`, which proves those tokens were already
@@ -26,7 +26,7 @@ import { accountLabel, copilotAccountIn } from "./copilot";
 import { claudeAccount, claudeAccountIn, type SourceFile } from "./sources";
 import type { Event } from "./parse";
 import { providerMap, readGatewayConfig, resolveStateDirectory, type AuthDirectory, type GatewayVendor } from "./gateway-config";
-import { callKey, dedupe, GATEWAY_ORIGIN, ledgerFiles, MARKER, readRows, TELEMETRY_ORIGIN, type LedgerRow, type RowHolder } from "./gateway-ledger-files";
+import { callKey, dedupe, GATEWAY_ORIGIN, ledgerFiles, markerOf, readRows, RESPONSES_MARKER, TELEMETRY_ORIGIN, type LedgerRow, type RowHolder } from "./gateway-ledger-files";
 import { RowMatcher, stayOn } from "./gateway-match";
 import { billedRow, counts, eventsFor } from "./gateway-events";
 import { CLAIM_WINDOW_MS, type BilledCall, type ClaimOptions, type LedgerDecision } from "./gateway-decisions";
@@ -34,7 +34,7 @@ import { CLAIM_WINDOW_MS, type BilledCall, type ClaimOptions, type LedgerDecisio
 export type { GatewayVendor };
 export type { BilledCall, ClaimOptions, LedgerDecision } from "./gateway-decisions";
 export { CLAIM_WINDOW_MS, nextDecisionSeq } from "./gateway-decisions";
-export { MARKER };
+export { MARKERS, RESPONSES_MARKER, MESSAGES_MARKER, markerOf, isMarked, markedId } from "./gateway-ledger-files";
 
 export interface GatewayIndex {
   /** Returns true when this usage has already been recorded elsewhere. */
@@ -76,8 +76,13 @@ export interface GatewayIndex {
   refresh?(): void;
 }
 
-/** A row a transcript can match by model, tokens and time. */
-const matchable = (row: LedgerRow): boolean => billedRow(row) || (row.origin === TELEMETRY_ORIGIN && row.session === true);
+/**
+ * A row a transcript can match by model, tokens and time. A Messages row is never one: Codex speaks only Responses, so
+ * it has no such row of its own to find, and Claude Code records the id of every call it makes, so its rows are matched
+ * by that id alone. Leaving them out is what keeps a token_count (no id to compare) from being dropped onto a Messages
+ * row that belongs to a Claude Code transcript.
+ */
+const matchable = (row: LedgerRow): boolean => (billedRow(row) && markerOf(row.responseId) === RESPONSES_MARKER) || (row.origin === TELEMETRY_ORIGIN && row.session === true);
 const usageKey = (model: string, input: number, output: number): string => `${model}\u0000${input}\u0000${output}`;
 
 /** The first index in `rows` (sorted by `at`) whose time is at least `from`, or after `from` when `after`. */
@@ -386,10 +391,11 @@ export class GatewayLedger implements GatewayIndex {
     if (!row) return false;
     const moved = (key: string): void => { decision.key = key; };
     if (decision.kind === "claimed") {
-      // A claim that may take a billed row looks again each time: a history row it holds is only the nearest it could
+      // A claim that names a response id stands on that row alone, of either marker, and looks no further. Any other
+      // claim that may take a billed row looks again each time: a history row it holds is only the nearest it could
       // find while its own row had not landed, and the billed row it now has is the better one (see `candidates`).
       // A claim that may not take a billed row names one only where it took the echo this row replaced (`supersede`).
-      if (!matchable(row) || (decision.gatewayRows && row.origin === TELEMETRY_ORIGIN)) return false;
+      if (decision.responseId ? !billedRow(row) : (!matchable(row) || (decision.gatewayRows && row.origin === TELEMETRY_ORIGIN))) return false;
       return stayOn(row, { kind: "claim", model: decision.model, input: decision.input, output: decision.output, ts: decision.ts, gatewayRows: decision.gatewayRows,
         ...(decision.responseId ? { responseId: decision.responseId } : {}), moved });
     }

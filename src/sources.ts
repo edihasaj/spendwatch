@@ -12,12 +12,13 @@ import { homedir } from "node:os";
 import type { Event } from "./parse";
 import { parseLine } from "./parse";
 import { newCodexCtx, parseCodexLine, settleRouted, UNCONFIRMED, type CodexCtx } from "./codex";
+import { claudeGatewayWarning, newClaudeCtx, settleClaudeRouted, type ClaudeCtx } from "./claude-routed";
 import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
 import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
 import { walkJsonl } from "./scan";
 import { collectCopilot, defaultCopilotRoots } from "./copilot";
-import { GatewayIndex, type GatewayLedger } from "./gateway";
+import { GatewayIndex, type GatewayLedger, type LedgerDecision } from "./gateway";
 
 export interface SourceFile {
   path: string;
@@ -81,8 +82,6 @@ interface RootCfg {
   path: string;
   account?: string;
 }
-
-const claudeParse = (line: string) => parseLine(line);
 
 function expand(p: string): string {
   return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
@@ -277,7 +276,7 @@ export function defaultOmpRoots(home = homedir()): RootCfg[] {
 }
 
 // ---- per-agent collectors ---------------------------------------------------
-function collectClaude(dir: string, account: string, sinceMs: number, project?: string): SourceFile[] {
+function collectClaude(dir: string, account: string, sinceMs: number, project?: string, gateway?: GatewayLedger): SourceFile[] {
   const files: SourceFile[] = [];
   if (!existsSync(dir)) return files;
   const acct = account || claudeAccount(dir);
@@ -287,17 +286,25 @@ function collectClaude(dir: string, account: string, sinceMs: number, project?: 
     for (const f of safeReaddir(join(dir, proj))) {
       if (!f.endsWith(".jsonl")) continue;
       const path = join(dir, proj, f);
-      if (mtimeOk(path, sinceMs)) files.push({ path, project: projectName, source: "claude", account: acct, parse: claudeParse, ctx: null });
+      if (!mtimeOk(path, sinceMs)) continue;
+      // A marked message is settled against the ledger, as a rollout's marked record is: what one line decided, and
+      // what a later line of the same message repeats, belongs to this file's parser, which watch keeps between ticks.
+      const ctx = newClaudeCtx(gateway);
+      let renewed = false;
+      files.push({ path, project: projectName, source: "claude", account: acct, parse: (text: string, kept: ClaudeCtx) => parseLine(text, kept), ctx,
+        settle: (kept: ClaudeCtx, final: boolean) => settleClaudeRouted(kept, final),
+        // Once per discovery: what the kept state decided since is already known to this ledger.
+        renew: (kept: ClaudeCtx) => { if (renewed) return; renewed = true; carryLedger(kept, ctx.gateway); } });
     }
   }
   return files;
 }
 
 /**
- * The reloaded ledger has not seen what a rollout already did: rows it claimed, and calls it billed before their rows
- * existed. It gets them, and the rollout carries on against it.
+ * The reloaded ledger has not seen what a transcript already did: rows it claimed, and calls it billed before their rows
+ * existed. It gets them, and the transcript carries on against it.
  */
-function carryLedger(kept: CodexCtx, gateway?: GatewayIndex): void {
+function carryLedger(kept: { gateway?: GatewayIndex; decisions?: LedgerDecision[] }, gateway?: GatewayIndex): void {
   kept.gateway = gateway;
   gateway?.replay?.(kept.decisions ?? []);
 }
@@ -385,15 +392,23 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   const ledger = !!gateway?.present;
 
   if (want("claude")) {
-    const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project));
+    const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project, gateway));
     const rows = gateway?.files("claude") ?? [];
-    out.push({
+    const claude: SourceStatus = {
       id: "claude",
       present: claudeRoots.some((r) => existsSync(r.path)) || rows.length > 0,
       parseable: true,
       ledger,
       files: [...files, ...rows],
+      ...(gateway ? { carry: (kept: ClaudeCtx) => carryLedger(kept, gateway) } : {}),
+    };
+    // Asked after the transcripts have been read, because only the parser knows what a message recorded.
+    if (gateway) Object.defineProperty(claude, "warning", {
+      get: () => claudeGatewayWarning(files.map((f) => f.ctx as ClaudeCtx)),
+      enumerable: true,
+      configurable: true,
     });
+    out.push(claude);
   }
 
   // A report must not depend on which agents were asked for: the ledger's telemetry rows count only once a
@@ -479,7 +494,8 @@ function gatewayWarning(contexts: CodexCtx[]): string | undefined {
 /**
  * Rollouts must be read before the gateway ledger is, so every claim a transcript
  * can make is already taken when its gateway rows are folded. Reader order is
- * untouched; only the polling pass is reordered.
+ * untouched; only the polling pass is reordered. Claude gets the same without help: its transcripts are the first files
+ * of its status, ahead of the ledger rows that report the same calls, and Copilot is polled after Claude outright.
  */
 export function pollOrder(statuses: SourceStatus[]): SourceStatus[] {
   return [...statuses].sort((a, b) => Number(a.id !== "codex") - Number(b.id !== "codex"));
