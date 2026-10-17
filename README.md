@@ -36,7 +36,7 @@ install -m 0755 spendwatch /opt/homebrew/bin/spendwatch
 
 ```sh
 bun src/cli.ts report                      # all agents, past 30 days
-bun src/cli.ts report --agent codex        # one agent (claude,codex,grok,pi,omp,copilot,gemini)
+bun src/cli.ts report --agent codex        # one agent (claude,codex,grok,pi,omp,copilot,mission,autoreview,gemini)
 bun src/cli.ts report --project chat-sql   # filter by project substring
 bun src/cli.ts report --month 2026-08      # one calendar month
 bun src/cli.ts report --months 3           # this month plus the two before it
@@ -566,6 +566,8 @@ service account across machines. Filter with `--account <substr>`.
 | Codex CLI   | `~/.codex/sessions/**/rollout-*.jsonl`, plus `~/.codex*/archived_sessions` | ✓ |
 | Grok CLI    | `~/.grok/sessions/**/updates.jsonl` | ✓ |
 | Copilot CLI | `~/.copilot/session-store.db` | ✓ per-request token usage and reported AI-credit value |
+| Mission Runtime | `~/Projects/mission-runtime/.mission-runtime/authority.sqlite` (or `$MISSION_RUNTIME_DB_PATH`) | ✓ per attempt and model, from its own usage records |
+| AutoReview | a job-ledger JSONL named by an `autoreview` config root | ✓ per attempt and model, from its own usage records |
 | Gemini CLI  | `~/.gemini` | ✓ when present |
 | Subscription gateway | `<state>/usage/usage-YYYY-MM.jsonl` | ✓ per-call tokens, plus AI credits for Copilot rows |
 
@@ -575,6 +577,28 @@ uncached input, and uses reported nano-AI-credit charges when available instead
 of estimating them from a model list. Compatible Copilot Chat stores in Code,
 Code Insiders and Cursor are detected too. Copies of the same session are
 counted once. Legacy stores without this ledger and Gemini logs remain footnotes. Adding a new agent = one parser emitting the shared `Event` model + a `sources.ts` entry.
+
+Mission Runtime and AutoReview leave no transcripts, so Spendwatch reads the
+`agent-usage.v1` records they write about their own usage. Mission Runtime is
+read in read-only mode from its authority SQLite store (`MISSION_RUNTIME_DB_PATH`
+overrides the default path, and a `mission` root of a config names another
+store); only the `mission_run_outputs` rows whose key starts with `usage:` are
+read, plus the repository key and start time of the run (the repository becomes
+the project, and no other part of the run's spec is read). A store that Mission
+Runtime has closed cleanly has no `-wal` file, so it is opened as immutable,
+which writes nothing. A Mission Runtime record is dated at the run's start
+(`mission_runs.created_at`, else the row's last update), so an attempt that runs
+past the 1st stays in one month; the `--days` and `--month` windows still select
+rows by their last update. AutoReview
+has no default location: add a root such as
+`{ "agent": "autoreview", "path": "~/autoreview/jobs.jsonl", "account": "ci" }`
+that points at its JSONL job ledger, where a later line for an attempt replaces
+the earlier ones. `--agent autoreview` without such a root says what is missing. A record is cumulative for its attempt, so each attempt and
+model is one "call" in a report, not one per turn (an AutoReview record is
+dated at its last update). Input is gross in the record; Spendwatch bills the cached
+and cache-write tokens apart from the rest, and uses the reported cost when the
+record has one. Without an `account` in the config, the account is the
+entry's provider.
 
 Codex calls are read per response: one call for each `token_usage_record`
 (its `response_id` is the call), falling back to `token_count` events for
