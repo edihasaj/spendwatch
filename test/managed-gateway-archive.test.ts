@@ -7,7 +7,7 @@ import { Database } from "../src/database";
 import { PgConnection } from "../src/managed/libpq";
 import { quoteIdentifier } from "../src/managed/sql-tokens";
 import { writeMonthlySpend, loadMonthlySpend } from "../src/spend-history";
-import { loadArchivedReports } from "../src/spend-report-archive";
+import { addArchiveColumns, loadArchivedReports } from "../src/spend-report-archive";
 import { archivedCoverage } from "../src/gateway-settle";
 import { monthPeriod } from "../src/periods";
 import type { Report, UnconfirmedCall } from "../src/aggregate";
@@ -60,6 +60,30 @@ function read(source: string, calls: number, extra: Partial<Report> = {}): Repor
 /** A ledger column as both engines store it: SQLite 1/0, PostgreSQL BIGINT read back as a number. */
 const stored = (value: unknown): number => Number(typeof value === "bigint" ? Number(value) : value);
 
+/**
+ * The archive as an earlier version created it: spend_month and spend_report without observed_calls, ledger and
+ * routed_calls, holding one September row of 20 Codex calls.
+ */
+function createOldArchive(path: string): void {
+  const db = new Database(path);
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS spend_month (
+        month TEXT NOT NULL, source TEXT NOT NULL, tokens INTEGER NOT NULL, cost REAL NOT NULL,
+        calls INTEGER NOT NULL, sessions INTEGER NOT NULL, first_ts INTEGER, updated_at INTEGER NOT NULL,
+        PRIMARY KEY (month, source)
+      );
+      CREATE TABLE IF NOT EXISTS spend_report (
+        month TEXT NOT NULL, source TEXT NOT NULL, calls INTEGER NOT NULL,
+        report_json TEXT NOT NULL, updated_at INTEGER NOT NULL,
+        PRIMARY KEY (month, source)
+      );
+    `);
+    db.prepare("INSERT INTO spend_month(month, source, tokens, cost, calls, sessions, first_ts, updated_at) VALUES (?,?,?,?,?,?,?,?)")
+      .run("2026-09", "fixture:codex", 2000, 0.2, 20, 1, null, 1);
+  } finally { db.close(); }
+}
+
 const LEDGER_ROWS = `month, source, calls, observed_calls AS observedCalls,
   ledger, routed_calls AS routedCalls`;
 
@@ -82,6 +106,11 @@ suite("managed gateway archive behavior", () => {
       writeMonthlySpend(path, [
         read("fixture:claude", 2, { observedCalls: 3, ledger: true, routedCalls: 1 }),
       ], { generatedAt: now + 2 });
+      // A later Codex-only ledger read that observed more is accepted: `ledger` must read back as the number 1 on
+      // both engines for the stored take-over to be recognised.
+      writeMonthlySpend(path, [
+        read("fixture:codex", 8, { observedCalls: 11, ledger: true, routedCalls: 3 }),
+      ], { generatedAt: now + 3 });
       const db = new Database(path, { readonly: true });
       try {
         return {
@@ -99,8 +128,8 @@ suite("managed gateway archive behavior", () => {
     expect(result.postgres).toEqual(result.sqlite);
     const month = (source: string) => result.sqlite.spendRows.find((row) => row.source === source)!;
     // The takeover wrote each source's ledger read wholesale: what it observed is stored beside what it billed.
-    const observed = new Map([["fixture:codex", 10], ["fixture:claude", 5], ["fixture:copilot", 6]]);
-    expect(month("fixture:codex").calls).toBe(7);
+    const observed = new Map([["fixture:codex", 11], ["fixture:claude", 5], ["fixture:copilot", 6]]);
+    expect(month("fixture:codex").calls).toBe(8);
     expect(month("fixture:claude").calls).toBe(4);
     expect(month("fixture:copilot").calls).toBe(6);
     for (const [source, routed] of [["fixture:codex", 3], ["fixture:claude", 1], ["fixture:copilot", 4]] as const) {
@@ -113,11 +142,95 @@ suite("managed gateway archive behavior", () => {
       expect(stored(archived.observedCalls)).toBe(observed.get(source));
     }
     // The month card carries the same billed calls the ledger moved.
-    for (const [source, calls] of [["fixture:codex", 7], ["fixture:claude", 4], ["fixture:copilot", 6]] as const) {
+    for (const [source, calls] of [["fixture:codex", 8], ["fixture:claude", 4], ["fixture:copilot", 6]] as const) {
       expect(result.sqlite.months[0]!.sources.find((row) => row.source === source)!.calls).toBe(calls);
     }
     expect(result.sqlite.reports.map((report) => [report.source, report.apiCalls]))
-      .toEqual([["fixture:claude", 4], ["fixture:codex", 7], ["fixture:copilot", 6]]);
+      .toEqual([["fixture:claude", 4], ["fixture:codex", 8], ["fixture:copilot", 6]]);
+  });
+
+  test("a ledger take-over that one source would shrink is refused for all three, on both engines", () => {
+    const result = fixture((path) => {
+      const now = Date.parse("2026-10-13T20:00:00Z");
+      writeMonthlySpend(path, [
+        read("fixture:codex", 10), read("fixture:claude", 5), read("fixture:copilot", 2),
+      ], { generatedAt: now });
+      // Codex and Copilot are fuller with the ledger, but Claude observed fewer calls: none of them may change.
+      writeMonthlySpend(path, [
+        read("fixture:codex", 7, { observedCalls: 10, ledger: true, routedCalls: 3 }),
+        read("fixture:claude", 3, { observedCalls: 4, ledger: true, routedCalls: 1 }),
+        read("fixture:copilot", 6, { observedCalls: 6, ledger: true, routedCalls: 4 }),
+      ], { generatedAt: now + 1 });
+      const db = new Database(path, { readonly: true });
+      try {
+        return {
+          spendRows: db.query<{ month: string; source: string; calls: number; observedCalls: number | null;
+            ledger: number | null; routedCalls: number | null }, []>(
+            `SELECT ${LEDGER_ROWS} FROM spend_month ORDER BY month, source`).all(),
+          reportRows: db.query<{ month: string; source: string; calls: number; observedCalls: number | null;
+            ledger: number | null; routedCalls: number | null }, []>(
+            `SELECT ${LEDGER_ROWS} FROM spend_report ORDER BY month, source`).all(),
+        };
+      } finally { db.close(); }
+    });
+    expect(result.postgres).toEqual(result.sqlite);
+    for (const rows of [result.sqlite.spendRows, result.sqlite.reportRows]) {
+      expect(rows.map((row) => row.source)).toEqual(["fixture:claude", "fixture:codex", "fixture:copilot"]);
+      for (const [source, calls] of [["fixture:codex", 10], ["fixture:claude", 5], ["fixture:copilot", 2]] as const) {
+        const row = rows.find((candidate) => candidate.source === source)!;
+        expect(row.calls).toBe(calls);
+        expect(row.ledger === null ? 0 : stored(row.ledger)).toBe(0);
+        expect(row.routedCalls === null ? 0 : stored(row.routedCalls)).toBe(0);
+      }
+    }
+  });
+
+  test("an archive created before the ledger columns takes the ledger month and keeps its old rows, on both engines", () => {
+    const result = fixture((path) => {
+      const now = Date.parse("2026-10-13T20:00:00Z");
+      createOldArchive(path);
+      writeMonthlySpend(path, [
+        read("fixture:codex", 7, { observedCalls: 10, ledger: true, routedCalls: 3 }),
+      ], { generatedAt: now });
+      const db = new Database(path, { readonly: true });
+      try {
+        return {
+          spendRows: db.query<{ month: string; source: string; calls: number; observedCalls: number | null;
+            ledger: number | null; routedCalls: number | null }, []>(
+            `SELECT ${LEDGER_ROWS} FROM spend_month ORDER BY month, source`).all(),
+        };
+      } finally { db.close(); }
+    });
+    expect(result.postgres).toEqual(result.sqlite);
+    expect(result.sqlite.spendRows.map((row) => [row.month, row.source, row.calls]))
+      .toEqual([["2026-09", "fixture:codex", 20], ["2026-10", "fixture:codex", 7]]);
+    const september = result.sqlite.spendRows[0]!, october = result.sqlite.spendRows[1]!;
+    expect(september.ledger).toBeNull();
+    expect(september.routedCalls).toBeNull();
+    expect(stored(october.ledger)).toBe(1);
+    expect(stored(october.routedCalls)).toBe(3);
+    expect(stored(october.observedCalls)).toBe(10);
+  });
+
+  test("a connection that cached the old columns still adds them after another connection did, on both engines", () => {
+    const result = fixture((path) => {
+      createOldArchive(path);
+      const a = new Database(path), b = new Database(path);
+      try {
+        const names = (db: Database) => db.query<{ name: string }, []>("PRAGMA table_info(spend_month)").all()
+          .map((row) => row.name);
+        // B caches the old column list, then A adds the columns, so B's own ALTERs fail as duplicates.
+        const before = names(b);
+        addArchiveColumns(a, "spend_month");
+        addArchiveColumns(b, "spend_month");
+        return { before, after: names(b) };
+      } finally { a.close(); b.close(); }
+    });
+    expect(result.postgres).toEqual(result.sqlite);
+    for (const column of ["observed_calls", "ledger", "routed_calls"]) {
+      expect(result.sqlite.before).not.toContain(column);
+      expect(result.sqlite.after).toContain(column);
+    }
   });
 
   test("a client's unconfirmed Messages call leaves its report where a serving Mac's report billed it, on both engines", () => {
