@@ -1,14 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CodexLimitAccount } from "../src/limits";
 import { PushStore } from "../src/push-store";
+import { tempDir } from "./tmp";
 
 describe("background push state", () => {
   test("queues each sparse threshold once per account and reset", () => {
-    const dir = mkdtempSync(join(tmpdir(), "spendwatch-push-"));
+    const dir = tempDir("spendwatch-push-");
     const store = new PushStore(join(dir, "push.db"));
     store.upsertSubscription({
       endpoint: "https://push.example.test/subscription",
@@ -47,7 +46,7 @@ describe("background push state", () => {
   });
 
   test("alerts once when Copilot passes its manual monthly budget", () => {
-    const dir = mkdtempSync(join(tmpdir(), "spendwatch-push-copilot-"));
+    const dir = tempDir("spendwatch-push-copilot-");
     const store = new PushStore(join(dir, "push.db"));
     store.upsertSubscription({
       endpoint: "https://push.example.test/copilot",
@@ -91,7 +90,7 @@ describe("background push state", () => {
   });
 
   test("adds delivery verification state to an existing subscription table", () => {
-    const dir = mkdtempSync(join(tmpdir(), "spendwatch-push-migration-"));
+    const dir = tempDir("spendwatch-push-migration-");
     const path = join(dir, "push.db");
     const legacy = new Database(path);
     legacy.exec(`

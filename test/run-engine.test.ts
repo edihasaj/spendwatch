@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DeepSeekExecutor, type ExecutionRequest, type ExecutionResult, type ModelExecutor } from "../src/model-executors";
 import { executeRoute } from "../src/run-engine";
 import { buildRoutePlan } from "../src/routing";
+import { tempDir } from "./tmp";
 
 function repo(): string {
-  const path = mkdtempSync(join(tmpdir(), "spendwatch-run-"));
+  const path = tempDir("spendwatch-run-");
   writeFileSync(join(path, "package.json"), JSON.stringify({ scripts: {} }));
   return path;
 }

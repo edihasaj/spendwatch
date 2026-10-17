@@ -11,12 +11,14 @@ import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Event } from "./parse";
 import { parseLine } from "./parse";
-import { newCodexCtx, parseCodexLine } from "./codex";
+import { newCodexCtx, parseCodexLine, settleRouted, UNCONFIRMED, type CodexCtx } from "./codex";
+import { claudeGatewayWarning, newClaudeCtx, settleClaudeRouted, type ClaudeCtx } from "./claude-routed";
 import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
 import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
 import { walkJsonl } from "./scan";
 import { collectCopilot, defaultCopilotRoots } from "./copilot";
+import { GatewayIndex, type GatewayLedger, type LedgerDecision } from "./gateway";
 
 export interface SourceFile {
   path: string;
@@ -27,13 +29,51 @@ export interface SourceFile {
   account: string;
   parse: (line: string, ctx: any) => Iterable<Event>;
   ctx: any;
+  /**
+   * Watch mode discovers the same file again on every tick, with a new `ctx`. The reader keeps the first
+   * one, because it holds what earlier lines taught the parser, and calls this to hand it whatever the
+   * new discovery decided afresh (such as the reloaded gateway ledger).
+   */
+  renew?: (kept: any) => void;
+  /**
+   * Events a parser held back until something it waits for turns up (a Codex rollout's routed call waits for its
+   * gateway ledger row). Asked on every poll, with `final` at the end of a read, when nothing may wait any longer.
+   */
+  settle?: (ctx: any, final: boolean) => Iterable<Event>;
+  /**
+   * For a file that yields all its events on every poll (they replace the last poll's, they are not appended to
+   * them): what its events depend on. While it is unchanged the reader does not fold them again and reports no
+   * change, so an idle `watch` tick does not redraw.
+   */
+  version?: () => string;
+  /**
+   * For a file that yields all its events on every poll and finds out what they depend on by reading them (a SQLite
+   * store): one read gives both, so a poll reads the file once. It stands in for `version` and `events` together.
+   * `undefined` says the file cannot be read now: nothing is folded and the next poll tries again.
+   */
+  snapshot?: () => { version: string; events: Iterable<Event> } | undefined;
 }
 
 export interface SourceStatus {
   id: string;
   present: boolean; // logs directory exists
   parseable: boolean; // we can read token usage from it
+  /** Why a source reported nothing; shown only when it did not. */
   note?: string;
+  /** How some of a source's calls were counted; shown whatever the source reported. Known once its files are read. */
+  warning?: string;
+  /** This Mac's gateway ledger was read for this source: its routed turns are counted from the ledger once. */
+  ledger?: boolean;
+  /**
+   * Read so its rollouts can claim ledger rows, without reporting anything. The gateway's telemetry rows count
+   * only once a rollout claims them, so `--agents claude` still needs the Codex rollouts it did not ask for.
+   */
+  claimOnly?: boolean;
+  /**
+   * Hands the kept parser state of a file this discovery did not find again whatever it decided afresh (the reloaded
+   * gateway ledger), as `SourceFile.renew` does for a file it found.
+   */
+  carry?: (kept: any) => void;
   files: SourceFile[];
 }
 
@@ -42,8 +82,6 @@ interface RootCfg {
   path: string;
   account?: string;
 }
-
-const claudeParse = (line: string) => parseLine(line);
 
 function expand(p: string): string {
   return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
@@ -70,7 +108,10 @@ function shortEmail(email?: string): string | undefined {
 }
 
 // Claude account: <home>/.claude.json (or <root>/../.claude.json) → oauthAccount.emailAddress
-function claudeAccount(projectsDir: string): string {
+// Exported for the gateway ledger, whose Claude rows belong to the same account.
+export function claudeAccount(projectsDir = join(homedir(), ".claude", "projects")): string {
+  // Names the account outright, as `SPENDWATCH_COPILOT_ACCOUNT` does for Copilot (the tests use both, to read no real login).
+  if (process.env.SPENDWATCH_CLAUDE_ACCOUNT) return process.env.SPENDWATCH_CLAUDE_ACCOUNT;
   const candidates = [join(homedir(), ".claude.json"), join(dirname(dirname(projectsDir)), ".claude.json"), join(dirname(projectsDir) + ".json")];
   for (const c of candidates) {
     try {
@@ -81,6 +122,19 @@ function claudeAccount(projectsDir: string): string {
     } catch {}
   }
   return "default";
+}
+
+/**
+ * The Claude account that signed in under one `CLAUDE_CONFIG_DIR`, which keeps its `.claude.json` inside it.
+ * A directory with no signed-in account is named by the directory itself: it must never be mistaken for the
+ * default account, whose turns are billed elsewhere.
+ */
+export function claudeAccountIn(configDir: string): string {
+  try {
+    const e = shortEmail(JSON.parse(readFileSync(join(configDir, ".claude.json"), "utf8"))?.oauthAccount?.emailAddress);
+    if (e) return e;
+  } catch {}
+  return basename(configDir) || "default";
 }
 
 // Codex profile label: ~/.codex → "main", ~/.codex-tertiary → "tertiary".
@@ -196,7 +250,14 @@ function profileRoots(home: string, agent: string, dot: string): RootCfg[] {
 }
 
 export function defaultCodexRoots(home = homedir()): RootCfg[] {
-  return profileRoots(home, "codex", ".codex");
+  // Codex moves a rollout to `archived_sessions` instead of deleting it, so the
+  // same basename can sit in both. Listing the live roots first keeps that copy,
+  // which the rollout-name dedupe in `discover` then bills exactly once.
+  const roots = profileRoots(home, "codex", ".codex");
+  const archived = roots
+    .map((root) => ({ agent: "codex", path: join(dirname(root.path), "archived_sessions") }))
+    .filter((root) => existsSync(root.path));
+  return [...roots, ...archived];
 }
 
 export function defaultGrokRoots(home = homedir()): RootCfg[] {
@@ -215,7 +276,7 @@ export function defaultOmpRoots(home = homedir()): RootCfg[] {
 }
 
 // ---- per-agent collectors ---------------------------------------------------
-function collectClaude(dir: string, account: string, sinceMs: number, project?: string): SourceFile[] {
+function collectClaude(dir: string, account: string, sinceMs: number, project?: string, gateway?: GatewayLedger): SourceFile[] {
   const files: SourceFile[] = [];
   if (!existsSync(dir)) return files;
   const acct = account || claudeAccount(dir);
@@ -225,19 +286,48 @@ function collectClaude(dir: string, account: string, sinceMs: number, project?: 
     for (const f of safeReaddir(join(dir, proj))) {
       if (!f.endsWith(".jsonl")) continue;
       const path = join(dir, proj, f);
-      if (mtimeOk(path, sinceMs)) files.push({ path, project: projectName, source: "claude", account: acct, parse: claudeParse, ctx: null });
+      if (!mtimeOk(path, sinceMs)) continue;
+      // A marked message is settled against the ledger, as a rollout's marked record is: what one line decided, and
+      // what a later line of the same message repeats, belongs to this file's parser, which watch keeps between ticks.
+      const ctx = newClaudeCtx(gateway);
+      let renewed = false;
+      files.push({ path, project: projectName, source: "claude", account: acct, parse: (text: string, kept: ClaudeCtx) => parseLine(text, kept), ctx,
+        settle: (kept: ClaudeCtx, final: boolean) => settleClaudeRouted(kept, final),
+        // Once per discovery: what the kept state decided since is already known to this ledger.
+        renew: (kept: ClaudeCtx) => { if (renewed) return; renewed = true; carryLedger(kept, ctx.gateway); } });
     }
   }
   return files;
 }
 
-function collectCodex(dir: string, account: string, sinceMs: number): SourceFile[] {
+/**
+ * The reloaded ledger has not seen what a transcript already did: rows it claimed, and calls it billed before their rows
+ * existed. It gets them, and the transcript carries on against it.
+ */
+function carryLedger(kept: { gateway?: GatewayIndex; decisions?: LedgerDecision[] }, gateway?: GatewayIndex): void {
+  kept.gateway = gateway;
+  gateway?.replay?.(kept.decisions ?? []);
+}
+
+function collectCodex(dir: string, account: string, sinceMs: number, gateway?: GatewayLedger): SourceFile[] {
   const files: SourceFile[] = [];
   if (!existsSync(dir)) return files;
   const acct = account || codexAccount(dir);
   for (const path of walkJsonl(dir)) {
     if (!path.includes("rollout-")) continue;
-    if (mtimeOk(path, sinceMs)) files.push({ path, project: "?", source: "codex", account: acct, parse: parseCodexLine, ctx: newCodexCtx() });
+    if (!mtimeOk(path, sinceMs)) continue;
+    const ctx = newCodexCtx(gateway);
+    let renewed = false;
+    // A rollout keeps its identity when Codex moves it into archived_sessions, so a watching reader carries on
+    // from its offset instead of reading the file again as a new one.
+    files.push({ path, key: `codex:${basename(path)}`, project: "?", source: "codex", account: acct, parse: parseCodexLine, ctx,
+      settle: (kept: CodexCtx, final: boolean) => settleRouted(kept, final),
+      renew: (kept: CodexCtx) => {
+        // Once per discovery: what the kept state decided since is already known to this ledger.
+        if (renewed) return;
+        renewed = true;
+        carryLedger(kept, ctx.gateway);
+      } });
   }
   return files;
 }
@@ -290,12 +380,41 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   const codexRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "codex") : defaultCodexRoots();
   const grokRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "grok") : defaultGrokRoots();
 
+  // The gateway ledger is one read for the whole run: it answers claims for every
+  // rollout and supplies the rows the subscriptions billed on their own.
+  // With an explicit config, only a `gateway` root enables it — a config states
+  // where logs live, and it may deliberately leave the gateway out.
+  // Loaded even when this Mac has no ledger: a rollout's gateway-marked call that no ledger here vouches for is
+  // then kept and labelled, never dropped (see codex.ts). `ledger` says whether a ledger was actually read.
+  const gatewayRoot = cfg?.find((r) => r.agent === "gateway");
+  const gatewayOn = process.env.SPENDWATCH_GATEWAY_SOURCE !== "off" && (cfg ? !!gatewayRoot : true);
+  const gateway = gatewayOn ? GatewayIndex.load({ sinceMs: opts.sinceMs, stateDir: gatewayRoot?.path }) : undefined;
+  const ledger = !!gateway?.present;
+
   if (want("claude")) {
-    const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project));
-    out.push({ id: "claude", present: claudeRoots.some((r) => existsSync(r.path)), parseable: true, files });
+    const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project, gateway));
+    const rows = gateway?.files("claude") ?? [];
+    const claude: SourceStatus = {
+      id: "claude",
+      present: claudeRoots.some((r) => existsSync(r.path)) || rows.length > 0,
+      parseable: true,
+      ledger,
+      files: [...files, ...rows],
+      ...(gateway ? { carry: (kept: ClaudeCtx) => carryLedger(kept, gateway) } : {}),
+    };
+    // Asked after the transcripts have been read, because only the parser knows what a message recorded.
+    if (gateway) Object.defineProperty(claude, "warning", {
+      get: () => claudeGatewayWarning(files.map((f) => f.ctx as ClaudeCtx)),
+      enumerable: true,
+      configurable: true,
+    });
+    out.push(claude);
   }
 
-  if (want("codex")) {
+  // A report must not depend on which agents were asked for: the ledger's telemetry rows count only once a
+  // rollout claims them, so the rollouts are still read, report nothing, when only their claims are needed.
+  const claimOnly = !want("codex") && !!gateway?.hasClaimable();
+  if (want("codex") || claimOnly) {
     // A profile home can be a copy-on-write clone of another (e.g. ~/.codex cloned
     // from ~/.codex-primary): same rollout under two real paths, so realpath dedupe
     // in defaultCodexRoots cannot catch it. Bill each rollout id only once, and
@@ -306,14 +425,22 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
     const billable = codexRoots.filter((r) => !isFreeCodexHome(r.path));
     const ordered = [...billable].sort((a, b) => Number(isPlayground(a)) - Number(isPlayground(b)));
     const files = ordered
-      .flatMap((r) => collectCodex(r.path, r.account ?? "", opts.sinceMs))
+      .flatMap((r) => collectCodex(r.path, r.account ?? "", opts.sinceMs, gateway))
       .filter((file) => {
         const rollout = basename(file.path);
         if (seenRollouts.has(rollout)) return false;
         seenRollouts.add(rollout);
         return true;
       });
-    out.push({ id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, files });
+    const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger, ...(claimOnly ? { claimOnly } : {}), files,
+      ...(gateway ? { carry: (kept: CodexCtx) => carryLedger(kept, gateway) } : {}) };
+    // Asked after the rollouts have been read, because only the parser knows what a rollout recorded.
+    if (gateway && !claimOnly) Object.defineProperty(codex, "warning", {
+      get: () => gatewayWarning(files.map((f) => f.ctx as CodexCtx)),
+      enumerable: true,
+      configurable: true,
+    });
+    out.push(codex);
   }
 
   if (want("grok")) {
@@ -333,17 +460,44 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   if (want("copilot")) {
     const roots = cfg ? cfg.filter((r) => r.agent === "copilot") : defaultCopilotRoots().map((path) => ({ agent: "copilot", path, account: undefined }));
     const files = roots.flatMap((r) => collectCopilot(r.path, opts.sinceMs, r.account));
-    const present = roots.some((r) => existsSync(r.path));
-    out.push({ id: "copilot", present, parseable: files.length > 0, files,
-      note: present && !files.length ? "no readable per-request usage for this period" : undefined });
+    const rows = gateway?.files("copilot") ?? [];
+    const all = [...files, ...rows];
+    const present = roots.some((r) => existsSync(r.path)) || rows.length > 0;
+    out.push({ id: "copilot", present, parseable: all.length > 0, ledger, files: all,
+      note: present && !all.length ? "no readable per-request usage for this period" : undefined });
   }
 
-  // Gemini CLI — ~/.gemini (logs/telemetry); structure TBD.
+  // Gemini CLI — ~/.gemini (logs/telemetry); structure TBD. Like every other agent, an explicit config names where
+  // its logs live, so a run with one never looks in the home directory for it.
   if (want("gemini")) {
-    const dir = join(homedir(), ".gemini");
-    const present = existsSync(dir);
-    out.push({ id: "gemini", present, parseable: present, note: present ? undefined : "not installed", files: present ? [...walkJsonl(dir)].filter((p) => mtimeOk(p, opts.sinceMs)).map((path) => ({ path, project: "?", source: "gemini", account: "default", parse: () => [], ctx: null })) : [] });
+    const roots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "gemini") : [{ agent: "gemini", path: join(homedir(), ".gemini") }];
+    const present = roots.some((r) => existsSync(r.path));
+    const files = roots.flatMap((r) => existsSync(r.path) ? [...walkJsonl(r.path)].filter((p) => mtimeOk(p, opts.sinceMs)) : [])
+      .map((path): SourceFile => ({ path, project: "?", source: "gemini", account: "default", parse: () => [], ctx: null }));
+    out.push({ id: "gemini", present, parseable: present, note: present ? undefined : "not installed", files });
   }
 
   return out;
 }
+
+/** What the rollouts' gateway-routed calls need said about how they were counted, if anything. */
+function gatewayWarning(contexts: CodexCtx[]): string | undefined {
+  const routed = contexts.filter((ctx) => ctx?.modelProvider === "subscription_gateway");
+  // No count here: these files can reach outside the report's window, and the labelled model rows carry the figures.
+  const notes = [
+    routed.some((ctx) => ctx.unconfirmed) ? `some gateway-routed calls in these rollouts had no row in this Mac's gateway ledger, so they are counted under Codex as "<model> (${UNCONFIRMED})"; where this report is combined with the report of the Mac whose gateway served them (--input, or the spend archive), that Mac's ledger bills them and they leave Codex` : "",
+    routed.some((ctx) => ctx.lastCount !== undefined) ? "gateway-routed rollouts recorded token_count without token_usage_record; those calls were matched against this Mac's gateway ledger by model, token counts and time, and a call it does not hold is counted from the rollout" : "",
+  ].filter(Boolean);
+  return notes.length ? notes.join("; ") : undefined;
+}
+
+/**
+ * Rollouts must be read before the gateway ledger is, so every claim a transcript
+ * can make is already taken when its gateway rows are folded. Reader order is
+ * untouched; only the polling pass is reordered. Claude gets the same without help: its transcripts are the first files
+ * of its status, ahead of the ledger rows that report the same calls, and Copilot is polled after Claude outright.
+ */
+export function pollOrder(statuses: SourceStatus[]): SourceStatus[] {
+  return [...statuses].sort((a, b) => Number(a.id !== "codex") - Number(b.id !== "codex"));
+}
+
