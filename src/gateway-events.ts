@@ -2,10 +2,10 @@
 // events, kept apart from the index that decides which rows count (gateway.ts).
 import type { Event } from "./parse";
 import type { GatewayVendor } from "./gateway-config";
-import { callKey, GATEWAY_ORIGIN, MARKER, TELEMETRY_ORIGIN, type LedgerRow } from "./gateway-ledger-files";
+import { callKey, GATEWAY_ORIGIN, isMarked, markedId, TELEMETRY_ORIGIN, type LedgerRow } from "./gateway-ledger-files";
 
-/** A gateway-origin row the gateway marked: the record that carries the charge. */
-export const billedRow = (row: LedgerRow): boolean => row.origin === GATEWAY_ORIGIN && row.responseId.startsWith(MARKER);
+/** A gateway-origin row the gateway marked with either family: the record that carries the charge. */
+export const billedRow = (row: LedgerRow): boolean => row.origin === GATEWAY_ORIGIN && isMarked(row.responseId);
 
 /** Rows the ledger is responsible for billing; see the module header. */
 export function counts(row: LedgerRow): boolean {
@@ -24,7 +24,7 @@ export function* eventsFor(vendor: GatewayVendor, account: string, rows: LedgerR
     // The archive keeps how many calls a report took over from the rollouts; see `routedCalls`.
     yield { t: "routed", sessionId, id: requestId, ts: row.at };
     // A client Mac's Codex report may hold this call too, when this Mac's gateway served it (gateway-settle.ts).
-    const gateway = billedRow(row) ? { gateway: { id: row.responseId.slice(MARKER.length), role: "billed" as const } } : {};
+    const gateway = billedRow(row) ? { gateway: { id: markedId(row.responseId), role: "billed" as const } } : {};
     yield {
       t: "api",
       sessionId,
