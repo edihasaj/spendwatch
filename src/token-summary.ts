@@ -1,5 +1,6 @@
 import {Database} from "./database";
 import type {Report} from "./aggregate";
+import {archivedCoverage, byMonthSource, bySource, callTotals, dayIn, withoutCalls} from "./gateway-settle";
 
 export interface TokenCounts {total: number; cloud: number; local: number; unclassified: number}
 export interface TokenPeriod {
@@ -61,7 +62,10 @@ export function tokenSummary(path: string, options: {
   let rows: Archived[];
   let captures: Array<{source: string; measured_at: number}> = [];
   let dailyRows: Array<{source: string; model: string; tokens: number}> = [];
+  let coverage: ReturnType<typeof archivedCoverage>;
   try {
+    // A Codex call another Mac's gateway billed comes out of the client's figures, as in every merged view.
+    coverage = archivedCoverage(db);
     rows = db.query<Archived, [string, string]>(`
       SELECT m.month, m.source, m.tokens, m.updated_at, r.report_json
       FROM spend_month m LEFT JOIN spend_report r ON r.month=m.month AND r.source=m.source
@@ -73,7 +77,12 @@ export function tokenSummary(path: string, options: {
       ).all(timeZone, month);
       dailyRows = db.query<{source: string; model: string; tokens: number}, [string, string]>(
         "SELECT source,model,tokens FROM spend_token_day WHERE time_zone=? AND day=?",
-      ).all(timeZone, day);
+      ).all(timeZone, day).map(row => {
+        // The day's own calls, whichever month's report holds them: report months follow the reporting Mac's zone.
+        const covered = bySource(coverage, row.source)
+          .filter(call => call.model === row.model && Number.isFinite(call.ts) && call.ts > 0 && dayIn(timeZone, call.ts) === day);
+        return covered.length ? {...row, tokens: Math.max(0, row.tokens - callTotals(covered).tokens)} : row;
+      });
     }
   } finally {db.close();}
   const period = (key: string): TokenPeriod => ({key, counts: null, sources: 0, expectedSources: 0, measuredAt: null});
@@ -82,7 +91,10 @@ export function tokenSummary(path: string, options: {
   const yearSources = new Set<string>(), daySources = new Set<string>();
   for (const row of rows) {
     if (!validCount(row.tokens)) throw new Error("Invalid archived token total");
-    const report = row.report_json ? JSON.parse(row.report_json) as Report : undefined;
+    const covered = byMonthSource(coverage, row.month, row.source);
+    if (covered.length) row.tokens = Math.max(0, row.tokens - callTotals(covered).tokens);
+    const stored = row.report_json ? JSON.parse(row.report_json) as Report : undefined;
+    const report = stored && covered.length ? withoutCalls(stored, covered) : stored;
     let counts = report ? modelCounts(report.models.map(m => ({
       model: m.model, tokens: m.inTok + m.outTok + m.cacheReadTok + m.cacheWriteTok,
     }))) : empty();
