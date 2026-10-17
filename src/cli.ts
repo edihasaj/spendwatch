@@ -219,7 +219,7 @@ options:
   --days N          rolling window of N days instead of a calendar month
   --month YYYY-MM   report one calendar month (default: the current month)
   --months N        also aggregate the previous N-1 months, for history backfill
-  --agent LIST      comma list: claude,codex,grok,pi,omp,copilot,gemini (default all)
+  --agent LIST      comma list: claude,codex,grok,pi,omp,copilot,mission,autoreview,gemini (default all)
   --account STR     filter by account substring (email/label)
   --account-group X group HTML accounts by service (default) or email
   --project STR     filter project by substring
@@ -255,6 +255,8 @@ sources:
   pi       ~/.pi/agent/sessions/*/*.jsonl        (token usage ✓)
   omp      ~/.omp/agent/sessions/*/*.jsonl       (oh-my-pi, token usage ✓)
   copilot  ~/.copilot/session-store.db           (token usage ✓)
+  mission  ~/Projects/mission-runtime/.mission-runtime/authority.sqlite (usage rows ✓; $MISSION_RUNTIME_DB_PATH)
+  autoreview  an agent-usage.v1 JSONL ledger          (only from an autoreview root of a config)
   gemini   ~/.gemini                             (when present, or a gemini root of an explicit config)
   gateway  <gateway state>/usage/*.jsonl         (subscription ledger; SPENDWATCH_GATEWAY_SOURCE=off to skip)
 
