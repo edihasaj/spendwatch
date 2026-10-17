@@ -114,7 +114,7 @@ export function archiveReport(db: Database, report: Report, source: string, gene
     ON CONFLICT(month, source) DO UPDATE SET
       calls = excluded.calls, observed_calls = excluded.observed_calls, ledger = excluded.ledger,
       routed_calls = excluded.routed_calls, report_json = excluded.report_json, updated_at = excluded.updated_at
-    WHERE ${force ? "1" : fullerRead("spend_report")}
+    WHERE ${force ? "1 = 1" : fullerRead("spend_report")}
   `).run(report.period!.key, source, report.apiCalls, report.observedCalls ?? report.apiCalls, report.ledger ? 1 : 0,
     report.routedCalls ?? 0, JSON.stringify(report), generatedAt);
   if (result.changes > 0) return "accepted";
