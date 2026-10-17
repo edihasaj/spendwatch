@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import type { Report } from "../src/aggregate";
 import { monthPeriod } from "../src/periods";
 import { loadMonthlySpend, writeMonthlySpend } from "../src/spend-history";
-import { loadArchivedReports } from "../src/spend-report-archive";
+import { archiveReport, initReportArchive, loadArchivedReports } from "../src/spend-report-archive";
+import { tempDir } from "./tmp";
 
 function dbPath(): string {
-  return join(mkdtempSync(join(tmpdir(), "spendwatch-months-")), "spendwatch.db");
+  return join(tempDir("spendwatch-months-"), "spendwatch.db");
 }
 
 function report(
@@ -29,6 +29,24 @@ function report(
     source,
     sinceTs: monthPeriod(month).from,
   };
+}
+
+/** Day buckets that add up to a report's totalTokens, which the archiver requires. */
+function dayRows(month: string, rows: Array<[day: string, tokens: number]>) {
+  return {
+    timeZone: "UTC",
+    measuredAt: monthPeriod(month).from + 3_600_000,
+    rows: rows.map(([day, tokens]) => ({ day, model: "gpt-5.5", tokens })),
+  };
+}
+
+function storedDays(path: string): Array<{ day: string; tokens: number }> {
+  const db = new Database(path, { readonly: true, create: false });
+  try {
+    return db.query<{ day: string; tokens: number }, []>("SELECT day, tokens FROM spend_token_day ORDER BY day").all();
+  } finally {
+    db.close();
+  }
 }
 
 describe("monthly spend archive", () => {
@@ -169,6 +187,159 @@ describe("monthly spend archive", () => {
     ])], { generatedAt: 2 });
 
     expect(loadMonthlySpend(path)[0]!.projects).toEqual([{ project: "spendwatch", tokens: 20_000, cost: 20 }]);
+  });
+
+  test("observed calls replace a month that fewer billed calls would lose", () => {
+    const path = dbPath();
+    writeMonthlySpend(path, [report("2026-08", "studio:codex", 20_000, 900)], { generatedAt: 1 });
+    // The gateway billed 800 of the 900 calls it observed, so the deduped report
+    // still saw the whole month and should win.
+    const fuller = { ...report("2026-08", "studio:codex", 25_000, 800), observedCalls: 900 };
+    expect(writeMonthlySpend(path, [fuller], { generatedAt: 2 }).rows).toBeGreaterThan(0);
+
+    const [august] = loadMonthlySpend(path);
+    expect(august!.tokens).toBe(25_000);
+    expect(august!.calls).toBe(800);
+    expect(loadArchivedReports(path)[0]!.totalTokens).toBe(25_000);
+  });
+
+  test("a thin re-read with a lower observed count is rejected", () => {
+    const path = dbPath();
+    writeMonthlySpend(path, [{ ...report("2026-08", "studio:codex", 20_000, 800), observedCalls: 900 }], { generatedAt: 1 });
+    const thinner = { ...report("2026-08", "studio:codex", 500, 10), observedCalls: 20 };
+
+    expect(writeMonthlySpend(path, [thinner], { generatedAt: 2 }).rows).toBe(0);
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(20_000);
+    expect(loadArchivedReports(path)[0]!.totalTokens).toBe(20_000);
+  });
+
+  test("an accepted run replaces its days instead of maxing them", () => {
+    const path = dbPath();
+    const august = (tokens: number, calls: number, days: Array<[string, number]>): Report => ({
+      ...report("2026-08", "studio:codex", tokens, calls),
+      observedCalls: calls,
+      tokenDays: dayRows("2026-08", days),
+    });
+    writeMonthlySpend(path, [august(1_000, 900, [["2026-08-05", 1_000]])], { generatedAt: 1 });
+    // The next read re-buckets the same month: day 5 was really 600 of it.
+    writeMonthlySpend(path, [august(1_000, 900, [["2026-08-05", 600], ["2026-08-06", 400]])], { generatedAt: 2 });
+
+    expect(storedDays(path)).toEqual([
+      { day: "2026-08-05", tokens: 600 },
+      { day: "2026-08-06", tokens: 400 },
+    ]);
+  });
+
+  test("a rejected run merges its days without shrinking the month", () => {
+    const path = dbPath();
+    const august = (tokens: number, calls: number, days: Array<[string, number]>): Report => ({
+      ...report("2026-08", "studio:codex", tokens, calls),
+      observedCalls: calls,
+      tokenDays: dayRows("2026-08", days),
+    });
+    writeMonthlySpend(path, [august(1_000, 900, [["2026-08-05", 1_000]])], { generatedAt: 1 });
+    // A partial re-read saw less of the 5th but found a day the archive missed.
+    writeMonthlySpend(path, [august(700, 20, [["2026-08-05", 200], ["2026-08-07", 500]])], { generatedAt: 2 });
+
+    expect(storedDays(path)).toEqual([
+      { day: "2026-08-05", tokens: 1_000 },
+      { day: "2026-08-07", tokens: 500 },
+    ]);
+  });
+
+  test("a month read with the gateway ledger is never replaced by a read without it", () => {
+    const path = dbPath();
+    // With the ledger, 50 routed calls were billed to Claude and Copilot and dropped from Codex.
+    const codex = (tokens: number, ledger: boolean): Report => ({ ...report("2026-10", "studio:codex", tokens, 900), observedCalls: 900, ...(ledger ? { ledger: true, routedCalls: 50 } : {}) });
+    // With the ledger, routed turns are counted there and dropped from the rollouts: 20,000 tokens.
+    writeMonthlySpend(path, [codex(20_000, true)], { generatedAt: 1 });
+    // The gateway source was switched off: the same 900 observed calls now include the routed turns again.
+    expect(writeMonthlySpend(path, [codex(26_000, false)], { generatedAt: 2 }).rows).toBe(0);
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(20_000);
+    expect(loadArchivedReports(path)[0]!.totalTokens).toBe(20_000);
+    // Reading the month with the ledger again replaces it as usual, and the guard survives a rewrite.
+    expect(writeMonthlySpend(path, [codex(21_000, true)], { generatedAt: 3 }).rows).toBeGreaterThan(0);
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(21_000);
+    expect(writeMonthlySpend(path, [codex(26_000, false)], { generatedAt: 4 }).rows).toBe(0);
+  });
+
+  test("a read without the ledger leaves a ledger month's days alone as well as its totals", () => {
+    const path = dbPath();
+    const codex = (tokens: number, ledger: boolean, days: Array<[string, number]>): Report => ({
+      ...report("2026-10", "studio:codex", tokens, 900), observedCalls: 900, tokenDays: dayRows("2026-10", days), ...(ledger ? { ledger: true, routedCalls: 50 } : {}),
+    });
+    writeMonthlySpend(path, [codex(20_000, true, [["2026-10-05", 20_000]])], { generatedAt: 1 });
+    // The source was switched off: the routed turns are back in the rollouts, 6,000 more tokens on the 5th.
+    expect(writeMonthlySpend(path, [codex(26_000, false, [["2026-10-05", 26_000]])], { generatedAt: 2 }).rows).toBe(0);
+    // Maxing that day would count the routed turns here and again in the Copilot and Claude days.
+    expect(storedDays(path)).toEqual([{ day: "2026-10-05", tokens: 20_000 }]);
+    // A partial re-read that did use the ledger still merges its days as before.
+    writeMonthlySpend(path, [{ ...codex(700, true, [["2026-10-05", 200], ["2026-10-07", 500]]), observedCalls: 20 }], { generatedAt: 3 });
+    expect(storedDays(path)).toEqual([{ day: "2026-10-05", tokens: 20_000 }, { day: "2026-10-07", tokens: 500 }]);
+  });
+
+  test("a thin ledger read cannot add days to a month stored without the ledger", () => {
+    const path = dbPath();
+    const codex = (tokens: number, calls: number, ledger: boolean, days: Array<[string, number]>): Report => ({
+      ...report("2026-10", "studio:codex", tokens, calls), observedCalls: calls, tokenDays: dayRows("2026-10", days), ...(ledger ? { ledger: true, routedCalls: 5 } : {}),
+    });
+    writeMonthlySpend(path, [codex(26_000, 900, false, [["2026-10-05", 26_000]])], { generatedAt: 1 });
+    // Fewer observed calls, and routed calls the stored read billed in Codex: the stored month wins, and its days go with its totals.
+    expect(writeMonthlySpend(path, [codex(1_000, 20, true, [["2026-10-06", 1_000]])], { generatedAt: 2 }).rows).toBe(0);
+    expect(storedDays(path)).toEqual([{ day: "2026-10-05", tokens: 26_000 }]);
+  });
+
+  test("a read that routed more calls but observed fewer leaves a month's days alone, as it leaves its totals", () => {
+    const path = dbPath();
+    const codex = (tokens: number, calls: number, routed: number, days: Array<[string, number]>): Report => ({
+      ...report("2026-10", "studio:codex", tokens, calls), observedCalls: calls, ledger: true, routedCalls: routed, tokenDays: dayRows("2026-10", days),
+    });
+    writeMonthlySpend(path, [codex(20_000, 900, 5, [["2026-10-05", 20_000]])], { generatedAt: 1 });
+    // A rollout was deleted (fewer calls observed) while more of the turns became covered by the ledger (more routed):
+    // the two reads put routed turns in different sources, so the archive keeps the stored one whole.
+    expect(writeMonthlySpend(path, [codex(18_000, 800, 9, [["2026-10-06", 18_000]])], { generatedAt: 2 }).rows).toBe(0);
+    expect(storedDays(path)).toEqual([{ day: "2026-10-05", tokens: 20_000 }]);
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(20_000);
+  });
+
+  test("names why a read was turned away: fewer calls, or routed turns placed in other sources", () => {
+    const db = new Database(":memory:");
+    initReportArchive(db);
+    const read = (calls: number, routed: number): Report => ({ ...report("2026-10", "studio:codex", 1_000, calls), observedCalls: calls, ledger: true, routedCalls: routed });
+    expect(archiveReport(db, read(900, 5), "studio:codex", 1)).toBe("accepted");
+    // Same routed calls, fewer observed: a partial re-read of the same month.
+    expect(archiveReport(db, read(800, 5), "studio:codex", 2)).toBe("fewer");
+    // Fewer routed calls, or more routed calls with fewer observed: the placements differ either way.
+    expect(archiveReport(db, read(1_000, 4), "studio:codex", 3)).toBe("placement");
+    expect(archiveReport(db, read(800, 9), "studio:codex", 4)).toBe("placement");
+    db.close();
+  });
+
+  test("a month whose every call was routed replaces the stale month that billed those turns", () => {
+    const path = dbPath();
+    // The serving Mac's own Codex month, read before its gateway kept a ledger: all 50 turns billed in Codex.
+    const stale = { ...report("2026-10", "studio:codex", 26_000, 50), observedCalls: 50, tokenDays: dayRows("2026-10", [["2026-10-05", 26_000]]) };
+    writeMonthlySpend(path, [stale], { generatedAt: 1 });
+    // Read with its ledger, which holds a row for every one of them: the ledger bills all 50, Codex none.
+    const routed: Report = { ...report("2026-10", "studio:codex", 0, 0), observedCalls: 50, ledger: true, routedCalls: 50, tokenDays: dayRows("2026-10", []) };
+    expect(writeMonthlySpend(path, [routed], { generatedAt: 2 }).rows).toBeGreaterThan(0);
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(0);
+    expect(loadArchivedReports(path)[0]!.totalTokens).toBe(0);
+    expect(storedDays(path)).toEqual([]);
+    // A report that observed nothing at all is still not a month.
+    expect(writeMonthlySpend(path, [{ ...routed, observedCalls: 0 }], { generatedAt: 3 }).rows).toBe(0);
+  });
+
+  test("a month first read without the ledger takes the ledger read, and archives from before the column still load", () => {
+    const path = dbPath();
+    const old = new Database(path);
+    old.exec(`CREATE TABLE spend_month (month TEXT NOT NULL, source TEXT NOT NULL, tokens INTEGER NOT NULL, cost REAL NOT NULL, calls INTEGER NOT NULL,
+      sessions INTEGER NOT NULL, first_ts INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY (month, source));
+      CREATE TABLE spend_report (month TEXT NOT NULL, source TEXT NOT NULL, calls INTEGER NOT NULL, report_json TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (month, source));`);
+    old.close();
+    writeMonthlySpend(path, [{ ...report("2026-09", "studio:codex", 26_000, 900), observedCalls: 900 }], { generatedAt: 1 });
+    expect(writeMonthlySpend(path, [{ ...report("2026-09", "studio:codex", 20_000, 900), observedCalls: 900, ledger: true }], { generatedAt: 2 }).rows).toBeGreaterThan(0);
+    expect(loadMonthlySpend(path)[0]!.tokens).toBe(20_000);
   });
 
   test("rolling-window reports are not filed as a month", () => {

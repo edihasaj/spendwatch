@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { evaluateCases } from "../src/eval-cli";
 import { parseRunArgs } from "../src/run-cli";
+import { tempDir } from "./tmp";
 
 function repo(): string {
-  const path = mkdtempSync(join(tmpdir(), "spendwatch-eval-"));
+  const path = tempDir("spendwatch-eval-");
   writeFileSync(join(path, "package.json"), "{}");
   return path;
 }

@@ -30,8 +30,14 @@ import type {Database} from "bun:sqlite";
 import type {Report} from "./aggregate";
 
 
-/** Daily detail can improve even when rotated logs no longer fill an archived month. */
-export function archiveTokenDays(db: Database, report: Report, source: string): void {
+/**
+ * How a run's daily buckets meet what the archive already holds.
+ * - "replace": this run saw the whole month (its full report was accepted), so
+ *   its own days are the truth and the previous rows for them are stale.
+ * - "merge": the archive kept a fuller read, so only raise a day that this run
+ *   measured higher — never shrink one from a partial re-read.
+ */
+export function archiveTokenDays(db: Database, report: Report, source: string, mode: "replace" | "merge" = "merge"): void {
   const daily = report.tokenDays;
   if (!daily || !Number.isSafeInteger(daily.measuredAt) || daily.measuredAt <= 0) return;
   new Intl.DateTimeFormat("en-CA", {timeZone: daily.timeZone}).format(daily.measuredAt);
@@ -44,6 +50,12 @@ export function archiveTokenDays(db: Database, report: Report, source: string): 
     keys.add(key); total += row.tokens;
   }
   if (total !== report.totalTokens) return; // missing timestamps are not measured zero
+  if (mode === "replace" && report.period) {
+    // Day keys are ISO in this timezone, so a text range covers the period.
+    const day = (ts: number) => new Intl.DateTimeFormat("en-CA", {timeZone: daily.timeZone}).format(ts);
+    db.prepare("DELETE FROM spend_token_day WHERE source = ? AND time_zone = ? AND day >= ? AND day <= ?")
+      .run(source, daily.timeZone, day(report.period.from), day(report.period.to - 1));
+  }
   db.prepare(`
     INSERT INTO spend_token_capture VALUES (?,?,?,?)
     ON CONFLICT(source,time_zone,month) DO UPDATE SET

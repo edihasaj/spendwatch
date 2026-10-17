@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Aggregator } from "../src/aggregate";
 import { MonthlyAggregator } from "../src/monthly";
@@ -8,6 +7,7 @@ import { monthPeriod } from "../src/periods";
 import { parseLine } from "../src/parse";
 import { IncrementalReader } from "../src/scan";
 import type { SourceFile } from "../src/sources";
+import { tempDir } from "./tmp";
 
 const SESS = "22222222-2222-2222-2222-222222222222";
 const AUG_MID = new Date(2026, 7, 14, 10, 0, 0).toISOString();
@@ -39,7 +39,7 @@ function fixture(): SourceFile {
       message: { model: "claude-opus-4-8", usage: usage(70), content: [{ type: "text", text: "ok" }] },
     }),
   ];
-  const path = join(mkdtempSync(join(tmpdir(), "spendwatch-monthly-")), `${SESS}.jsonl`);
+  const path = join(tempDir("spendwatch-monthly-"), `${SESS}.jsonl`);
   writeFileSync(path, lines.join("\n") + "\n");
   return { path, project: "demo", source: "claude", account: "default", parse: (line) => parseLine(line), ctx: null };
 }

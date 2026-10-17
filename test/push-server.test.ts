@@ -1,14 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { monitorFailureDecision } from "../src/push-server";
 import { PushStore } from "../src/push-store";
+import { tempDir } from "./tmp";
 
 describe("capacity monitor failure policy", () => {
   test("defers transient SQLite contention and escalates once when persistent", () => {
-    const dir = mkdtempSync(join(tmpdir(), "spendwatch-monitor-lock-"));
+    const dir = tempDir("spendwatch-monitor-lock-");
     const path = join(dir, "spendwatch.db");
     const store = new PushStore(path);
     store.db.exec("PRAGMA busy_timeout = 1;");

@@ -1,11 +1,12 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import { realpathSync } from "node:fs";
 import { Aggregator } from "../src/aggregate";
 import { parseLine } from "../src/parse";
 import { humanProject, mergeProjectRows, projectFromCwd } from "../src/projects";
+import { tempDir } from "./tmp";
 
 const HOME = "/Users/developer";
 
@@ -39,7 +40,7 @@ describe("project naming", () => {
   test("stops at the checkout, wherever the checkout actually is", () => {
     // "owner/repo" and "repo/subdir" look identical as paths, so the presence
     // of a .git is what separates them.
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "spendwatch-home-")));
+    const home = realpathSync(tempDir("spendwatch-home-"));
     mkdirSync(join(home, "Projects", "spendwatch", "src"), { recursive: true });
     writeFileSync(join(home, "Projects", "spendwatch", ".git"), "gitdir: elsewhere");
     mkdirSync(join(home, "Projects", "oss", "paseo-baseline", "src"), { recursive: true });
