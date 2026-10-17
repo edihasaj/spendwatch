@@ -661,6 +661,15 @@ forked rollout's copies are. A `msg_gl_*` row is matched only by its id, never b
 model, tokens and time, because Claude Code records the id of every call; so a
 Codex `token_count` never stands on the row of a Claude Code call.
 
+A transcript's decisions reach the ledger even when a filter leaves the transcript
+out of the report, as a rollout's do: `--project` and `--account` still read the
+Claude Code transcripts they leave out, for those decisions only, and an `--agents`
+subset without Claude still reads them while this Mac's ledger holds a `msg_gl_*`
+row. So a late row is billed the same in `report --agents copilot` as in the full
+report. Like the Codex claims, this is decided when the sources are found: a
+`watch --agents copilot` started before the ledger held its first `msg_gl_*` row
+reads no Claude Code transcripts until it is restarted.
+
 Telemetry rows are not written per call. The gateway imports its pre-ledger
 request history once, when the ledger is first created, and `session` records
 whether that request carried a Codex session id. So `session: true` rows count
