@@ -257,6 +257,14 @@ export function mergeReports(
     totalTokens: reports.reduce((sum, report) => sum + report.totalTokens, 0),
     totalCost: reports.reduce((sum, report) => sum + report.totalCost, 0),
     apiCalls: reports.reduce((sum, report) => sum + report.apiCalls, 0),
+    observedCalls: reports.reduce((sum, report) => sum + (report.observedCalls ?? report.apiCalls), 0),
+    ...(reports.some((report) => report.routedCalls) ? { routedCalls: reports.reduce((sum, report) => sum + (report.routedCalls ?? 0), 0) } : {}),
+    ...(reports.some((report) => report.ledger) ? { ledger: true } : {}),
+    // Kept through a merge so a merged report can still be settled against another Mac's (see gateway-settle.ts).
+    ...(reports.some((report) => report.gatewayUnconfirmed?.length)
+      ? { gatewayUnconfirmed: reports.flatMap((report) => report.gatewayUnconfirmed ?? []) } : {}),
+    ...(reports.some((report) => report.gatewayBilled?.length)
+      ? { gatewayBilled: reports.flatMap((report) => report.gatewayBilled ?? []) } : {}),
     sessions: reports.reduce((sum, report) => sum + report.sessions, 0),
     tools,
     bash,
