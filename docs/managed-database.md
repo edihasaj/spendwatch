@@ -18,10 +18,23 @@ minutes. It runs fresh queries on each render, discards a failed socket without
 replaying the read, and reconnects on the next request. Native CLI reads retain
 their existing connection lifecycle.
 
-Production still uses its existing SQLite database on `ops-eu`. This worktree
-contains preparation only. Do not stop that source or publish a candidate
-until copied-state staging, uploads, private ingress, notifications and
-independent recovery have passed.
+Production serves from this managed build on Cloudflare EU since the cutover
+recorded in the manager repository's Spendwatch Cloudflare operations runbook;
+the source SQLite writers on `ops-eu` are stopped. Publish a candidate only
+through that runbook's reviewed release, staging first.
+
+The gateway usage ledger adds three nullable INTEGER columns, `observed_calls`,
+`ledger` and `routed_calls`, to `spend_month` and `spend_report`.
+`addArchiveColumns` adds a missing one with `ALTER TABLE` the first time a
+writer opens the archive, so the managed database migrates on its first write
+after a release that brings them. That migration needs the owner's approval;
+the application role must own both tables, and the `ALTER` briefly takes an
+exclusive table lock bounded by the managed lock timeout. Two writers that
+migrate at the same time are tolerated: the second re-reads the columns after
+its `ALTER` fails, and the managed layer drops its cached column lists after
+any DDL statement, failed or not. `test/managed-gateway-archive.test.ts` holds
+the month take-over, a refused take-over, an archive from before the columns
+and the concurrent migration to identical results on both engines.
 
 The ordinary CLI must retain native `bun:sqlite`, including its self-contained
 build and local history archives. The managed server will select PostgreSQL
