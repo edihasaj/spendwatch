@@ -82,5 +82,14 @@ export function loadCapacityDashboard(paths: string[]): CapacityDashboard {
   }
   const accounts = normalizeCodexLimits(combined);
   if (!accounts.length) throw new Error("no valid capacity accounts in input");
-  return { accounts, sources: normalizeSourceHealth(combined), authentication: normalizeAuthenticationRequirements(combined) };
+  const sources = normalizeSourceHealth(combined);
+  const authentication = normalizeAuthenticationRequirements(combined);
+  const activeDevices = new Set(sources.map((source) => source.device));
+  return {
+    accounts,
+    sources,
+    authentication: sources.length
+      ? authentication.filter((requirement) => activeDevices.has(requirement.device))
+      : authentication,
+  };
 }
