@@ -51,6 +51,91 @@ describe("capacity history", () => {
     expect(html).toContain('href="capacity.html">Capacity</a>');
   });
 
+  test("imports bounded batches in source order and retains distinct same-time windows", () => {
+    const dir = tempDir("spendwatch-capacity-batch-");
+    const db = join(dir, "history.db");
+    const input = join(dir, "history.jsonl");
+    const sampledAt = "2026-08-09T20:00:00Z";
+    const reset = "2026-08-10T01:00:00Z";
+    const records = [
+      {
+        provider: "codex", account: "work@example.com", device: "first", source: "first",
+        sampledAt, plan: "Pro", windows: [
+          { kind: "session", usedPercent: 17, windowMinutes: 300, resetsAt: reset },
+          { kind: "weekly", usedPercent: 42, windowMinutes: 10080, resetsAt: "2026-08-16T20:00:00Z" },
+        ],
+      },
+      {
+        provider: "codex", account: "work@example.com", device: "later", source: "later",
+        sampledAt, plan: "Pro", windows: [
+          { kind: "session", usedPercent: 17, windowMinutes: 300, resetsAt: reset },
+        ],
+      },
+      ...Array.from({ length: 300 }, (_, index) => ({
+        provider: "codex", account: "work@example.com", device: "batch", source: "batch",
+        sampledAt: new Date(Date.parse(sampledAt) + (index + 1) * 1_000).toISOString(), plan: "Pro",
+        windows: [{ kind: "session", usedPercent: index % 101, windowMinutes: 300, resetsAt: reset }],
+      })),
+    ];
+    writeFileSync(input, records.map((record) => JSON.stringify(record)).join("\n"));
+
+    expect(importCapacityHistory(db, [input])).toEqual({ inserted: 302, accepted: 302 });
+    expect(importCapacityHistory(db, [input])).toEqual({ inserted: 0, accepted: 302 });
+
+    const native = new Database(db, { readonly: true });
+    try {
+      expect(native.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM capacity_history").get()?.count).toBe(302);
+      expect(native.query<{ kind: string; source: string; devices: string }, [number]>(`
+        SELECT window_kind AS kind, source, devices FROM capacity_history
+        WHERE sampled_at_ms=? ORDER BY window_kind
+      `).all(Date.parse(sampledAt))).toEqual([
+        { kind: "session", source: "first", devices: JSON.stringify(["first"]) },
+        { kind: "weekly", source: "first", devices: JSON.stringify(["first"]) },
+      ]);
+    } finally {
+      native.close();
+    }
+  });
+
+  test("rolls back batches already inserted from a rejected later history row", () => {
+    const dir = tempDir("spendwatch-capacity-batch-rollback-");
+    const db = join(dir, "history.db");
+    const input = join(dir, "history.jsonl");
+    importCapacityHistory(db, []);
+    const native = new Database(db);
+    try {
+      native.exec(`
+        CREATE TRIGGER reject_late_capacity BEFORE INSERT ON capacity_history
+        WHEN NEW.source = 'reject'
+        BEGIN SELECT RAISE(ABORT, 'late history row rejected'); END;
+      `);
+    } finally {
+      native.close();
+    }
+    const sampledAt = Date.parse("2026-08-09T20:00:00Z");
+    const records = [
+      ...Array.from({ length: 250 }, (_, index) => ({
+        provider: "codex", account: "work@example.com", device: "batch", source: "batch",
+        sampledAt: new Date(sampledAt + index * 1_000).toISOString(), plan: "Pro",
+        windows: [{ kind: "session", usedPercent: index % 101, windowMinutes: 300 }],
+      })),
+      {
+        provider: "codex", account: "work@example.com", device: "batch", source: "reject",
+        sampledAt: new Date(sampledAt + 251_000).toISOString(), plan: "Pro",
+        windows: [{ kind: "session", usedPercent: 100, windowMinutes: 300 }],
+      },
+    ];
+    writeFileSync(input, records.map((record) => JSON.stringify(record)).join("\n"));
+
+    expect(() => importCapacityHistory(db, [input])).toThrow("late history row rejected");
+    const check = new Database(db, { readonly: true });
+    try {
+      expect(check.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM capacity_history").get()?.count).toBe(0);
+    } finally {
+      check.close();
+    }
+  });
+
   test("stores Copilot credit history", () => {
     const dir = tempDir("spendwatch-copilot-");
     const db = join(dir, "history.db");

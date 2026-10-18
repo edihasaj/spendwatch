@@ -120,3 +120,9 @@ it back independently, and only then confirms durability. Qualification proved
 pruning two window rows and one account row, restoring from actual downloaded
 R2 bytes, and a second restore writing zero rows. It does not mutate a serving
 database or contact a quota provider.
+
+History imports send at most 250 window rows per parameterized insert. Each
+source file remains one transaction, including the final partial batch. The
+existing sample keys, retention floor and first-sample-wins duplicate policy
+remain unchanged. This bounds database round trips when replaying uploaded
+history and keeps later failures from committing earlier batches in that file.
