@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { capacityResultFromAppServer, codexBinary, paceFor } from "../src/capacity-current";
 
 const HOUR = 3_600_000;
@@ -109,4 +112,49 @@ test("purchased credits ride along with the rate-limit snapshot", () => {
   // An empty balance is not worth a card of its own.
   expect(read({ hasCredits: false, unlimited: false, balance: "0" })).toBeNull();
   expect(read(undefined)).toBeNull();
+});
+
+test("duplicate Codex homes and repeated CLI calls perform one quota read", async () => {
+  const home = mkdtempSync(join(tmpdir(), "codex-poll-cli-"));
+  const claims = Buffer.from(JSON.stringify({
+    email: "same@example.com", "https://api.openai.com/auth": { chatgpt_plan_type: "pro" },
+  })).toString("base64url");
+  for (const profile of [".codex", ".codex-primary", ".codex-copy"]) {
+    mkdirSync(join(home, profile, "sessions"), { recursive: true });
+    writeFileSync(join(home, profile, "auth.json"), JSON.stringify({ tokens: { id_token: `test.${claims}.test` } }));
+  }
+  const binary = join(home, "fake-codex");
+  writeFileSync(binary, `#!/usr/bin/env bun
+import { appendFileSync } from "node:fs";
+for await (const line of console) {
+  const message = JSON.parse(line);
+  if (message.id === undefined) continue;
+  let result = {};
+  if (message.method === "account/read") result = {account:{type:"chatgpt",email:"same@example.com",planType:"pro"}};
+  if (message.method === "account/rateLimits/read") {
+    appendFileSync(process.env.HOME + "/requests", "quota\\n");
+    result = {rateLimits:{primary:{usedPercent:12,windowDurationMins:10080}}};
+  }
+  console.log(JSON.stringify({id:message.id,result}));
+}
+`);
+  chmodSync(binary, 0o755);
+  const run = async () => {
+    const child = Bun.spawn([process.execPath, resolve("src/cli.ts"), "capacity-current"], {
+      env: { ...process.env, HOME: home, SPENDWATCH_CODEX_BIN: binary,
+        SPENDWATCH_CAPACITY_COORDINATOR: "", SPENDWATCH_CAPACITY_CACHE: join(home, "poll.db") },
+      stdout: "pipe", stderr: "pipe",
+    });
+    const [stdout, stderr, exit] = await Promise.all([
+      new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+    ]);
+    expect(stderr).toBe("");
+    expect(exit).toBe(0);
+    return JSON.parse(stdout);
+  };
+  const first = await run();
+  const cached = await run();
+  expect(first).toHaveLength(1);
+  expect(cached[0].usage.updatedAt).toBe(first[0].usage.updatedAt);
+  expect(readFileSync(join(home, "requests"), "utf8")).toBe("quota\n");
 });

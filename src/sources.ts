@@ -148,7 +148,7 @@ function codexProfile(sessionsDir: string): string {
 }
 
 // Codex auth claims: <root>/../auth.json → tokens.id_token JWT.
-function codexClaims(sessionsDir: string): { email?: string; plan?: string } {
+export function codexClaims(sessionsDir: string): { email?: string; plan?: string } {
   const auth = join(dirname(sessionsDir), "auth.json");
   try {
     if (!existsSync(auth)) return {};

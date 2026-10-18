@@ -6,7 +6,8 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { defaultCodexRoots } from "./sources";
+import { codexClaims, defaultCodexRoots } from "./sources";
+import { coordinatedCapacity } from "./capacity-poll";
 
 export interface CapacityWindow {
   usedPercent: number;
@@ -257,8 +258,15 @@ async function liveProfileCapacity(profileHome: string, now: number): Promise<Ca
 }
 
 export async function currentCodexCapacity(now = Date.now()): Promise<CapacityResult[]> {
+  // Discover identity locally before starting app-server, and deduplicate homes
+  // before any request. Several profiles may contain the same account.
+  const profiles = new Map<string, string>();
+  for (const root of defaultCodexRoots()) {
+    const { email } = codexClaims(root.path);
+    if (email && !profiles.has(email.toLowerCase())) profiles.set(email.toLowerCase(), dirname(root.path));
+  }
   const settled = await Promise.allSettled(
-    defaultCodexRoots().map((root) => liveProfileCapacity(dirname(root.path), now)),
+    [...profiles].map(([email, home]) => coordinatedCapacity("codex", email, () => liveProfileCapacity(home, now))),
   );
   const byAccount = new Map<string, CapacityResult>();
   for (const item of settled) {
