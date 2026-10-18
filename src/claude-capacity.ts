@@ -10,6 +10,7 @@ import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { paceFor, type CapacityPaceWindow, type CapacityWindow } from "./capacity-current";
+import { coordinatedCapacity, retryAfterMs } from "./capacity-poll";
 
 export const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 // The access token lives eight hours. Nothing else on a collector host runs
@@ -369,7 +370,7 @@ export interface ClaudeReadFailure {
 }
 
 class ClaudeReadError extends Error {
-  constructor(readonly status: number, readonly email?: string) {
+  constructor(readonly status: number, readonly email?: string, readonly retryAfterMs?: number) {
     super(`Claude usage read failed with HTTP ${status}`);
   }
 }
@@ -405,7 +406,7 @@ async function profileCapacity(profile: ClaudeProfile, now: number): Promise<Cla
     const token = await refreshProfile(profile, now);
     if (token) response = await readUsage(token);
   }
-  if (!response.ok) throw new ClaudeReadError(response.status, profile.identity.email);
+  if (!response.ok) throw new ClaudeReadError(response.status, profile.identity.email, retryAfterMs(response.headers.get("retry-after")));
   return claudeCapacityFromUsage(await response.json(), profile.identity, now);
 }
 
@@ -413,8 +414,14 @@ export async function currentClaudeCapacity(
   now = Date.now(),
   onFailure?: (failure: ClaudeReadFailure) => void,
 ): Promise<ClaudeCapacityResult[]> {
+  const profiles = new Map<string, ClaudeProfile>();
+  for (const profile of discoverClaudeProfiles()) {
+    const key = profile.identity.email.toLowerCase();
+    const previous = profiles.get(key);
+    if (!previous || (profile.expiresAt ?? 0) > (previous.expiresAt ?? 0)) profiles.set(key, profile);
+  }
   const settled = await Promise.allSettled(
-    discoverClaudeProfiles().map((profile) => profileCapacity(profile, now)),
+    [...profiles.values()].map((profile) => coordinatedCapacity("claude", profile.identity.email, () => profileCapacity(profile, now))),
   );
   const byAccount = new Map<string, ClaudeCapacityResult>();
   for (const item of settled) {

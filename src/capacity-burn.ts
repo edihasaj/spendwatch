@@ -3,7 +3,7 @@
 // done. This measures the recent slope inside the current cycle and compares it
 // with the rate the remaining allowance can actually afford, so a change in
 // behaviour is visible while there is still time to act on it.
-import { Database } from "bun:sqlite";
+import { Database } from "./database";
 import { windowFreshness } from "./capacity-freshness";
 import type { CodexLimitAccount, LimitWindow } from "./limits";
 
@@ -111,52 +111,58 @@ export function burnForecast(samples: BurnSample[], window: LimitWindow, nowMs: 
   };
 }
 
-function loadSamples(
-  db: Database,
-  account: CodexLimitAccount,
-  kind: BurnWindowKind,
-  sinceMs: number,
-): BurnSample[] {
-  return db.query<BurnSample, [string, string, string, number]>(`
-    SELECT sampled_at_ms AS sampledAt,
-      MAX(used_percent) AS usedPercent,
-      MAX(resets_at_ms) AS resetsAt
-    FROM capacity_history
-    WHERE provider = ?1 AND account = ?2 COLLATE NOCASE AND window_kind = ?3 AND sampled_at_ms >= ?4
-    GROUP BY sampled_at_ms
-    ORDER BY sampled_at_ms
-  `).all(account.provider, account.email, kind, sinceMs);
-}
-
 export function loadBurnForecasts(
   path: string,
   accounts: CodexLimitAccount[],
   nowMs: number,
+  reader?: () => Database,
 ): Map<string, AccountBurnForecasts> {
-  const db = new Database(path, { readonly: true });
   const forecasts = new Map<string, AccountBurnForecasts>();
+  const windows = accounts.flatMap((account) => (["session", "weekly"] as const).flatMap((kind) => {
+    const window = account[kind];
+    return window && windowFreshness(window, account.updatedAt, nowMs) === "live"
+      ? [{ account, kind, window, sinceMs: nowMs - burnLookbackMinutes(window.windowMinutes) * 60_000 }]
+      : [];
+  }));
+  // Old readings still age on every render without opening a remote connection.
+  if (!windows.length) return forecasts;
+  const db = reader ? reader() : new Database(path, { readonly: true });
   try {
-    for (const account of accounts) {
-      const entry: AccountBurnForecasts = {};
-      for (const kind of ["session", "weekly"] as const) {
-        const window = account[kind];
-        // A reading we cannot trust must not be dressed up with a forecast.
-        if (!window || windowFreshness(window, account.updatedAt, nowMs) !== "live") continue;
-        const sinceMs = nowMs - burnLookbackMinutes(window.windowMinutes) * 60_000;
-        entry[kind] = burnForecast(loadSamples(db, account, kind, sinceMs), window, nowMs);
-      }
-      if (entry.session || entry.weekly) {
-        forecasts.set(`${account.provider}:${account.email.toLowerCase()}`, entry);
-      }
+    type Row = BurnSample & { provider: string; account: string; kind: BurnWindowKind };
+    const rows = db.query<Row, (string | number)[]>(`
+      SELECT provider, account COLLATE NOCASE AS account, window_kind AS kind,
+        sampled_at_ms AS sampledAt, MAX(used_percent) AS usedPercent, MAX(resets_at_ms) AS resetsAt
+      FROM capacity_history
+      WHERE ${windows.map(() =>
+        "(provider = ? AND account = ? COLLATE NOCASE AND window_kind = ? AND sampled_at_ms >= ?)").join(" OR ")}
+      GROUP BY provider, account COLLATE NOCASE, window_kind, sampled_at_ms
+      ORDER BY sampled_at_ms
+    `).all(...windows.flatMap(({ account, kind, sinceMs }) => [account.provider, account.email, kind, sinceMs]));
+    const samples = new Map<string, BurnSample[]>();
+    const key = (provider: string, email: string, kind: string) => JSON.stringify([provider, email.toLowerCase(), kind]);
+    for (const row of rows) {
+      const identity = key(row.provider, row.account, row.kind);
+      const group = samples.get(identity) ?? [];
+      group.push(row); samples.set(identity, group);
+    }
+    for (const { account, kind, window } of windows) {
+      const forecast = burnForecast(samples.get(key(account.provider, account.email, kind)) ?? [], window, nowMs);
+      if (!forecast) continue;
+      const identity = `${account.provider}:${account.email.toLowerCase()}`;
+      const entry = forecasts.get(identity) ?? {};
+      entry[kind] = forecast;
+      forecasts.set(identity, entry);
     }
   } finally {
-    db.close();
+    if (!reader) db.close();
   }
   return forecasts;
 }
 
-export function attachBurnForecasts(path: string, accounts: CodexLimitAccount[], nowMs: number): void {
-  const forecasts = loadBurnForecasts(path, accounts, nowMs);
+export function attachBurnForecasts(
+  path: string, accounts: CodexLimitAccount[], nowMs: number, reader?: () => Database,
+): void {
+  const forecasts = loadBurnForecasts(path, accounts, nowMs, reader);
   for (const account of accounts) {
     const entry = forecasts.get(`${account.provider}:${account.email.toLowerCase()}`);
     if (account.session) account.session.burn = entry?.session;

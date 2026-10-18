@@ -1,4 +1,4 @@
-import {Database} from "bun:sqlite";
+import {Database} from "./database";
 import type {Report} from "./aggregate";
 import {archivedCoverage, byMonthSource, bySource, callTotals, dayIn, withoutCalls} from "./gateway-settle";
 
