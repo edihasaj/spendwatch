@@ -77,6 +77,22 @@ interface HistoricalRecordInput {
   windows?: unknown;
 }
 
+type CapacityWindowValues = [
+  string, string, string, string, number, string, number, number | null,
+  number, string, string, number | null, number | null, number | null, number | null,
+];
+
+const CAPACITY_HISTORY_INSERT = `
+  INSERT OR IGNORE INTO capacity_history(
+    sample_key, provider, account, window_kind, sampled_at_ms, observed_at,
+    used_percent, resets_at_ms, window_minutes, source, devices,
+    prediction_delta, prediction_expected, prediction_will_last,
+    prediction_runs_out_at_ms
+  )
+`;
+const CAPACITY_HISTORY_VALUES = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+const CAPACITY_HISTORY_IMPORT_BATCH_SIZE = 250;
+
 export interface CapacityHistoryPoint {
   at: number;
   value: number;
@@ -126,6 +142,35 @@ function windowSampleKey(
   return [provider, cleanPart(account.toLowerCase()), kind, Math.round(sampledAt), usedPercent, resetsAt ?? ""].join("|");
 }
 
+function capacityWindowValues(
+  account: { provider: string; account: string; devices: string[] },
+  kind: "session" | "weekly",
+  window: LimitWindow,
+  sampledAt: number,
+  observedAt: string,
+  source: string,
+): CapacityWindowValues {
+  const resetsAt = parsedTime(window.resetsAt);
+  const prediction = window.prediction;
+  return [
+    windowSampleKey(account.provider, account.account, kind, sampledAt, window.usedPercent, resetsAt),
+    account.provider,
+    account.account,
+    kind,
+    sampledAt,
+    observedAt,
+    window.usedPercent,
+    resetsAt ?? null,
+    window.windowMinutes,
+    source,
+    JSON.stringify(account.devices),
+    prediction?.deltaPercent ?? null,
+    prediction?.expectedUsedPercent ?? null,
+    prediction ? Number(prediction.willLastToReset) : null,
+    prediction?.runsOutAt ? parsedTime(prediction.runsOutAt) ?? null : null,
+  ];
+}
+
 export function openCapacityDatabase(path: string): Database {
   const db = new Database(path);
   db.exec("PRAGMA journal_mode = WAL;");
@@ -164,25 +209,7 @@ function insertWindow(
   observedAt: string,
   source: string,
 ): boolean {
-  const resetsAt = parsedTime(window.resetsAt);
-  const prediction = window.prediction;
-  const result = statement.run(
-    windowSampleKey(account.provider, account.account, kind, sampledAt, window.usedPercent, resetsAt),
-    account.provider,
-    account.account,
-    kind,
-    sampledAt,
-    observedAt,
-    window.usedPercent,
-    resetsAt ?? null,
-    window.windowMinutes,
-    source,
-    JSON.stringify(account.devices),
-    prediction?.deltaPercent ?? null,
-    prediction?.expectedUsedPercent ?? null,
-    prediction ? Number(prediction.willLastToReset) : null,
-    prediction?.runsOutAt ? parsedTime(prediction.runsOutAt) ?? null : null,
-  );
+  const result = statement.run(...capacityWindowValues(account, kind, window, sampledAt, observedAt, source));
   return result.changes > 0;
 }
 
@@ -202,14 +229,7 @@ export function writeCapacitySnapshot(
       copilot_seat_assigned_at_ms, api_balance_available, api_balances_json
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `);
-  const insertHistory = db.prepare(`
-    INSERT OR IGNORE INTO capacity_history(
-      sample_key, provider, account, window_kind, sampled_at_ms, observed_at,
-      used_percent, resets_at_ms, window_minutes, source, devices,
-      prediction_delta, prediction_expected, prediction_will_last,
-      prediction_runs_out_at_ms
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `);
+  const insertHistory = db.prepare(`${CAPACITY_HISTORY_INSERT} VALUES ${CAPACITY_HISTORY_VALUES}`);
   let rows = 0;
   const tx = db.transaction(() => {
     for (const account of accounts) {
@@ -293,24 +313,24 @@ export function importCapacityHistory(path: string, inputs: string[]): { inserte
   const db = openCapacityDatabase(path);
   const retention = db.query("SELECT history_floor_ms FROM capacity_retention WHERE id = 1").get() as { history_floor_ms: number } | null;
   const historyFloor = retention?.history_floor_ms ?? Number.NEGATIVE_INFINITY;
-  const insertHistory = db.prepare(`
-    INSERT OR IGNORE INTO capacity_history(
-      sample_key, provider, account, window_kind, sampled_at_ms, observed_at,
-      used_percent, resets_at_ms, window_minutes, source, devices,
-      prediction_delta, prediction_expected, prediction_will_last,
-      prediction_runs_out_at_ms
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `);
   let inserted = 0;
   let accepted = 0;
   const tx = db.transaction((records: ReturnType<typeof normalizeHistoricalRecord>[]) => {
+    let batch: CapacityWindowValues[] = [];
+    const flush = () => {
+      if (!batch.length) return;
+      const insert = db.prepare(
+        `${CAPACITY_HISTORY_INSERT} VALUES ${batch.map(() => CAPACITY_HISTORY_VALUES).join(",")}`,
+      );
+      inserted += insert.run(...batch.flat()).changes;
+      batch = [];
+    };
     for (const record of records) {
       if (!record || record.sampledAt < historyFloor) continue;
       accepted++;
       const observedAt = new Date(record.sampledAt).toISOString();
       for (const item of record.windows) {
-        inserted += Number(insertWindow(
-          insertHistory,
+        batch.push(capacityWindowValues(
           { provider: record.provider, account: record.account, devices: [record.device] },
           item.kind,
           item.window,
@@ -318,8 +338,12 @@ export function importCapacityHistory(path: string, inputs: string[]): { inserte
           observedAt,
           record.source,
         ));
+        if (batch.length === CAPACITY_HISTORY_IMPORT_BATCH_SIZE) flush();
       }
     }
+    // Source order remains the conflict order both within a statement and
+    // across chunks, so the existing first-sample-wins policy is retained.
+    flush();
   });
   for (const input of inputs) {
     const raw = readFileSync(input);

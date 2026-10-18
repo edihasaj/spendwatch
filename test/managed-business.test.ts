@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Database } from "../src/database";
-import { writeCapacitySnapshot, loadCapacityHistory } from "../src/capacity-db";
+import { importCapacityHistory, writeCapacitySnapshot, loadCapacityHistory } from "../src/capacity-db";
 import { loadSessionEquivalentForecasts } from "../src/session-equivalents";
 import { CapacityPollStore, POLL_INTERVAL_MS } from "../src/capacity-poll";
 import { PushStore } from "../src/push-store";
@@ -48,6 +48,60 @@ function fixture<T>(run: (path: string) => T): { sqlite: T; postgres: T } {
 }
 
 suite("managed business behavior", () => {
+  test("batched history imports keep first samples, same-time windows and retries identical", () => {
+    const result = fixture((path) => {
+      const input = path + ".history.jsonl";
+      const sampledAt = "2026-08-09T20:00:00Z";
+      const reset = "2026-08-10T01:00:00Z";
+      const records = [
+        {
+          provider: "codex", account: "work@example.com", device: "first", source: "first",
+          sampledAt, plan: "Pro", windows: [
+            { kind: "session", usedPercent: 17, windowMinutes: 300, resetsAt: reset },
+            { kind: "weekly", usedPercent: 42, windowMinutes: 10080, resetsAt: "2026-08-16T20:00:00Z" },
+          ],
+        },
+        {
+          provider: "codex", account: "work@example.com", device: "later", source: "later",
+          sampledAt, plan: "Pro",
+          windows: [{ kind: "session", usedPercent: 17, windowMinutes: 300, resetsAt: reset }],
+        },
+        ...Array.from({ length: 300 }, (_, index) => ({
+          provider: "codex", account: "work@example.com", device: "batch", source: "batch",
+          sampledAt: new Date(Date.parse(sampledAt) + (index + 1) * 1_000).toISOString(), plan: "Pro",
+          windows: [{ kind: "session", usedPercent: index % 101, windowMinutes: 300, resetsAt: reset }],
+        })),
+      ];
+      writeFileSync(input, records.map((record) => JSON.stringify(record)).join("\n"));
+      const first = importCapacityHistory(path, [input]);
+      const second = importCapacityHistory(path, [input]);
+      const db = new Database(path, { readonly: true });
+      try {
+        return {
+          first,
+          second,
+          count: db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM capacity_history").get()?.count,
+          sameTime: db.query<{ kind: string; source: string; devices: string }, [number]>(`
+            SELECT window_kind AS kind, source, devices FROM capacity_history
+            WHERE sampled_at_ms=? ORDER BY window_kind
+          `).all(Date.parse(sampledAt)),
+        };
+      } finally {
+        db.close();
+      }
+    });
+    expect(result.postgres).toEqual(result.sqlite);
+    expect(result.postgres).toEqual({
+      first: { inserted: 302, accepted: 302 },
+      second: { inserted: 0, accepted: 302 },
+      count: 302,
+      sameTime: [
+        { kind: "session", source: "first", devices: JSON.stringify(["first"]) },
+        { kind: "weekly", source: "first", devices: JSON.stringify(["first"]) },
+      ],
+    });
+  });
+
   test("batched burn reads preserve provider, account, window and device aggregation", () => {
     const result = fixture((path) => {
       const now = Date.parse("2026-10-16T12:00:00Z");
