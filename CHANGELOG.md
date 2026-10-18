@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added optional managed PostgreSQL serving and independently verified history
+  archives while retaining native SQLite for the local CLI. Thanks to
+  @edihasaj for the database migration and recovery qualification.
+
 - Add Mission Runtime and AutoReview as sources. Both agents leave no transcripts, so Spendwatch reads the `agent-usage.v1` records they write about their own usage (`src/agent-usage.ts`): gross input minus cached and cache-write tokens is the uncached input, output already includes reasoning, and a reported `cost_usd_micros` is the call's cost. Each attempt and model is one call, so a rewritten (larger) record replaces the last read and is never counted twice.
   - `mission` reads the `usage:*` rows of `mission_run_outputs` in Mission Runtime's authority SQLite store, read-only (`~/Projects/mission-runtime/.mission-runtime/authority.sqlite`, `$MISSION_RUNTIME_DB_PATH`, or a `mission` config root), with the run's repository as the project (only `json_extract` of the repository key is read from the spec). A store with no `-wal` (Mission Runtime removes it on a clean close) is opened as immutable, and a store that exists but cannot be read is reported as a note instead of nothing. A Mission Runtime record is dated at the run's start (`mission_runs.created_at`, else its last update), so an attempt running past the 1st stays in one month and a history archive does not count it twice; the window still selects rows by last update. `autoreview` records are dated at their last update. `autoreview` reads a JSONL job ledger named by an `autoreview` config root, the last line of an attempt winning; it has no default location, and `--agent autoreview` without a root says what is missing. Both honour `--project`.
 
