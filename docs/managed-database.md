@@ -126,3 +126,8 @@ source file remains one transaction, including the final partial batch. The
 existing sample keys, retention floor and first-sample-wins duplicate policy
 remain unchanged. This bounds database round trips when replaying uploaded
 history and keeps later failures from committing earlier batches in that file.
+
+When normalized source-health records identify current devices, the dashboard
+shows sign-in requirements only for those devices. Historical account and
+window data remain intact. Standalone inputs without valid source-health
+records retain their existing authentication prompts.
