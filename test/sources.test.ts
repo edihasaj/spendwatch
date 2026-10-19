@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { Aggregator } from "../src/aggregate";
+import { IncrementalReader } from "../src/scan";
 import { defaultCodexRoots, discover, pollOrder } from "../src/sources";
 import { tempDir } from "./tmp";
 
@@ -33,6 +35,29 @@ describe("Codex profile discovery", () => {
     symlinkSync(sessions, join(home, ".codex-shadow", "sessions"));
 
     expect(defaultCodexRoots(home)).toHaveLength(1);
+  });
+
+  test("finds current and retained Claude Qwen worker generations once", () => {
+    const home = tempDir("spendwatch-home-");
+    const worker = join(home, "Library", "Application Support", "Claude-3p", "qwen-worker");
+    const first = join(worker, "generations", "first");
+    const retained = join(worker, "generations", "retained");
+    mkdirSync(join(first, "sessions"), { recursive: true });
+    mkdirSync(join(retained, "sessions"), { recursive: true });
+    symlinkSync(first, join(worker, "current"));
+
+    expect(defaultCodexRoots(home).map((root) => root.path)).toEqual([
+      join(worker, "current", "sessions"),
+      join(retained, "sessions"),
+    ]);
+  });
+
+  test("finds an archived-only retained Claude Qwen generation", () => {
+    const home = tempDir("spendwatch-home-");
+    const archived = join(home, "Library", "Application Support", "Claude-3p", "qwen-worker", "generations", "retained", "archived_sessions");
+    mkdirSync(archived, { recursive: true });
+
+    expect(defaultCodexRoots(home).map((root) => root.path)).toEqual([archived]);
   });
 
   test("bills a rollout once when a profile home is a copy, not a symlink", () => {
@@ -102,11 +127,66 @@ describe("Codex profile discovery", () => {
     delete process.env.SPENDWATCH_INCLUDE_FREE;
     try {
       const paidOnly = discover({ sinceMs: 0, agents: new Set(["codex"]) }).find((s) => s.id === "codex");
-      expect(paidOnly?.files.map((f) => f.account)).toEqual(["pro@example.com (paid)"]);
+      expect(paidOnly?.files.map((f) => f.account)).toEqual(["pro@example.com (paid)", "Local Qwen"]);
 
       process.env.SPENDWATCH_INCLUDE_FREE = "1";
       const withFree = discover({ sinceMs: 0, agents: new Set(["codex"]) }).find((s) => s.id === "codex");
       expect(withFree?.files.map((f) => f.account).sort()).toEqual(["free@example.com (gratis)", "pro@example.com (paid)"]);
+    } finally {
+      if (previousConfig === undefined) delete process.env.SPENDWATCH_CONFIG;
+      else process.env.SPENDWATCH_CONFIG = previousConfig;
+      if (previousFree === undefined) delete process.env.SPENDWATCH_INCLUDE_FREE;
+      else process.env.SPENDWATCH_INCLUDE_FREE = previousFree;
+    }
+  });
+
+  test("keeps local Qwen usage but excludes Free ChatGPT cloud usage from a mixed home", () => {
+    const home = tempDir("spendwatch-home-");
+    const free = join(home, ".codex-free", "sessions");
+    const cloudRollout = "rollout-2026-10-18T10-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl";
+    const qwenRollout = "rollout-2026-10-18T10-00-01-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl";
+    mkdirSync(free, { recursive: true });
+    const line = (type: string, payload: Record<string, unknown>) => JSON.stringify({ type, timestamp: "2026-10-18T10:00:00Z", payload });
+    writeFileSync(join(free, cloudRollout), [
+      line("session_meta", { id: "cloud", model: "gpt-5.5", model_provider: "openai" }),
+      line("token_usage_record", { response_id: "cloud-response", usage: { input_tokens: 1_000, output_tokens: 100 } }),
+    ].join("\n") + "\n");
+    const qwenLines = [
+      line("session_meta", { id: "qwen", model_provider: "spark_qwen" }),
+      line("session_meta", { id: "copied-parent", model: "gpt-5.5", model_provider: "openai" }),
+      line("turn_context", { model: "codex/qwen/qwen3.8-flash-next" }),
+      line("token_usage_record", { response_id: "qwen-response", usage: { input_tokens: 100, output_tokens: 10 } }),
+      line("turn_context", { model: "claude/qwen3.8-flash-next" }),
+      line("token_usage_record", { response_id: "qwen-response-2", usage: { input_tokens: 20, output_tokens: 2 } }),
+    ];
+    writeFileSync(join(free, qwenRollout), qwenLines.join("\n") + "\n");
+    writeFileSync(join(home, ".codex-free", "auth.json"), JSON.stringify({ tokens: { id_token: idToken("free@example.com", "free") } }));
+    const config = join(home, "config.json");
+    writeFileSync(config, JSON.stringify([{ agent: "codex", path: free }]));
+
+    const previousConfig = process.env.SPENDWATCH_CONFIG;
+    const previousFree = process.env.SPENDWATCH_INCLUDE_FREE;
+    process.env.SPENDWATCH_CONFIG = config;
+    delete process.env.SPENDWATCH_INCLUDE_FREE;
+    try {
+      const codex = discover({ sinceMs: 0, agents: new Set(["codex"]) }).find((s) => s.id === "codex");
+      expect(codex?.files.map((file) => file.account)).toEqual(["Local Qwen", "Local Qwen"]);
+      const aggregate = new Aggregator();
+      const reader = new IncrementalReader(aggregate);
+      for (const file of codex?.files ?? []) {
+        reader.poll(file);
+        reader.flush(file);
+      }
+      expect(aggregate.report()).toMatchObject({ apiCalls: 2, totalTokens: 132 });
+      expect(aggregate.report().models.map((model) => model.model).sort()).toEqual([
+        "claude/qwen3.8-flash-next",
+        "codex/qwen/qwen3.8-flash-next",
+      ]);
+      const qwenFile = discover({ sinceMs: 0, agents: new Set(["codex"]) })
+        .find((source) => source.id === "codex")
+        ?.files.find((file) => file.path.endsWith(qwenRollout));
+      const events = qwenLines.flatMap((row) => [...qwenFile!.parse(row, qwenFile!.ctx)]);
+      expect(events.filter((event) => event.t === "api").map((event) => event.sessionId)).toEqual(["qwen", "qwen"]);
     } finally {
       if (previousConfig === undefined) delete process.env.SPENDWATCH_CONFIG;
       else process.env.SPENDWATCH_CONFIG = previousConfig;
