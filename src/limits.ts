@@ -7,6 +7,7 @@ import type { BurnForecast } from "./capacity-burn";
 import { buildUtilizationPlans, recommendAccount, UTILIZATION_TARGET_PERCENT, type AccountUtilizationPlan } from "./capacity-planner";
 import { copilotBudgetStatus, copilotCreditWindow, formatCopilotMoney } from "./copilot-budget";
 import { compactDuration } from "./duration";
+import { normalizeLocalQwenCapacity } from "./local-capacity";
 
 export { predictWindow } from "./capacity-prediction";
 
@@ -26,11 +27,11 @@ export interface CapacityPrediction {
   source: "reported" | "linear";
 }
 
-export type CapacityProvider = "codex" | "claude" | "copilot" | "lokai" | "grok";
+export type CapacityProvider = "codex" | "claude" | "copilot" | "lokai" | "grok" | "qwen";
 
 // Cards render in this order, so a provider without an allowance sits after
 // the metered ones instead of interleaving by name.
-const PROVIDER_ORDER: CapacityProvider[] = ["claude", "codex", "copilot", "lokai", "grok"];
+const PROVIDER_ORDER: CapacityProvider[] = ["claude", "codex", "copilot", "lokai", "qwen", "grok"];
 
 export interface CopilotCapacity {
   chatUnlimited: boolean;
@@ -48,6 +49,22 @@ export interface CloudRouteCapacity {
   detail: string;
   available?: boolean;
   balances: ApiCreditBalance[];
+}
+
+export interface LocalQwenCapacity {
+  /** Qwen has no subscription allowance or provider token fee. */
+  unlimited: true;
+  model: string;
+  /**
+   * Readiness is only asserted when every caller reported it. Missing means
+   * unknown, not ready.
+   */
+  ready?: boolean;
+  detail?: string;
+  /** Machines whose latest local snapshot included measured client tokens. */
+  measuredDevices: string[];
+  /** Machines whose latest local snapshot could not read client tokens. */
+  unmeasuredDevices: string[];
 }
 
 export interface ApiCreditBalance {
@@ -72,6 +89,8 @@ export interface CodexLimitAccount {
   credits?: { balance: string; unlimited: boolean };
   /** Spend for a plan-covered agent with no quota to report. */
   spend?: AgentSpendSummary;
+  /** Self-hosted local capacity, distinct from subscription quotas and API balances. */
+  local?: LocalQwenCapacity;
   devices: string[];
   sessionEquivalent?: SessionEquivalentForecast;
 }
@@ -232,6 +251,8 @@ function titleCase(value: string): string {
 export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
   const items = Array.isArray(input) ? input : [input];
   const accounts = new Map<string, CodexLimitAccount>();
+  const localQwen = normalizeLocalQwenCapacity(items);
+  if (localQwen) accounts.set("qwen:local qwen", localQwen);
 
   for (const item of items) {
     if (!item || typeof item !== "object") continue;
@@ -371,11 +392,11 @@ function leftPercent(window?: LimitWindow): number | undefined {
 }
 
 function providerLabel(provider: CapacityProvider): string {
-  return ({ codex: "Codex", claude: "Claude", copilot: "Copilot", lokai: "Lokai", grok: "Grok" })[provider];
+  return ({ codex: "Codex", claude: "Claude", copilot: "Copilot", lokai: "Lokai", grok: "Grok", qwen: "Qwen" })[provider];
 }
 
 function providerAccent(provider: CapacityProvider): string {
-  return ({ codex: "#68d5dc", claude: "#e69a73", copilot: "#8ea9ff", lokai: "#b8d96b", grok: "#c58af9" })[provider];
+  return ({ codex: "#68d5dc", claude: "#e69a73", copilot: "#8ea9ff", lokai: "#b8d96b", grok: "#c58af9", qwen: "#e6bf66" })[provider];
 }
 
 function formatBalance(balance: ApiCreditBalance): string {
@@ -533,12 +554,41 @@ function spendLimits(account: CodexLimitAccount): string {
   ].join("");
 }
 
+function localQwenLimits(account: CodexLimitAccount): string {
+  const local = account.local!;
+  const readiness = local.ready === true
+    ? "All callers reachable"
+    : local.ready === false
+      ? "Caller unavailable"
+      : "Availability unknown";
+  const detail = local.detail ? ` · ${local.detail}` : "";
+  const coverage = local.unmeasuredDevices.length
+    ? `Token reports: ${local.measuredDevices.join(", ") || "none"} · missing ${local.unmeasuredDevices.join(", ")}`
+    : `Token reports: ${local.measuredDevices.join(", ") || "not available"}`;
+  const tokens = (label: string, count: number, period: string) => `<section class="limit spend good">
+    <div class="limit-head"><span>${esc(label)}</span><strong>${esc(formatTokens(count))} tokens</strong></div>
+    <div class="limit-meta split"><span>$0 provider fee</span><span>${esc(period)}</span></div>
+  </section>`;
+  return `<section class="limit local-unlimited good">
+    <div class="limit-head"><span>Local capacity</span><strong>Unlimited</strong></div>
+    <div class="limit-meta split"><span>${esc(local.model)}</span><span>${esc(readiness)}</span></div>
+    <div class="pace"><span>Self-hosted${esc(detail)}</span><strong>No quota cycle</strong></div>
+    <div class="limit-meta">${esc(coverage)}</div>
+  </section>${account.spend
+    ? `${tokens(`Measured · last ${Math.round(account.spend.recentHours)}h`, account.spend.recentTokens, local.unmeasuredDevices.length ? "Partial client reports" : "Client reports")}
+  ${tokens(`Measured · last ${Math.round(account.spend.monthDays)} days`, account.spend.monthTokens, local.unmeasuredDevices.length ? "Partial client reports" : "Client reports")}`
+    : `<section class="limit spend unreadable"><div class="limit-head"><span>Measured usage</span><strong>Not available</strong></div><div class="pace"><span>Awaiting a successful client report</span></div></section>`}`;
+}
+
 function providerLimits(account: CodexLimitAccount, nowMs: number): string {
   if (account.provider === "lokai" && account.route) {
     return routeBalanceBlock(account.route);
   }
   if (account.provider === "copilot" && account.copilot) {
     return copilotLimits(account, nowMs);
+  }
+  if (account.provider === "qwen" && account.local) {
+    return localQwenLimits(account);
   }
   // No quota and no balance: the plan absorbs the usage, so the card reports
   // what was sent rather than inventing an allowance to pace against.
@@ -655,6 +705,21 @@ export function renderLimitsText(accounts: CodexLimitAccount[], nowMs = Date.now
         ? `over budget by ${status.creditsOver} credits (${formatCopilotMoney(status.usdOver, status.budget)})`
         : `${status.creditsLeft} credits left`;
       return `${account.email}\t${account.plan}\t${status.creditsUsed} of ${status.budget.credits} AI credits used (${formatCopilotMoney(status.usdSpent, status.budget)} of ${formatCopilotMoney(status.budget.usd, status.budget)})\t${standing}`;
+    }
+    if (account.provider === "qwen" && account.local) {
+      const local = account.local;
+      const readiness = local.ready === true
+        ? "all callers reachable"
+        : local.ready === false
+          ? "caller unavailable"
+          : "availability unknown";
+      const coverage = local.unmeasuredDevices.length
+        ? `partial token coverage: ${local.measuredDevices.join(", ") || "none"}; missing ${local.unmeasuredDevices.join(", ")}`
+        : `token coverage: ${local.measuredDevices.join(", ") || "not available"}`;
+      const usage = account.spend
+        ? `${Math.round(account.spend.recentHours)}h ${formatTokens(account.spend.recentTokens)} tokens\t${Math.round(account.spend.monthDays)}d ${formatTokens(account.spend.monthTokens)} tokens\t$0 provider fee`
+        : "usage not available";
+      return `Qwen · ${account.email}\tunlimited self-hosted\t${local.model}\t${readiness}\t${coverage}\t${usage}`;
     }
     if (account.spend) {
       const days = Math.round(account.spend.monthDays);
