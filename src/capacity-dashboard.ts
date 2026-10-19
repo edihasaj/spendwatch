@@ -28,7 +28,9 @@ export interface CapacityAuthenticationRequirement {
   profile?: string;
 }
 
-const LIVE_SOURCE_MS = 120_000;
+// A 90-second job, one-minute cadence, and durable import may legitimately
+// take longer than two minutes without changing the provider quota timestamp.
+const LIVE_SOURCE_MS = 240_000;
 const STALE_SOURCE_MS = 300_000;
 
 /**

@@ -101,6 +101,12 @@ describe("capacity dashboard", () => {
       lastSuccessAt: "2026-10-17T10:00:00Z",
     }];
 
+    expect(effectiveSourceHealth(sources, Date.parse("2026-10-19T10:04:00Z"))
+      .map((source) => [source.device, source.status]))
+      .toEqual([["automatic", "live"], ["manual", "snapshot"]]);
+    expect(effectiveSourceHealth(sources, Date.parse("2026-10-19T10:05:00Z"))
+      .map((source) => [source.device, source.status]))
+      .toEqual([["automatic", "stale"], ["manual", "snapshot"]]);
     expect(effectiveSourceHealth(sources, Date.parse("2026-10-19T10:05:01Z"))
       .map((source) => [source.device, source.status]))
       .toEqual([["automatic", "offline"], ["manual", "snapshot"]]);

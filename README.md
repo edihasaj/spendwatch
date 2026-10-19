@@ -291,7 +291,9 @@ green means usage is on or slower than budget, while red means faster.
 Reset, run-out, and freshness countdowns use a compact two-unit style:
 minutes below one hour, hours below 24 hours, then days (`23h 15m`, `1d 1h`).
 When collectors include `source-health` records, cached values are explicitly
-marked live, stale, or offline. A compact **Best now** rail ranks fresh Codex
+marked live, stale, or offline. Automatic collector health remains live for four
+minutes and stale through five minutes to absorb the bounded job, cadence, and
+durable-import path; it does not change provider quota timestamps. A compact **Best now** rail ranks fresh Codex
 and Claude accounts by session headroom, weekly headroom, pace, and forecast.
 After at least three completed 5-hour windows are present in SQLite, the weekly
 card also estimates how many typical session quotas remain using median learned
