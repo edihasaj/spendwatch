@@ -229,7 +229,7 @@ describe("Codex limits", () => {
     const html = renderLimitsHtml(accounts, { generatedAt: now, sources });
     expect(html).toContain('class="source offline"');
     expect(html).toContain('data-source-status="live"');
-    expect(html).toContain("elapsed<=120000?'live'");
+    expect(html).toContain("elapsed<=240000?'live'");
     expect(html).toContain("elapsed<=300000?'stale'");
   });
 
