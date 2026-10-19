@@ -190,6 +190,72 @@ describe("Codex limits", () => {
     expect(html).toContain("data-source-status");
   });
 
+  test("renders old manual snapshots neutrally and never uses them for recommendations", () => {
+    const now = Date.parse("2026-08-09T20:52:00Z");
+    const accounts = normalizeCodexLimits([sample[0]]);
+    const sources = normalizeSourceHealth([{
+      kind: "source-health",
+      device: "studio",
+      status: "snapshot",
+      checkedAt: "2026-08-07T20:52:00Z",
+      lastSuccessAt: "2026-08-07T20:52:00Z",
+      detail: "Snapshot captured on demand",
+    }]);
+
+    expect(recommendAccount(accounts, sources, now)).toBeUndefined();
+    const html = renderLimitsHtml(accounts, { generatedAt: now, sources });
+    expect(html).toContain('class="source snapshot"');
+    expect(html).toContain("snapshot · on demand");
+    expect(html).toContain("raw==='snapshot'?'snapshot'");
+    expect(html).toContain(".source.snapshot i{background:#6f7a83}");
+  });
+
+  test("ages automatic source health out of recommendations while preserving quota freshness rules", () => {
+    const checkedAt = "2026-08-09T20:52:00Z";
+    const now = Date.parse("2026-08-09T20:57:01Z");
+    const accounts = normalizeCodexLimits([{
+      ...sample[0],
+      usage: { ...sample[0].usage, updatedAt: checkedAt },
+    }]);
+    const sources = normalizeSourceHealth([{
+      kind: "source-health",
+      device: "studio",
+      status: "live",
+      checkedAt,
+      lastSuccessAt: checkedAt,
+    }]);
+
+    expect(recommendAccount(accounts, sources, now)).toBeUndefined();
+    const html = renderLimitsHtml(accounts, { generatedAt: now, sources });
+    expect(html).toContain('class="source offline"');
+    expect(html).toContain('data-source-status="live"');
+    expect(html).toContain("elapsed<=120000?'live'");
+    expect(html).toContain("elapsed<=300000?'stale'");
+  });
+
+  test("allows only the bounded provider-to-dashboard delivery margin", () => {
+    const now = Date.parse("2026-08-09T20:52:00Z");
+    const source = normalizeSourceHealth([{
+      kind: "source-health",
+      device: "studio",
+      status: "live",
+      checkedAt: "2026-08-09T20:52:00Z",
+      lastSuccessAt: "2026-08-09T20:52:00Z",
+    }]);
+    const at = (updatedAt: string, weeklyReset = "2026-08-15T20:29:49Z") => normalizeCodexLimits([{
+      ...sample[0],
+      usage: {
+        ...sample[0].usage,
+        updatedAt,
+        secondary: { ...sample[0].usage.secondary, resetsAt: weeklyReset },
+      },
+    }]);
+
+    expect(recommendAccount(at("2026-08-09T20:46:00Z"), source, now)?.account).toBe("work@example.com");
+    expect(recommendAccount(at("2026-08-09T20:44:59Z"), source, now)).toBeUndefined();
+    expect(recommendAccount(at("2026-08-09T20:46:00Z", "2026-08-09T20:51:00Z"), source, now)).toBeUndefined();
+  });
+
   test("shows provider-aware sign-in links only for authentication-required sources", () => {
     const html = renderLimitsHtml(normalizeCodexLimits(sample), {
       generatedAt: Date.parse("2026-08-09T20:52:00Z"),
