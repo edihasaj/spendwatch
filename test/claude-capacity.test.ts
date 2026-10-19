@@ -10,6 +10,7 @@ import {
   needsRefresh,
   persistClaudeCredentials,
   preferUsableCredentials,
+  refreshProfile,
   refreshedCredentialsFrom,
 } from "../src/claude-capacity";
 import { staleAfterMs, windowFreshness } from "../src/capacity-freshness";
@@ -128,6 +129,27 @@ describe("Claude token refresh", () => {
     expect(written.claudeAiOauth.subscriptionType).toBe("max");
     expect(written.claudeAiOauth.rateLimitTier).toBe("tier-x");
     expect(written.somethingElse).toEqual({ keep: true });
+  });
+
+  test("never rotates a refresh grant when its profile cannot persist it", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      return new Response(JSON.stringify({}), { status: 500 });
+    };
+    try {
+      const result = await refreshProfile({
+        home: "/tmp/claude",
+        token: "old-access",
+        refreshToken: "old-refresh",
+        identity: { email: "user@example.com" },
+      });
+      expect(result).toBeUndefined();
+      expect(calls).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

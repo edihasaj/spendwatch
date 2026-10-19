@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { normalizeCodexLimits, type CapacityProvider, type CodexLimitAccount } from "./limits";
 
-export type SourceHealthStatus = "live" | "stale" | "offline" | "error";
+/**
+ * A snapshot is an intentional foreground capture. It is neither a failed
+ * collector nor evidence that the source is currently polling providers.
+ */
+export type SourceHealthStatus = "live" | "snapshot" | "stale" | "offline" | "error";
 
 export interface CapacitySourceHealth {
   device: string;
@@ -22,6 +26,31 @@ export interface CapacityAuthenticationRequirement {
   device: string;
   account?: string;
   profile?: string;
+}
+
+const LIVE_SOURCE_MS = 120_000;
+const STALE_SOURCE_MS = 300_000;
+
+/**
+ * Stored source health is a receipt from the most recent render. Automatic
+ * source health continues to age between renders; an intentional snapshot
+ * remains a neutral historical capture instead.
+ */
+export function effectiveSourceHealth(
+  sources: CapacitySourceHealth[],
+  nowMs: number,
+): CapacitySourceHealth[] {
+  return sources.map((source) => {
+    if (source.status === "snapshot" || source.status === "offline" || source.status === "error") return source;
+    const observedAt = Date.parse(source.lastSuccessAt ?? source.checkedAt);
+    const age = Number.isFinite(observedAt) && observedAt <= nowMs
+      ? nowMs - observedAt
+      : Number.POSITIVE_INFINITY;
+    const status: SourceHealthStatus = source.status === "live" && age <= LIVE_SOURCE_MS
+      ? "live"
+      : age <= STALE_SOURCE_MS ? "stale" : "offline";
+    return status === source.status ? source : { ...source, status };
+  });
 }
 
 export function normalizeAuthenticationRequirements(input: unknown): CapacityAuthenticationRequirement[] {
@@ -48,7 +77,7 @@ function normalizeSource(value: unknown): CapacitySourceHealth | undefined {
   if (!value || typeof value !== "object") return undefined;
   const source = value as Record<string, unknown>;
   if (source.kind !== "source-health" || typeof source.device !== "string") return undefined;
-  if (source.status !== "live" && source.status !== "stale" && source.status !== "offline" && source.status !== "error") return undefined;
+  if (source.status !== "live" && source.status !== "snapshot" && source.status !== "stale" && source.status !== "offline" && source.status !== "error") return undefined;
   if (typeof source.checkedAt !== "string" || !Number.isFinite(Date.parse(source.checkedAt))) return undefined;
   return {
     device: source.device.trim().toLowerCase(),

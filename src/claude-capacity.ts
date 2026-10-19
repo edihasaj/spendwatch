@@ -11,6 +11,14 @@ import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { paceFor, type CapacityPaceWindow, type CapacityWindow } from "./capacity-current";
 import { coordinatedCapacity, retryAfterMs } from "./capacity-poll";
+import {
+  freshestClaudeKeychainCredential,
+  hasClaudeKeychainRefreshToken,
+  keychainLocatorsFrom,
+  persistClaudeKeychainCredentials,
+  readClaudeKeychainCredential,
+  type ClaudeKeychainCredential,
+} from "./claude-keychain";
 
 export const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 // The access token lives eight hours. Nothing else on a collector host runs
@@ -133,8 +141,10 @@ export interface ClaudeProfile {
   identity: ClaudeIdentity;
   refreshToken?: string;
   expiresAt?: number;
-  /** Absent for Keychain-held credentials, which we can read but not rewrite. */
+  /** Present for file-backed credentials. */
   credentialsPath?: string;
+  /** Present only when this exact Keychain item was selected from its attributes. */
+  keychainCredential?: ClaudeKeychainCredential;
 }
 
 export interface RefreshedCredentials {
@@ -218,12 +228,32 @@ async function requestRefresh(refreshToken: string, nowMs: number): Promise<Refr
   return undefined;
 }
 
-/** Refresh in place and return the new access token, or undefined if it cannot. */
-async function refreshProfile(profile: ClaudeProfile, nowMs: number): Promise<string | undefined> {
-  if (!profile.refreshToken || !profile.credentialsPath) return undefined;
+/**
+ * Refresh in place and return the new access token, or undefined if it cannot.
+ *
+ * Kept public for the trusted Mac GUI collector's deliberate renewal check.
+ * Call it without a timestamp so the stored deadline is always anchored to the
+ * actual local clock, never a capacity sample's reported time.
+ */
+export async function refreshProfile(profile: ClaudeProfile, nowMs = Date.now()): Promise<string | undefined> {
+  if (!profile.refreshToken || (!profile.credentialsPath && !profile.keychainCredential)) return undefined;
+  // Do not spend a one-time refresh grant when Claude Code has already
+  // completed a newer login in the selected item. We do the guarded write
+  // after the exchange too; this preflight prevents a stale profile from
+  // rotating a grant it can no longer persist.
+  if (profile.keychainCredential
+    && !hasClaudeKeychainRefreshToken(profile.keychainCredential, profile.refreshToken)) return undefined;
   const refreshed = await requestRefresh(profile.refreshToken, nowMs);
   if (!refreshed) return undefined;
-  persistClaudeCredentials(profile.credentialsPath, refreshed);
+  if (profile.credentialsPath) {
+    persistClaudeCredentials(profile.credentialsPath, refreshed);
+  } else if (profile.keychainCredential) {
+    const written = persistClaudeKeychainCredentials(profile.keychainCredential, profile.refreshToken, refreshed);
+    if (!written) return undefined;
+    profile.keychainCredential = written;
+  } else {
+    return undefined;
+  }
   profile.token = refreshed.accessToken;
   profile.refreshToken = refreshed.refreshToken;
   profile.expiresAt = refreshed.expiresAt;
@@ -282,22 +312,32 @@ function keychainSecret(args: string[]): unknown {
   }
 }
 
+interface KeychainCredentials {
+  oauth: unknown;
+  credential?: ClaudeKeychainCredential;
+}
+
 // Claude Code keeps the default profile's credentials in the login Keychain on
 // macOS. It can also leave the on-disk file behind as a husk with blank tokens
 // after that migration, so presence of the file says nothing about usability.
-function keychainCredentials(nowMs = Date.now()): unknown {
+function keychainCredentials(nowMs = Date.now()): KeychainCredentials | undefined {
   if (platform() !== "darwin") return undefined;
   const dump = spawnSync("/usr/bin/security", ["dump-keychain"], { encoding: "utf8", timeout: 10_000 });
-  const accounts = dump.status === 0 && dump.stdout
-    ? keychainAccountsFrom(dump.stdout, CLAUDE_KEYCHAIN_SERVICE)
+  const locators = dump.status === 0 && dump.stdout
+    ? keychainLocatorsFrom(dump.stdout, CLAUDE_KEYCHAIN_SERVICE)
     : [];
-  const candidates = accounts.map((account) =>
-    keychainSecret(["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-a", account, "-w"]));
-  const freshest = freshestCredentials(candidates, nowMs);
-  if (freshest !== undefined) return freshest;
+  const credential = freshestClaudeKeychainCredential(
+    locators.flatMap((locator) => {
+      const found = readClaudeKeychainCredential(locator);
+      return found ? [found] : [];
+    }),
+    nowMs,
+  );
+  if (credential) return { oauth: credential.oauth, credential };
   // The dump is attribute-only and needs no unlock, but a locked or unreadable
   // Keychain still has to fall back to the plain lookup rather than go blind.
-  return keychainSecret(["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-w"]);
+  const oauth = keychainSecret(["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-w"]);
+  return oauth === undefined ? undefined : { oauth };
 }
 
 /**
@@ -312,9 +352,17 @@ export function preferUsableCredentials(fileCredentials: unknown, fromKeychain: 
 
 export function claudeProfileFrom(home: string, metadataPath: string, allowKeychain = false): ClaudeProfile | undefined {
   const fileCredentials = readJson(join(home, ".credentials.json"))?.claudeAiOauth;
+  let fromKeychain: KeychainCredentials | undefined;
+  let triedKeychain = false;
   const credentials = preferUsableCredentials(
     fileCredentials,
-    () => (allowKeychain ? keychainCredentials() : undefined),
+    () => {
+      if (!triedKeychain) {
+        triedKeychain = true;
+        fromKeychain = allowKeychain ? keychainCredentials() : undefined;
+      }
+      return fromKeychain?.oauth;
+    },
   );
   const token = stringField(credentials, "accessToken");
   if (!token) return undefined;
@@ -328,8 +376,8 @@ export function claudeProfileFrom(home: string, metadataPath: string, allowKeych
     token,
     refreshToken: stringField(credentials, "refreshToken"),
     expiresAt: Number.isFinite(expiresAtValue) ? expiresAtValue : undefined,
-    // Only a file-backed profile can be rewritten; a Keychain one cannot.
     credentialsPath: credentials === fileCredentials ? join(home, ".credentials.json") : undefined,
+    keychainCredential: credentials === fromKeychain?.oauth ? fromKeychain.credential : undefined,
     identity: {
       email,
       organization: stringField(oauthAccount, "organizationName") ?? "Personal",
