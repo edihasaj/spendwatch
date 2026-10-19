@@ -448,7 +448,10 @@ async function currentCapacity(provider: CapacityProvider | undefined): Promise<
     });
   }
   if (provider && provider !== "codex") throw new Error("capacity-current supports codex or claude");
-  return currentCodexCapacity();
+  return currentCodexCapacity(Date.now(), (failure) => {
+    const who = failure.email ? ` for ${failure.email}` : "";
+    process.stderr.write(`codex capacity ${failure.reason}${who}: ${failure.message}\n`);
+  });
 }
 
 async function capacityHistoryExport(a: Args) {
