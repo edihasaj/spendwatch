@@ -174,9 +174,9 @@ function jsonEqual(left: unknown, right: unknown): boolean {
  *
  * `security add-generic-password -U` has no compare-and-swap form. We first
  * read the specific item and verify the old refresh token, then read it back
- * after the write and require the entire wrapper to match. A concurrent Claude
- * login that changed its refresh token therefore wins safely. The CLI cannot
- * make that preflight atomic with `-U`, so a concurrent deletion remains an
+ * after the write and require the entire wrapper to match. An observed token
+ * change aborts the write. The CLI cannot make that preflight atomic with `-U`:
+ * a concurrent login or deletion between the check and write remains an
  * OS-level race; callers treat any failed verification as no renewal.
  */
 export function persistClaudeKeychainCredentials(
