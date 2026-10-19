@@ -1,10 +1,11 @@
-import type { CapacitySourceHealth } from "./capacity-dashboard";
+import { effectiveSourceHealth, type CapacitySourceHealth } from "./capacity-dashboard";
 import { copilotBudgetStatus, copilotCreditWindow } from "./copilot-budget";
 import { predictWindow } from "./capacity-prediction";
 import { isWindowLive } from "./capacity-freshness";
 import type { CapacityProvider, CodexLimitAccount, LimitWindow } from "./limits";
 
 export const UTILIZATION_TARGET_PERCENT = 90;
+const RECOMMENDATION_TRANSPORT_BUDGET_MS = 7 * 60_000;
 
 export type UtilizationAction = "more" | "keep" | "less" | "rebalance" | "measure";
 export type UtilizationConfidence = "early" | "live" | "learned" | "unavailable";
@@ -174,7 +175,10 @@ export function buildUtilizationPlans(
 
 function isFresh(account: CodexLimitAccount, sources: CapacitySourceHealth[], nowMs: number): boolean {
   const updatedAt = account.updatedAt ? Date.parse(account.updatedAt) : Number.NaN;
-  if (!Number.isFinite(updatedAt) || nowMs - updatedAt > 5 * 60_000) return false;
+  // The provider can deliberately return unchanged quota bytes for five
+  // minutes. Allow its scheduled read, collector and durable delivery one
+  // bounded extra minute each; window freshness remains independent.
+  if (!Number.isFinite(updatedAt) || updatedAt > nowMs || nowMs - updatedAt > RECOMMENDATION_TRANSPORT_BUDGET_MS) return false;
   if (!sources.length || !account.devices.length) return true;
   const health = new Map(sources.map((source) => [source.device, source.status]));
   return account.devices.some((device) => health.get(device) === "live");
@@ -185,8 +189,11 @@ export function recommendAccount(
   sources: CapacitySourceHealth[],
   nowMs: number,
 ): CapacityRecommendation | undefined {
+  const effectiveSources = effectiveSourceHealth(sources, nowMs);
   const ranked = accounts.flatMap((account) => {
-    if ((account.provider !== "codex" && account.provider !== "claude") || !account.weekly || !isFresh(account, sources, nowMs)) return [];
+    if ((account.provider !== "codex" && account.provider !== "claude") || !account.weekly || !isFresh(account, effectiveSources, nowMs)) return [];
+    if (!isWindowLive(account.weekly, account.updatedAt, nowMs)
+      || (account.session && !isWindowLive(account.session, account.updatedAt, nowMs))) return [];
     const weeklyLeft = Math.round(100 - account.weekly.usedPercent);
     const sessionLeft = account.session ? Math.round(100 - account.session.usedPercent) : undefined;
     if (weeklyLeft <= 0 || sessionLeft === 0) return [];
