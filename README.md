@@ -263,11 +263,20 @@ CLI holds no API key, so its card reports what was *sent* over a rolling 24 hour
 and 30 days rather than an allowance to pace. Those dollars are API-equivalent
 estimates at published list rates, not billed money, so the card is excluded from
 the utilization planner and from `guard`. Cards render Claude, Codex, Copilot,
-Lokai, then Grok, keeping the providers without an allowance last. When the input
+Lokai, then local Qwen and Grok, keeping the providers without an allowance last. When the input
 includes a reported pace forecast, Spendwatch shows its learned deficit/reserve
 and run-out ETA. Other reset windows get a transparent live linear forecast.
 That fallback starts as soon as a new window begins, so newly reset Claude
 windows immediately show whether their capacity lasts until reset.
+Local Qwen is a separate self-hosted card: it is explicitly **Unlimited** only
+when the collector declares it so, and shows client-measured tokens from each
+calling machine with a $0 provider fee. It has no quota window, reset forecast,
+or automatic routing recommendation. The card's readiness is only the latest
+sampled route state; missing readiness is shown as unknown rather than
+available. Token totals include only machines with a successful client report;
+missing reports stay visible as partial coverage, never a zero-use reading.
+Repeated uploads keep the newest snapshot per machine before totals are added,
+so collector retries cannot inflate usage.
 Cycle-average pace hides a burst until the damage is done, so each quota window
 also carries a **burn** line measured from the recent slope inside the current
 cycle only: a 5-hour window looks back 30 minutes, a weekly window 6 hours.

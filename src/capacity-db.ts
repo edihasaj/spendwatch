@@ -233,6 +233,10 @@ export function writeCapacitySnapshot(
   let rows = 0;
   const tx = db.transaction(() => {
     for (const account of accounts) {
+      // Local Qwen has no quota cycle. Its client token metrics remain in the
+      // spend report; putting it in this quota/history store would create an
+      // empty or misleading capacity series.
+      if (account.provider === "qwen") continue;
       const sampledAt = parsedTime(account.updatedAt) ?? opts.collectedAt;
       const observedAt = account.updatedAt ?? new Date(sampledAt).toISOString();
       const accountKey = [account.provider, cleanPart(account.email.toLowerCase()), sampledAt].join("|");
@@ -277,6 +281,8 @@ function normalizeHistoricalRecord(value: unknown): {
 } | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as HistoricalRecordInput;
+  // Qwen is self-hosted unlimited capacity, not a quota-history provider.
+  if (record.provider === "qwen") return undefined;
   if (record.provider !== "codex" && record.provider !== "claude" && record.provider !== "copilot"
     && record.provider !== "lokai" && record.provider !== "grok") return undefined;
   if (typeof record.account !== "string" || !record.account.trim()) return undefined;
