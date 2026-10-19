@@ -373,6 +373,19 @@ providers. Credentials stay on the source machine. Without a coordinator, the
 same gate applies locally in `~/.local/share/spendwatch/capacity-poll.db`
 (`SPENDWATCH_CAPACITY_CACHE` overrides that path).
 
+The private coordinator is protected by Cloudflare Access. Each collector pins
+its Access service token to the coordinator's exact HTTPS origin in
+`~/.config/spendwatch/cloudflare-access.json`:
+
+```json
+{"origin":"https://your-dashboard/","client_id":"…","client_secret":"…"}
+```
+
+Spendwatch refuses redirects, HTTP, wildcard origins, paths, and mismatched
+origins; it sends the token only to the pinned origin. A coordinator failure
+returns the local cached snapshot only; with no cache it reports `capacity
+coordinator unavailable` and does not contact a provider.
+
 Collection must still run periodically to keep capacity current; refreshing the
 browser only renders stored readings. A capacity-only worker can run separately
 from transcript and spend-history collection.

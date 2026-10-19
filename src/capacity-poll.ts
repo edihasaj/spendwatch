@@ -4,6 +4,10 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CapacityResult, CapacityWindow } from "./capacity-current";
 import type { ClaudeCapacityResult } from "./claude-capacity";
+import {
+  CapacityCoordinatorUnavailableError,
+  coordinatorAccessHeaders,
+} from "./capacity-coordinator-client";
 
 export type PollProvider = "claude" | "codex";
 export type PollSnapshot = CapacityResult | ClaudeCapacityResult;
@@ -104,6 +108,14 @@ export class CapacityPollStore {
     }).immediate();
   }
 
+  cached(provider: PollProvider, account: string): PollSnapshot | undefined {
+    const key = pollKey(provider, account);
+    const row = this.db.query<PollRow, [string]>("SELECT * FROM capacity_poll WHERE account_key=?").get(key);
+    if (!row?.snapshot) return undefined;
+    try { return JSON.parse(row.snapshot) as PollSnapshot; }
+    catch { return undefined; }
+  }
+
   complete(provider: PollProvider, account: string, lease: string,
     result: { snapshot?: unknown; status?: number; retryAfterMs?: number }, now = Date.now()): boolean {
     const key = pollKey(provider, account);
@@ -134,18 +146,41 @@ export function pollingCoordinator(): string | undefined {
   } catch { return undefined; }
 }
 
-async function coordinatorRequest(base: string, action: string, body: unknown): Promise<unknown> {
-  const response = await fetch(new URL(`/api/capacity/poll/${action}`, base), {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+export async function coordinatorRequest(
+  base: string,
+  action: string,
+  body: unknown,
+  options: { accessConfigPath?: string; fetch?: typeof fetch } = {},
+): Promise<unknown> {
+  const headers = coordinatorAccessHeaders(base, options.accessConfigPath);
+  const response = await (options.fetch ?? fetch)(new URL(`/api/capacity/poll/${action}`, base), {
+    method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body),
+    redirect: "error",
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`capacity coordinator HTTP ${response.status}`);
   return response.json();
 }
 
+function coordinatorClaim(value: unknown): PollClaim {
+  if (!value || typeof value !== "object") throw new Error("invalid capacity coordinator response");
+  const claim = value as Partial<PollClaim>;
+  if (!Number.isFinite(claim.nextAt) || claim.nextAt! < 0 ||
+      (claim.lease !== undefined && (typeof claim.lease !== "string" || claim.lease.length > 100))) {
+    throw new Error("invalid capacity coordinator response");
+  }
+  return claim as PollClaim;
+}
+
 export async function coordinatedCapacity<T extends PollSnapshot>(
   provider: PollProvider, account: string, read: () => Promise<T | undefined>,
-  options: { coordinator?: string; store?: CapacityPollStore; now?: () => number } = {},
+  options: {
+    coordinator?: string;
+    store?: CapacityPollStore;
+    now?: () => number;
+    accessConfigPath?: string;
+    fetch?: typeof fetch;
+  } = {},
 ): Promise<T | undefined> {
   const key = pollKey(provider, account);
   const coordinator = options.coordinator ?? pollingCoordinator();
@@ -158,9 +193,16 @@ export async function coordinatedCapacity<T extends PollSnapshot>(
     let claim: PollClaim;
     if (coordinator) {
       try {
-        claim = await coordinatorRequest(coordinator, "claim", { provider, account }) as PollClaim;
+        claim = coordinatorClaim(await coordinatorRequest(
+          coordinator, "claim", { provider, account }, options,
+        ));
       } catch {
-        return local.claim(provider, account, now()).snapshot as T | undefined;
+        const cached = local.cached(provider, account);
+        if (cached) {
+          sanitizePollSnapshot(cached, key);
+          return cached as T;
+        }
+        throw new CapacityCoordinatorUnavailableError();
       }
     } else claim = local.claim(provider, account, now());
     if (claim.snapshot) sanitizePollSnapshot(claim.snapshot, key);
@@ -178,7 +220,12 @@ export async function coordinatedCapacity<T extends PollSnapshot>(
       retryAfterMs: error?.retryAfterMs,
     };
     if (coordinator) {
-      try { await coordinatorRequest(coordinator, "complete", { provider, account, lease: claim.lease, ...result }); }
+      try {
+        await coordinatorRequest(
+          coordinator, "complete", { provider, account, lease: claim.lease, ...result },
+          options,
+        );
+      }
       catch { /* The reserved attempt still prevents retries when completion is lost. */ }
       if (snapshot) {
         const cached = local.claim(provider, account, now());

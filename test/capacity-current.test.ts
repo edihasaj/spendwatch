@@ -158,3 +158,30 @@ for await (const line of console) {
   expect(cached[0].usage.updatedAt).toBe(first[0].usage.updatedAt);
   expect(readFileSync(join(home, "requests"), "utf8")).toBe("quota\n");
 });
+
+test("CLI reports an unavailable shared coordinator without attempting a provider read", async () => {
+  const home = mkdtempSync(join(tmpdir(), "codex-coordinator-unavailable-"));
+  const claims = Buffer.from(JSON.stringify({
+    email: "coordinator@example.com", "https://api.openai.com/auth": { chatgpt_plan_type: "pro" },
+  })).toString("base64url");
+  mkdirSync(join(home, ".codex", "sessions"), { recursive: true });
+  writeFileSync(join(home, ".codex", "auth.json"), JSON.stringify({ tokens: { id_token: `test.${claims}.test` } }));
+  const child = Bun.spawn([process.execPath, resolve("src/cli.ts"), "capacity-current"], {
+    env: {
+      ...process.env,
+      HOME: home,
+      SPENDWATCH_CAPACITY_COORDINATOR: "https://spendwatch.example/",
+      SPENDWATCH_CAPACITY_CACHE: join(home, "poll.db"),
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exit] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  expect(exit).toBe(0);
+  expect(JSON.parse(stdout)).toEqual([]);
+  expect(stderr).toBe(
+    "codex capacity unavailable for coordinator@example.com: capacity coordinator unavailable\n",
+  );
+});
