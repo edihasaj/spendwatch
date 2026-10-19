@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CapacityPollStore, coordinatedCapacity, handleCapacityPoll, POLL_INTERVAL_MS, retryAfterMs } from "../src/capacity-poll";
+import { coordinatorAccessHeaders } from "../src/capacity-coordinator-client";
+import {
+  CapacityPollStore, coordinatedCapacity, coordinatorRequest, handleCapacityPoll, POLL_INTERVAL_MS, retryAfterMs,
+} from "../src/capacity-poll";
 import type { CapacityResult } from "../src/capacity-current";
 
 const snapshot: CapacityResult = {
@@ -10,6 +13,12 @@ const snapshot: CapacityResult = {
   usage: { accountEmail: "edi@example.com", primary: { usedPercent: 12, windowMinutes: 300 },
     secondary: null, tertiary: null, updatedAt: "2026-10-14T10:00:00Z" },
 };
+
+function accessConfig(value: object): string {
+  const path = join(mkdtempSync(join(tmpdir(), "capacity-access-")), "cloudflare-access.json");
+  writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
+  return path;
+}
 
 test("three machines and duplicate profiles share one reserved attempt per account", () => {
   const path = join(mkdtempSync(join(tmpdir(), "capacity-poll-")), "poll.db");
@@ -64,6 +73,103 @@ test("cache hits make no provider request and coordinator outages fail closed", 
     expect(cached?.usage.updatedAt).toBe(snapshot.usage.updatedAt);
     await coordinatedCapacity("codex", snapshot.account, read, { store, coordinator: "http://127.0.0.1:1", now: () => POLL_INTERVAL_MS + 1 });
     expect(reads).toBe(1);
+  } finally { store.close(); }
+});
+
+test("coordinator service credentials are pinned to its exact HTTPS origin", () => {
+  const path = accessConfig({
+    origin: "https://spendwatch.example/",
+    client_id: "client-id",
+    client_secret: "client-secret",
+  });
+  expect(coordinatorAccessHeaders("https://spendwatch.example/", path)).toEqual({
+    "CF-Access-Client-Id": "client-id",
+    "CF-Access-Client-Secret": "client-secret",
+  });
+  expect(() => coordinatorAccessHeaders("https://other.example/", path)).toThrow(
+    "capacity coordinator origin is not trusted",
+  );
+  expect(() => coordinatorAccessHeaders("http://spendwatch.example/", path)).toThrow(
+    "invalid capacity coordinator",
+  );
+  expect(() => coordinatorAccessHeaders("https://*.example/", path)).toThrow(
+    "invalid capacity coordinator",
+  );
+  expect(() => coordinatorAccessHeaders("https://spendwatch.example/not-an-origin", path)).toThrow(
+    "invalid capacity coordinator",
+  );
+});
+
+test("coordinator request sends Access headers and refuses redirects", async () => {
+  const path = accessConfig({
+    origin: "https://spendwatch.example/",
+    client_id: "client-id",
+    client_secret: "client-secret",
+  });
+  let seen: { url?: URL; init?: RequestInit } = {};
+  const request: typeof fetch = async (input, init) => {
+    seen = { url: new URL(String(input)), init };
+    if (init?.redirect !== "error") throw new Error("redirect policy missing");
+    throw new TypeError("unexpected redirect");
+  };
+  await expect(coordinatorRequest("https://spendwatch.example/", "claim", {}, {
+    accessConfigPath: path, fetch: request,
+  })).rejects.toThrow("unexpected redirect");
+  expect(seen.url?.origin).toBe("https://spendwatch.example");
+  expect(seen.init?.redirect).toBe("error");
+  expect(new Headers(seen.init?.headers).get("CF-Access-Client-Id")).toBe("client-id");
+  expect(new Headers(seen.init?.headers).get("CF-Access-Client-Secret")).toBe("client-secret");
+});
+
+test("bad coordinator responses fail visibly without a cache or a local lease", async () => {
+  const store = new CapacityPollStore(":memory:");
+  const path = accessConfig({
+    origin: "https://spendwatch.example/",
+    client_id: "client-id",
+    client_secret: "client-secret",
+  });
+  let reads = 0;
+  try {
+    await expect(coordinatedCapacity("codex", snapshot.account, async () => {
+      reads++;
+      return snapshot;
+    }, {
+      store,
+      coordinator: "https://spendwatch.example/",
+      accessConfigPath: path,
+      fetch: async () => new Response("not json"),
+      now: () => 0,
+    })).rejects.toThrow("capacity coordinator unavailable");
+    expect(reads).toBe(0);
+    expect(store.claim("codex", snapshot.account, 0).lease).toBeDefined();
+  } finally { store.close(); }
+});
+
+test("coordinator outage returns only a read-only local cache", async () => {
+  const store = new CapacityPollStore(":memory:");
+  const path = accessConfig({
+    origin: "https://spendwatch.example/",
+    client_id: "client-id",
+    client_secret: "client-secret",
+  });
+  let reads = 0;
+  try {
+    const localClaim = store.claim("codex", snapshot.account, 0);
+    store.complete("codex", snapshot.account, localClaim.lease!, { snapshot }, 0);
+    const cached = await coordinatedCapacity("codex", snapshot.account, async () => {
+      reads++;
+      return snapshot;
+    }, {
+      store,
+      coordinator: "https://spendwatch.example/",
+      accessConfigPath: path,
+      fetch: async () => { throw new TypeError("network down"); },
+      now: () => POLL_INTERVAL_MS + 1,
+    });
+    expect(cached?.usage.updatedAt).toBe(snapshot.usage.updatedAt);
+    expect(reads).toBe(0);
+    // A fallback read must not reserve/replace a lease that has become due.
+    expect(store.claim("codex", snapshot.account, POLL_INTERVAL_MS + 1).lease).toBeDefined();
   } finally { store.close(); }
 });
 

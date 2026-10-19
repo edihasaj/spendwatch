@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { codexClaims, defaultCodexRoots } from "./sources";
 import { coordinatedCapacity } from "./capacity-poll";
+import { CapacityCoordinatorUnavailableError } from "./capacity-coordinator-client";
 
 export interface CapacityWindow {
   usedPercent: number;
@@ -45,6 +46,12 @@ export interface CapacityResult {
     secondary: CapacityPaceWindow | null;
     tertiary: CapacityPaceWindow | null;
   } | null;
+}
+
+export interface CodexCapacityReadFailure {
+  email?: string;
+  reason: "unavailable";
+  message: string;
 }
 
 interface AppServerAccount {
@@ -257,7 +264,10 @@ async function liveProfileCapacity(profileHome: string, now: number): Promise<Ca
   }
 }
 
-export async function currentCodexCapacity(now = Date.now()): Promise<CapacityResult[]> {
+export async function currentCodexCapacity(
+  now = Date.now(),
+  onFailure?: (failure: CodexCapacityReadFailure) => void,
+): Promise<CapacityResult[]> {
   // Discover identity locally before starting app-server, and deduplicate homes
   // before any request. Several profiles may contain the same account.
   const profiles = new Map<string, string>();
@@ -265,12 +275,25 @@ export async function currentCodexCapacity(now = Date.now()): Promise<CapacityRe
     const { email } = codexClaims(root.path);
     if (email && !profiles.has(email.toLowerCase())) profiles.set(email.toLowerCase(), dirname(root.path));
   }
-  const settled = await Promise.allSettled(
-    [...profiles].map(([email, home]) => coordinatedCapacity("codex", email, () => liveProfileCapacity(home, now))),
-  );
+  const profileEntries = [...profiles];
+  const settled = await Promise.allSettled(profileEntries.map(([email, home]) =>
+    coordinatedCapacity("codex", email, () => liveProfileCapacity(home, now)),
+  ));
   const byAccount = new Map<string, CapacityResult>();
-  for (const item of settled) {
-    if (item.status !== "fulfilled" || !item.value) continue;
+  for (const [index, item] of settled.entries()) {
+    if (item.status !== "fulfilled" || !item.value) {
+      if (item.status === "rejected" && onFailure) {
+        const error = item.reason;
+        onFailure({
+          email: profileEntries[index]?.[0],
+          reason: "unavailable",
+          message: error instanceof CapacityCoordinatorUnavailableError
+            ? "capacity coordinator unavailable"
+            : "capacity unavailable",
+        });
+      }
+      continue;
+    }
     // A free plan carries no subscription capacity worth planning against.
     if (item.value.usage?.loginMethod === "free" && process.env.SPENDWATCH_INCLUDE_FREE !== "1") continue;
     byAccount.set(item.value.account.toLowerCase(), item.value);
