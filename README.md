@@ -346,9 +346,19 @@ spendwatch account add grok --name personal     # Grok browser OAuth
 ```
 
 Claude uses an isolated `CLAUDE_CONFIG_DIR`; GitHub CLI owns Copilot's
-multi-account credentials. Lokai remains API-key based through the existing
-local LiteLLM/1Password configuration. Failed logins retain their profile
-directory for inspection or retry; Spendwatch performs no cleanup/deletion.
+multi-account credentials. On a trusted macOS collector, Claude Code's default
+profile may keep its OAuth JSON in the login Keychain instead of a credentials
+file. When that happens, `capacity-current` refreshes the exact existing
+`Claude Code-credentials` item before its access token expires. It chooses the
+item from Keychain attributes, retains its original service, account, and
+Keychain path, verifies that Claude has not concurrently signed in again, and
+updates only the OAuth fields after the token exchange. The complete Keychain
+wrapper is read back before a quota request continues, preserving Claude
+Code-owned metadata and access controls. OAuth values never leave the collector
+or appear in command arguments. Lokai remains API-key based through the
+existing local LiteLLM/1Password configuration. Failed logins retain their
+profile directory for inspection or retry; Spendwatch performs no
+cleanup/deletion.
 
 Duplicate accounts are merged within each provider using the freshest snapshot,
 while retaining the names of every contributing device. The input format is the
