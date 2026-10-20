@@ -32,10 +32,12 @@ export function loadSessionEquivalentForecasts(
       FROM capacity_history w
       WHERE w.provider = ?1 AND w.account = ?2 COLLATE NOCASE
         AND w.window_kind = 'weekly'
+        AND NOT (w.provider = 'codex' AND w.source = 'codex-session-log')
         AND EXISTS (
           SELECT 1 FROM capacity_history s
           WHERE s.provider = ?1 AND s.account = ?2 COLLATE NOCASE
             AND s.window_kind = 'session' AND s.sampled_at_ms = w.sampled_at_ms
+            AND NOT (s.provider = 'codex' AND s.source = 'codex-session-log')
         )
       GROUP BY w.sampled_at_ms
       ORDER BY w.sampled_at_ms DESC
@@ -46,6 +48,7 @@ export function loadSessionEquivalentForecasts(
       FROM recent_times r CROSS JOIN capacity_history h
       WHERE h.provider = ?1 AND h.account = ?2 COLLATE NOCASE AND h.window_kind = 'session'
         AND h.sampled_at_ms = r.sampled_at_ms
+        AND NOT (h.provider = 'codex' AND h.source = 'codex-session-log')
       GROUP BY h.provider, h.account, h.sampled_at_ms
     ), weekly_samples AS (
       SELECT h.provider, h.account, h.sampled_at_ms,
@@ -53,6 +56,7 @@ export function loadSessionEquivalentForecasts(
       FROM recent_times r CROSS JOIN capacity_history h
       WHERE h.provider = ?1 AND h.account = ?2 COLLATE NOCASE AND h.window_kind = 'weekly'
         AND h.sampled_at_ms = r.sampled_at_ms
+        AND NOT (h.provider = 'codex' AND h.source = 'codex-session-log')
       GROUP BY h.provider, h.account, h.sampled_at_ms
     )
     SELECT s.provider, s.account, s.sampled_at_ms AS sampledAt,

@@ -8,10 +8,10 @@ import type { LimitWindow } from "./limits";
 export type WindowFreshness = "live" | "stale" | "expired";
 
 const STALE_FLOOR_MS = 5 * 60_000;
-const STALE_CEILING_MS = 60 * 60_000;
+const STALE_CEILING_MS = 7 * 60_000;
 const STALE_WINDOW_FRACTION = 0.05;
 
-/** A sample may lag by 5% of its window, bounded to 5–60 minutes. */
+/** A sample may lag by 5% of its window, bounded to 5–7 minutes. */
 export function staleAfterMs(windowMinutes: number): number {
   const budget = windowMinutes * 60_000 * STALE_WINDOW_FRACTION;
   return Math.min(STALE_CEILING_MS, Math.max(STALE_FLOOR_MS, budget));
@@ -22,6 +22,8 @@ export function windowFreshness(window: LimitWindow, updatedAt: string | undefin
   if (Number.isFinite(resetsAt) && resetsAt <= nowMs) return "expired";
   const sampledAt = updatedAt ? Date.parse(updatedAt) : Number.NaN;
   if (!Number.isFinite(sampledAt)) return "stale";
+  // A clock-ahead collector must not make an old percentage appear live.
+  if (sampledAt > nowMs) return "stale";
   if (nowMs - sampledAt > staleAfterMs(window.windowMinutes)) return "stale";
   return "live";
 }

@@ -227,15 +227,15 @@ spendwatch eval --sqlite ~/.local/share/spendwatch/routing.db --json
 ## Capacity dashboard
 
 `spendwatch limits` turns sanitized provider capacity JSON into a focused
-planning page with one account card per identity. Cards show only account,
-plan, freshness, reported quota windows, reset times, and pace forecasts;
-unreported windows are omitted instead of shown as empty limits. Claude shows
+planning page with one compact account card per identity. Wide screens use
+three columns. Cards show provider, account, plan, capture time, utilization
+bars, pace, and reset times; unreported windows are omitted instead of shown as
+empty limits. Claude shows
 rolling 5-hour and weekly capacity; Codex shows whichever windows its live
 account response currently reports (including the five-hour window when
 available under a model-specific Codex limit ID). A Codex account that has bought
-credits also shows its balance next to the plan name; those credits are what
-keeps the account working once the weekly window is spent, so they are reported
-even at 0% left. Accounts with no credits stay uncluttered. Copilot is paced against a manual
+credits retains that information in the collected data, while the Capacity card
+stays focused on its quota windows. Copilot is paced against a manual
 monthly ceiling instead of GitHub seat maths: 40,000 AI credits for $400 per
 calendar month, which fixes the credit price at $0.01. The card shows credits
 used against that budget, percent left, the money spent against the $400 cap,
@@ -269,23 +269,15 @@ and run-out ETA. Other reset windows get a transparent live linear forecast.
 That fallback starts as soon as a new window begins, so newly reset Claude
 windows immediately show whether their capacity lasts until reset.
 Local Qwen is a separate self-hosted card: it is explicitly **Unlimited** only
-when the collector declares it so, and shows client-measured tokens from each
-calling machine with a $0 provider fee. It has no quota window, reset forecast,
-or automatic routing recommendation. The card's readiness is only the latest
-sampled route state; missing readiness is shown as unknown rather than
-available. Token totals include only machines with a successful client report;
-missing reports stay visible as partial coverage, never a zero-use reading.
-Repeated uploads keep the newest snapshot per machine before totals are added,
-so collector retries cannot inflate usage.
-Cycle-average pace hides a burst until the damage is done, so each quota window
-also carries a **burn** line measured from the recent slope inside the current
-cycle only: a 5-hour window looks back 30 minutes, a weekly window 6 hours.
-It reads `Burn 18%/h · safe 4.8%/h · 3.7×`, where *safe* is the rate the
-remaining allowance affords until reset and the multiple is how far past it the
-recent spend sits. When that rate cannot reach the reset, the line gives the
-run-out ETA and how long before the reset it lands. Burn needs at least three
-samples in the current cycle, and is omitted for exhausted, stale, or expired
-windows, which have no trustworthy rate to report.
+when the collector declares it so, followed by compact client-measured 24-hour
+and 30-day token totals. If no measured usage exists, the card says
+**Unavailable**. It has no quota window, reset forecast, or automatic routing
+recommendation. Repeated uploads keep the newest snapshot per machine before
+totals are added, so collector retries cannot inflate usage.
+The collector retains recent-cycle burn measurements for planning: a 5-hour
+window looks back 30 minutes and a weekly window six hours. Capacity cards keep
+the compact pace signal and omit burn and run-out forecasts, which avoids
+presenting competing forecasts next to a live quota bar.
 Quota tracks place a three-stripe marker at the expected remaining capacity:
 green means usage is on or slower than budget, while red means faster.
 Reset, run-out, and freshness countdowns use a compact two-unit style:
@@ -293,11 +285,9 @@ minutes below one hour, hours below 24 hours, then days (`23h 15m`, `1d 1h`).
 When collectors include `source-health` records, cached values are explicitly
 marked live, stale, or offline. Automatic collector health remains live for four
 minutes and stale through five minutes to absorb the bounded job, cadence, and
-durable-import path; it does not change provider quota timestamps. A compact **Best now** rail ranks fresh Codex
-and Claude accounts by session headroom, weekly headroom, pace, and forecast.
-After at least three completed 5-hour windows are present in SQLite, the weekly
-card also estimates how many typical session quotas remain using median learned
-weekly burn.
+durable-import path; it does not change provider quota timestamps. The source
+status row shows machine coverage separately, so historical device unions never
+misrepresent a single account capture.
 
 The dashboard includes a 90% utilization planner for subscription-backed capacity.
 Resetting Codex and Claude allowances show projected utilization and the

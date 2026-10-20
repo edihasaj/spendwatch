@@ -52,4 +52,33 @@ describe("paired session history selection", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  test("does not derive a verified account forecast from Codex session-log pairs", () => {
+    const directory = mkdtempSync(join(tmpdir(), "spendwatch-unverified-paired-history-"));
+    const path = join(directory, "history.db");
+    const start = Date.parse("2026-08-10T00:00:00Z");
+    const weeklyReset = Date.parse("2026-08-30T00:00:00Z");
+    try {
+      const database = openCapacityDatabase(path);
+      const insert = database.prepare(`INSERT INTO capacity_history
+        (sample_key,provider,account,window_kind,sampled_at_ms,observed_at,used_percent,
+         resets_at_ms,window_minutes,source,devices)
+        VALUES(?1,'codex','work@example.invalid',?2,?3,'fixture',?4,?5,300,'codex-session-log','[]')`);
+      for (let index = 0; index < 4; index++) {
+        const sampledAt = start + index * 5 * 3_600_000;
+        insert.run(`legacy-session-${index}`, "session", sampledAt, 1, sampledAt + 5 * 3_600_000);
+        insert.run(`legacy-weekly-${index}`, "weekly", sampledAt, 10 + index * 10, weeklyReset);
+      }
+      database.close();
+      const account: CodexLimitAccount = {
+        provider: "codex", email: "work@example.invalid", devices: ["fixture"],
+        updatedAt: "2026-08-16T00:00:00Z",
+        weekly: { usedPercent: 40, windowMinutes: 10080, resetsAt: new Date(weeklyReset).toISOString() },
+      };
+      expect(loadSessionEquivalentForecasts(path, [account], Date.parse(account.updatedAt!))
+        .has("codex:work@example.invalid")).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
