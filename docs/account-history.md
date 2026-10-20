@@ -74,3 +74,19 @@ The proof ignores the recorder's positional `ordinal` and treats absent and
 null `content` as equivalent only for reasoning response items. Other content,
 routing, malformed rows and incomparable copies remain errors. Native files
 are never rewritten or concatenated.
+
+## Isolated Claude clients
+
+Default discovery also reads the two retained Claude-3p proof namespaces:
+`auto-review-prep/native-proofs/*/claude-config/projects` and
+`alias-trial/proofs/*/claude-home/projects` under the user's Application Support
+directory. It checks the fixed paths, rejects symlink descendants and bounds
+proof-directory traversal. Explicit root configuration still overrides defaults.
+These calls use `Unknown isolated account`; current login credentials do not
+prove the historical account of a bridge call.
+
+An optional private `~/.config/spendwatch/claude-model-aliases.json` maps exact
+opaque `claude-hg-route-*` aliases to verified model names. It changes API model
+labels only. Counts, timestamps and gateway IDs retain their original semantics,
+including settlement of messages already billed by the gateway. Missing or
+invalid mappings leave models unclassified rather than guessing a provider.

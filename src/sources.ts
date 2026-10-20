@@ -31,6 +31,7 @@ import {
 import { loadCodexAccountAttributor, UNKNOWN_CODEX_ACCOUNT, type AccountAttributionBasis, type CodexAccountAttributor } from "./codex-account-attribution";
 import { selectCodexRolloutCopies } from "./codex-rollout-copies";
 import { createCodexRolloutSemanticDominance } from "./codex-rollout-semantics";
+import { claudeModelAliases, claudeProofRootDiscovery } from "./claude-proof-roots";
 
 // Process-wide so a watch tick re-proves only rollouts whose bytes moved.
 const codexSemanticDominance = createCodexRolloutSemanticDominance();
@@ -106,6 +107,7 @@ interface RootCfg {
   agent: string;
   path: string;
   account?: string;
+  isolatedProof?: boolean;
 }
 
 function expand(p: string): string {
@@ -324,8 +326,10 @@ export function defaultOmpRoots(home = homedir()): RootCfg[] {
 }
 
 // ---- per-agent collectors ---------------------------------------------------
-function collectClaude(dir: string, account: string, sinceMs: number, project?: string, gateway?: GatewayLedger): SourceFile[] {
-  return collectClaudeSourceFiles(dir, account || claudeAccount(dir), sinceMs, project, gateway);
+function collectClaude(dir: string, account: string, sinceMs: number, project?: string, gateway?: GatewayLedger, aliases?: ReadonlyMap<string, string>, isolatedProof = false): SourceFile[] {
+  const files = collectClaudeSourceFiles(dir, account || claudeAccount(dir), sinceMs, project, gateway, aliases, isolatedProof);
+  if (isolatedProof) for (const file of files) file.accountBasis = "unknown";
+  return files;
 }
 
 function collectCodex(dir: string, account: string, sinceMs: number, gateway?: GatewayLedger, localQwenOnly = false, codexAttributor?: CodexAccountAttributor): SourceFile[] {
@@ -402,7 +406,11 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   const cfg = loadConfig();
 
   // Resolve roots per agent: config overrides defaults.
-  const claudeRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "claude") : [{ agent: "claude", path: join(homedir(), ".claude", "projects") }];
+  const proofRoots = cfg ? undefined : claudeProofRootDiscovery();
+  const claudeRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "claude") : [
+    { agent: "claude", path: join(homedir(), ".claude", "projects") },
+    ...proofRoots!.roots.map((root) => ({ agent: "claude", ...root, isolatedProof: true })),
+  ];
   const codexRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "codex") : defaultCodexRoots();
   const grokRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "grok") : defaultGrokRoots();
 
@@ -426,17 +434,19 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   // only, reporting nothing. Like the Codex claim-only status below, this is decided at discovery: a `watch
   // --agents copilot` started before this Mac's ledger holds a Messages row reads no Claude claims until restarted.
   if (want("claude") || gateway?.hasMessages()) {
-    const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project, gateway));
+    const aliases = claudeModelAliases();
+    const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project, gateway, aliases, r.isolatedProof));
     const carry = gateway ? { carry: (kept: ClaudeCtx) => carryLedger(kept, gateway) } : {};
     if (!want("claude")) {
       // Transcripts only: the ledger's own rows are its reports, and a status that reports nothing has no warning either.
       out.push({ id: "claude", present: claudeRoots.some((r) => existsSync(r.path)), parseable: true, ledger, claimOnly: true, files, ...carry });
     } else {
       const rows = gateway?.files("claude") ?? [];
-      const claude: SourceStatus = { id: "claude", present: claudeRoots.some((r) => existsSync(r.path)) || rows.length > 0, parseable: true, ledger, files: [...files, ...rows], ...carry };
+      const claude: SourceStatus = { id: "claude", present: claudeRoots.some((r) => existsSync(r.path)) || rows.length > 0, parseable: true, ledger, files: [...files, ...rows], ...carry,
+        ...(proofRoots?.unavailable ? { warning: "some isolated Claude proof roots could not be safely scanned" } : {}) };
       // Asked after the transcripts have been read, because only the parser knows what a message recorded.
       if (gateway) Object.defineProperty(claude, "warning", {
-        get: () => claudeGatewayWarning(files.map((f) => f.ctx as ClaudeCtx)),
+        get: () => [proofRoots?.unavailable ? "some isolated Claude proof roots could not be safely scanned" : "", claudeGatewayWarning(files.map((f) => f.ctx as ClaudeCtx))].filter(Boolean).join("; ") || undefined,
         enumerable: true,
         configurable: true,
       });
