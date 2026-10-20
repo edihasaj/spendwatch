@@ -3,10 +3,11 @@
 import { Database } from "./database";
 import type { Report } from "./aggregate";
 import { monthLabel } from "./periods";
-import { planLedgerMonths } from "./archive-ledger";
+import { planLedgerMonths, type GuardedReads } from "./archive-ledger";
 import { archivedCoverage, byMonthSource, callTotals, settledDifference, withoutCalls } from "./gateway-settle";
 import { installationRowKey, restoredMonthlySuppression, type ArchivedInstallationReport } from "./installation-lineage";
-import { addArchiveColumns, archivedSourceLabels, archiveReport, archiveSource, fullerRead, initReportArchive } from "./spend-report-archive";
+import { addArchiveColumns, archivedSourceLabels, archiveReport, archiveSource, fullerRead, initReportArchive, storedArchiveSource } from "./spend-report-archive";
+import { guardForReport, verifiedGuardBaseline, type CaptureGuard } from "./report-coverage";
 import {archiveTokenDays} from "./token-days";
 
 const SCHEMA = `
@@ -96,7 +97,7 @@ export interface MonthlySpend {
 export function writeMonthlySpend(
   path: string,
   reports: Report[],
-  opts: { generatedAt: number },
+  opts: { generatedAt: number; guards?: CaptureGuard[] },
 ): { months: string[]; rows: number } {
   const db = new Database(path);
   try {
@@ -123,8 +124,16 @@ export function writeMonthlySpend(
     const months = new Set<string>();
     let rows = 0;
     const tx = db.transaction(() => {
-      // Decided before anything is written: the sources of a month the ledger takes over move together.
-      const together = planLedgerMonths(db, reports);
+      // A guard protects the exact stored month under an archive label; its scope and baseline hash are checked
+      // against those stored bytes, and a mismatch fails the run closed rather than writing over the month.
+      const guards = opts.guards;
+      const guardedLabels = new Set((guards ?? []).map((guard) =>
+        JSON.stringify([guard.month, verifiedGuardBaseline(db, guard).archiveLabel])));
+      const isGuarded = (month: string, archiveLabel: string): boolean =>
+        guardedLabels.has(JSON.stringify([month, archiveLabel]));
+      // Decided before anything is written: the sources of a month the ledger takes over move together, and a
+      // takeover that would force a guarded member's month moves no one.
+      const together = planLedgerMonths(db, reports, guards ? { isGuarded } satisfies GuardedReads : undefined);
       for (const report of reports) {
         // A month whose every call was routed to the gateway bills nothing here but still observed calls:
         // it has to replace a stale row that counted those turns, so observed calls decide, not billed ones.
@@ -132,6 +141,11 @@ export function writeMonthlySpend(
         const verdict = together.get(report);
         // Left out with its month's other sources: nothing of it is written, its days included.
         if (verdict === "reject") continue;
+        // A guarded scope keeps its stored month, its projects, and its day rows whatever this read observed —
+        // even a larger, newer count and even a forced takeover: writing nothing of it is the point of the guard.
+        if (guards && guardForReport(guards, report)) {
+          if (isGuarded(report.period.key, storedArchiveSource(db, report.source, report.installationId) ?? report.source)) continue;
+        }
         const force = verdict === "accept";
         const source = archiveSource(db, report);
         // The full report decides first: its acceptance says whether this run

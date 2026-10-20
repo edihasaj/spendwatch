@@ -38,3 +38,39 @@ If any monthly total in a linked component disagrees with its report JSON,
 readers suppress nothing and disclose the uncertain overlap. Token summaries
 compute lineage visibility across the entire archive before settling gateway
 calls, including calls crossing a year boundary.
+
+## Missing source history
+
+An operator can pin a verified retained month through the trusted
+`SPENDWATCH_CAPTURE_GUARDS` file. Each guard names the logical source, month,
+installation, timezone and SHA-256 of the exact stored report JSON. The writer
+checks the stored scope and hash before changing data. The pin also protects
+installation aliases and rejects a gateway takeover involving the guarded month
+as a whole. Higher counters never clear it automatically.
+The current display admits one guarded installation per logical source/month;
+configuration rejects multiple baselines for the same merged card.
+
+Spend, History and the token summary continue to use the retained archive.
+The latest source scan is published separately, with a visible coverage warning;
+the two captures are never added, subtracted or combined with maxima. Missing
+capture times remain unavailable. Clear a guard only after explicitly
+reconciling its historical coverage.
+
+When `SPENDWATCH_CAPTURE_DIR` names the private `public/captures` directory,
+imports publish immutable JSON and HTML before linking them. Their names contain
+the original input payload SHA-256 and original element index. The downloaded
+JSON preserves the source element; rendering may normalize legacy missing
+totals separately. Links, report hashes and capture times identify the exact
+capture. These pages use private, non-storable HTTP responses.
+
+## Divergent Codex copies
+
+Ordinary duplicate rollouts retain the byte-prefix check. Discovery additionally
+permits a bounded semantic proof when copied records differ: it uses the actual
+source parser, requires equal ordered usage and raw response records, and
+selects one existing file only when its nonbilling events contain the others.
+Different parser contracts cannot bypass this proof through the prefix path.
+The proof ignores the recorder's positional `ordinal` and treats absent and
+null `content` as equivalent only for reasoning response items. Other content,
+routing, malformed rows and incomparable copies remain errors. Native files
+are never rewritten or concatenated.
