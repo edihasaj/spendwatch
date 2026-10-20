@@ -1,6 +1,7 @@
 import {Database} from "./database";
 import type {Report} from "./aggregate";
 import {archivedCoverage, byMonthSource, bySource, callTotals, dayIn, withoutCalls} from "./gateway-settle";
+import { installationRowKey, restoredMonthlySuppression, type ArchivedInstallationReport } from "./installation-lineage";
 
 export interface TokenCounts {total: number; cloud: number; local: number; unclassified: number}
 export interface TokenPeriod {
@@ -63,21 +64,45 @@ export function tokenSummary(path: string, options: {
   let captures: Array<{source: string; measured_at: number}> = [];
   let dailyRows: Array<{source: string; model: string; tokens: number}> = [];
   let coverage: ReturnType<typeof archivedCoverage>;
+  let lineageNote: string | undefined;
   try {
-    // A Codex call another Mac's gateway billed comes out of the client's figures, as in every merged view.
-    coverage = archivedCoverage(db);
-    rows = db.query<Archived, [string, string]>(`
+    const allRows = db.query<Archived, []>(`
       SELECT m.month, m.source, m.tokens, m.updated_at, r.report_json
       FROM spend_month m LEFT JOIN spend_report r ON r.month=m.month AND r.source=m.source
-      WHERE m.month LIKE ? AND m.month <= ? ORDER BY m.month, m.source
-    `).all(`${year}-%`, month);
+      ORDER BY m.month, m.source
+    `).all();
+    const lineageRows = allRows.flatMap((row): ArchivedInstallationReport[] => {
+      if (!row.report_json) return [];
+      try {
+        return [{
+          month: row.month,
+          archiveSource: row.source,
+          storedTokens: row.tokens,
+          report: JSON.parse(row.report_json) as Report,
+        }];
+      } catch {
+        return [];
+      }
+    });
+    const lineage = restoredMonthlySuppression(lineageRows);
+    if (lineage.lineage.shadows.length) {
+      lineageNote = lineage.uncertain.size
+        ? "Restored installation snapshots overlap, but stored totals disagree with report detail; both remain visible. Exact historical overlap unavailable."
+        : "Restored installation snapshots overlap; the fullest retained snapshot is shown. Exact historical overlap unavailable.";
+    }
+    rows = allRows.filter((row) =>
+      row.month.startsWith(`${year}-`) && row.month <= month &&
+      !lineage.suppressed.has(installationRowKey(row.month, row.source)));
+    // A Codex call another Mac's gateway billed comes out of the client's figures, as in every merged view.
+    // Suppressed restored rows cannot settle visible reports.
+    coverage = archivedCoverage(db, lineage.suppressed);
     if (db.query("SELECT 1 FROM sqlite_master WHERE name='spend_token_capture'").get()) {
       captures = db.query<{source: string; measured_at: number}, [string, string]>(
         "SELECT source,measured_at FROM spend_token_capture WHERE time_zone=? AND month=?",
-      ).all(timeZone, month);
+      ).all(timeZone, month).filter((row) => !lineage.suppressed.has(installationRowKey(month, row.source)));
       dailyRows = db.query<{source: string; model: string; tokens: number}, [string, string]>(
         "SELECT source,model,tokens FROM spend_token_day WHERE time_zone=? AND day=?",
-      ).all(timeZone, day).map(row => {
+      ).all(timeZone, day).filter((row) => !lineage.suppressed.has(installationRowKey(month, row.source))).map(row => {
         // The day's own calls, whichever month's report holds them: report months follow the reporting Mac's zone.
         const covered = bySource(coverage, row.source)
           .filter(call => call.model === row.model && Number.isFinite(call.ts) && call.ts > 0 && dayIn(timeZone, call.ts) === day);
@@ -153,6 +178,7 @@ export function tokenSummary(path: string, options: {
       "Totals cover available archived sources, not every AI request. Daily coverage may be partial.",
       "Local models use explicit operator mappings; unmapped routes remain unclassified, never inferred from price.",
       "Monthly/yearly totals retain legacy archive counts; missing earlier months are not assumed to be zero.",
+      ...(lineageNote ? [lineageNote] : []),
     ],
   };
 }

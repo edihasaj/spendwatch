@@ -1,6 +1,7 @@
 // File discovery helpers + incremental JSONL reading (shared by report and watch).
 import { readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
+import { createHash, type Hash } from "node:crypto";
 import type { EventSink } from "./monthly";
 import type { Event } from "./parse";
 import type { SourceFile } from "./sources";
@@ -27,7 +28,7 @@ export function* walkJsonl(dir: string): Generator<string> {
 }
 
 /** The part of a file that identifies it and settles what its parser left waiting; it keeps nothing of one discovery. */
-type Settling = Pick<SourceFile, "path" | "key" | "project" | "source" | "account" | "settle">;
+type Settling = Pick<SourceFile, "path" | "key" | "project" | "source" | "account" | "accountBasis" | "codexAttributor" | "settle">;
 
 /** A file `watch` read before and no longer finds, with the parser state it kept. */
 export interface Absent {
@@ -47,6 +48,9 @@ export class IncrementalReader {
   private versions = new Map<string, string>();
   /** What is needed to settle each file that has parser state if `watch` stops discovering it (see `renewAbsent`). */
   private seen = new Map<string, Settling>();
+  /** Bytes already parsed per Codex rollout, so a copied path can continue only from identical bytes. */
+  private codexBytes = new Map<string, Hash>();
+  private codexPaths = new Map<string, string>();
 
   constructor(private agg: EventSink) {}
 
@@ -70,7 +74,7 @@ export class IncrementalReader {
       // These events are all the file has, not what is new: they replace what the last poll folded, so a row that has
       // stopped billing (a ledger row a rollout's bill now covers) is not counted from the earlier poll.
       this.agg.reset(id);
-      const fold = this.agg.stream(id, project, source, account);
+      const fold = this.agg.stream(id, project, source, account, file.accountBasis, file.codexAttributor);
       let count = 0;
       for (const event of snapshot ? snapshot.events : file.events!()) { fold(event); count++; }
       if (version !== undefined) this.versions.set(id, version);
@@ -83,6 +87,7 @@ export class IncrementalReader {
       return 0;
     }
     let off = this.offsets.get(id) ?? 0;
+    this.checkCodexMove(file, id, off);
     // A file found again keeps its first context: a new one has not seen the lines before the offset.
     const ctx = this.context(file);
     // What earlier lines left undecided may be decidable now, against what this discovery found (a reloaded ledger).
@@ -91,12 +96,13 @@ export class IncrementalReader {
     const fd = openSync(path, "r");
     let consumed = 0;
     try {
-      const fold = this.agg.stream(id, project, source, account);
+      const fold = this.agg.stream(id, project, source, account, file.accountBasis, file.codexAttributor);
       const buf = Buffer.alloc(1 << 20);
       let carry = this.partial.get(id) ?? "";
       while (off < size) {
         const n = readSync(fd, buf, 0, Math.min(buf.length, size - off), off);
         if (n <= 0) break;
+        if (file.key?.startsWith("codex:")) this.codexHash(id).update(buf.subarray(0, n));
         off += n;
         consumed += n;
         const chunk = carry + buf.toString("utf8", 0, n);
@@ -106,10 +112,35 @@ export class IncrementalReader {
       }
       this.partial.set(id, carry);
       this.offsets.set(id, off);
+      if (file.key?.startsWith("codex:")) this.codexPaths.set(id, path);
     } finally {
       closeSync(fd);
     }
     return consumed + settled;
+  }
+
+  /**
+   * Archive copies can take over a basename while `watch` retains parser state keyed by that
+   * basename. A normal move is safe only when the already-consumed bytes are exactly identical:
+   * this includes a torn final row held in `partial`, not merely the completed JSONL prefix.
+   */
+  private checkCodexMove(file: SourceFile, id: string, off: number): void {
+    if (!file.key?.startsWith("codex:") || off === 0) return;
+    const previous = this.codexPaths.get(id);
+    if (!previous || previous === file.path) return;
+    const priorHash = this.codexBytes.get(id);
+    if (!priorHash || !matchesPrefixHash(file.path, off, priorHash)) {
+      throw new Error(`Codex rollout ${file.key} changed to a non-prefix copy; refusing to skip usage.`);
+    }
+  }
+
+  private codexHash(id: string): Hash {
+    let hash = this.codexBytes.get(id);
+    if (!hash) {
+      hash = createHash("sha256");
+      this.codexBytes.set(id, hash);
+    }
+    return hash;
   }
 
   private settle(file: Settling, ctx: unknown, final: boolean): number {
@@ -118,7 +149,7 @@ export class IncrementalReader {
     let fold: ((event: Event) => void) | undefined;
     let count = 0;
     for (const event of file.settle(ctx, final)) {
-      fold ??= this.agg.stream(this.identity(file), file.project, file.source, file.account);
+      fold ??= this.agg.stream(this.identity(file), file.project, file.source, file.account, file.accountBasis, file.codexAttributor);
       fold(event);
       count++;
     }
@@ -135,7 +166,7 @@ export class IncrementalReader {
 
   private context(file: SourceFile): unknown {
     const id = this.identity(file);
-    this.seen.set(id, { path: file.path, key: file.key, project: file.project, source: file.source, account: file.account, settle: file.settle });
+    this.seen.set(id, { path: file.path, key: file.key, project: file.project, source: file.source, account: file.account, accountBasis: file.accountBasis, codexAttributor: file.codexAttributor, settle: file.settle });
     if (!this.contexts.has(id)) this.contexts.set(id, file.ctx);
     const kept = this.contexts.get(id);
     if (kept !== file.ctx) file.renew?.(kept);
@@ -182,7 +213,7 @@ export class IncrementalReader {
     // A line the agent is still writing is not a line yet. `watch` keeps polling after this first read, and the
     // next poll must see the rest of it joined to its start, not a torn fragment followed by an orphan tail.
     if (carry && wholeJson(carry)) {
-      const fold = this.agg.stream(id, file.project, file.source, file.account);
+      const fold = this.agg.stream(id, file.project, file.source, file.account, file.accountBasis, file.codexAttributor);
       for (const ev of file.parse(carry, ctx)) fold(ev);
       this.partial.set(id, "");
     }
@@ -196,5 +227,28 @@ function wholeJson(line: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function matchesPrefixHash(path: string, bytes: number, expected: Hash): boolean {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return false;
+  }
+  const actual = createHash("sha256");
+  const buffer = Buffer.alloc(1 << 20);
+  try {
+    let offset = 0;
+    while (offset < bytes) {
+      const count = readSync(fd, buffer, 0, Math.min(buffer.length, bytes - offset), offset);
+      if (count <= 0) return false;
+      actual.update(buffer.subarray(0, count));
+      offset += count;
+    }
+    return actual.digest("hex") === expected.copy().digest("hex");
+  } finally {
+    closeSync(fd);
   }
 }

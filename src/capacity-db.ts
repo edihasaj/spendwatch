@@ -403,17 +403,27 @@ export function loadCapacityHistory(path: string, nowMs = Date.now()): CapacityH
     WHEN sampled_at_ms >= ${Math.round(nowMs - 30 * 86400_000)} THEN 1800000
     WHEN sampled_at_ms >= ${Math.round(nowMs - 180 * 86400_000)} THEN 21600000
     ELSE 86400000 END`;
+  const historyBucketExpression = bucketExpression.replaceAll("sampled_at_ms", "sampledAt");
   const rows = db.query<HistoryRow, []>(`
-    WITH ranked AS (
-      SELECT provider, account, window_kind AS kind, sampled_at_ms AS sampledAt,
-             used_percent AS value, resets_at_ms AS resetsAt,
-             COUNT(*) OVER (PARTITION BY provider, account, window_kind) AS sampleCount,
-             ROW_NUMBER() OVER (
-               PARTITION BY provider, account, window_kind,
-                 CAST(sampled_at_ms / (${bucketExpression}) AS INTEGER)
-               ORDER BY sampled_at_ms DESC
-             ) AS rank
+    WITH labelled AS (
+      SELECT provider,
+             CASE
+               WHEN provider = 'codex' AND source = 'codex-session-log' AND account LIKE '%@%'
+                 THEN 'Unverified historical · ' || account
+               ELSE account
+             END AS account,
+             window_kind AS kind, sampled_at_ms AS sampledAt,
+             used_percent AS value, resets_at_ms AS resetsAt
       FROM capacity_history
+    ), ranked AS (
+      SELECT provider, account, kind, sampledAt, value, resetsAt,
+             COUNT(*) OVER (PARTITION BY provider, account, kind) AS sampleCount,
+             ROW_NUMBER() OVER (
+               PARTITION BY provider, account, kind,
+                 CAST(sampledAt / (${historyBucketExpression}) AS INTEGER)
+               ORDER BY sampledAt DESC
+             ) AS rank
+      FROM labelled
     )
     SELECT provider, account, kind, sampledAt, value, resetsAt, sampleCount
     FROM ranked WHERE rank = 1

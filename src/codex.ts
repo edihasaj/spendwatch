@@ -105,6 +105,7 @@ function ledgerBills(ctx: CodexCtx, call: PendingCall): boolean {
 function apiEvent(ctx: CodexCtx, requestId: string, model: string | undefined, usage: Usage, ts: number, gatewayId?: string): Event {
   return {
     t: "api", sessionId: ctx.sid, requestId, model, usage, sidechain: false, ts,
+    ...(ctx.modelProvider ? { modelProvider: ctx.modelProvider } : {}),
     ...(gatewayId ? { gateway: { id: gatewayId, role: "unconfirmed" as const } } : {}),
   };
 }

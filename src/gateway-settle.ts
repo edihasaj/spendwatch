@@ -11,6 +11,7 @@
 // fullest-read rules (spend-report-archive.ts) never see a figure that depends on which other Macs were collected.
 import type { Database } from "bun:sqlite";
 import type { Report, UnconfirmedCall } from "./aggregate";
+import { installationRowKey } from "./installation-lineage";
 
 /** The calendar day of `ts` in `timeZone`, as the daily token rows key it. */
 export function dayIn(timeZone: string, ts: number): string {
@@ -69,6 +70,7 @@ export function withoutCalls(report: Report, calls: UnconfirmedCall[]): Report {
   const accounts = report.accounts.map((row) => ({ ...row }));
   const projects = report.projects.map((row) => ({ ...row }));
   const days = report.tokenDays ? report.tokenDays.rows.map((row) => ({ ...row })) : undefined;
+  const accountDays = report.tokenDays?.accountRows?.map((row) => ({ ...row }));
   let tokens = 0;
   let cost = 0;
   for (const call of own) {
@@ -99,10 +101,17 @@ export function withoutCalls(report: Report, calls: UnconfirmedCall[]): Report {
       const day = dayIn(report.tokenDays.timeZone, call.ts);
       const row = days.find((item) => item.day === day && item.model === call.model);
       if (row) row.tokens -= call.tokens;
+      const accountRow = accountDays?.find((item) =>
+        item.day === day && item.model === call.model && item.account === call.account);
+      if (accountRow) accountRow.tokens -= call.tokens;
     }
   }
   const rest = report.gatewayUnconfirmed!.filter((call) => !ids.has(call.id));
-  const { gatewayUnconfirmed: _taken, ...base } = report;
+  // The archived gateway call contains its account but not the evidence basis
+  // behind that account (configured route, profile, or unknown). Retaining
+  // aggregate coverage after removing calls would overstate what the settled
+  // report can prove, so omit it rather than guess.
+  const { gatewayUnconfirmed: _taken, accountAttribution: _attribution, ...base } = report;
   return {
     ...base,
     totalTokens: report.totalTokens - tokens,
@@ -113,7 +122,13 @@ export function withoutCalls(report: Report, calls: UnconfirmedCall[]): Report {
     models: models.filter((row) => row.calls > 0),
     accounts,
     projects: projects.filter((row) => row.tokens > 0 || row.cost > 0),
-    ...(report.tokenDays ? { tokenDays: { ...report.tokenDays, rows: days!.filter((row) => row.tokens > 0) } } : {}),
+    ...(report.tokenDays ? {
+      tokenDays: {
+        ...report.tokenDays,
+        rows: days!.filter((row) => row.tokens > 0),
+        ...(accountDays ? { accountRows: accountDays.filter((row) => row.tokens > 0) } : {}),
+      },
+    } : {}),
   };
 }
 
@@ -122,7 +137,7 @@ export function withoutCalls(report: Report, calls: UnconfirmedCall[]): Report {
  * report billed, keyed by `JSON.stringify([month, archive source])`. The monthly rows and the daily token rows are
  * kept apart from the reports, so their readers take these calls out of them as `withoutCalls` does.
  */
-export function archivedCoverage(db: Database): Map<string, UnconfirmedCall[]> {
+export function archivedCoverage(db: Database, suppressed: ReadonlySet<string> = new Set()): Map<string, UnconfirmedCall[]> {
   const out = new Map<string, UnconfirmedCall[]>();
   if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spend_report'").get()) return out;
   // The LIKE stands in for the SQLite-only string and array-expansion probes; the arrays are read in TypeScript.
@@ -134,6 +149,7 @@ export function archivedCoverage(db: Database): Map<string, UnconfirmedCall[]> {
   const parsed: Array<{ month: string; source: string; report: { gatewayBilled?: unknown; gatewayUnconfirmed?: unknown } }> = [];
   const billed = new Set<string>();
   for (const row of rows) {
+    if (suppressed.has(installationRowKey(row.month, row.source))) continue;
     let report: unknown;
     try {
       report = JSON.parse(row.report_json);

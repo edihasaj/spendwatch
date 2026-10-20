@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
-import { burnForecast, burnLookbackMinutes, currentCycleSamples, type BurnSample } from "../src/capacity-burn";
-import type { LimitWindow } from "../src/limits";
+import { join } from "node:path";
+import { burnForecast, burnLookbackMinutes, currentCycleSamples, loadBurnForecasts, type BurnSample } from "../src/capacity-burn";
+import { openCapacityDatabase } from "../src/capacity-db";
+import type { CodexLimitAccount, LimitWindow } from "../src/limits";
+import { tempDir } from "./tmp";
 
 const NOW = Date.parse("2026-02-01T12:00:00.000Z");
 
@@ -79,4 +82,26 @@ test("sub-second reset jitter does not split a cycle", () => {
 test("a provider-side rollover inside the matched cycle restarts the measurement", () => {
   const rolled = samples([[25, 90], [20, 95], [15, 4], [10, 9], [0, 14]]);
   expect(currentCycleSamples(rolled, window())).toHaveLength(3);
+});
+
+test("does not derive an account burn forecast from unverified Codex session-log rows", () => {
+  const path = join(tempDir("spendwatch-burn-confidence-"), "history.db");
+  const database = openCapacityDatabase(path);
+  const insert = database.prepare(`
+    INSERT INTO capacity_history(
+      sample_key, provider, account, window_kind, sampled_at_ms, observed_at, used_percent,
+      resets_at_ms, window_minutes, source, devices
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+  `);
+  for (const [minutes, used] of [[20, 40], [10, 45], [0, 50]]) {
+    const sampledAt = NOW - minutes * 60_000;
+    insert.run(`legacy-${minutes}`, "codex", "work@example.com", "session", sampledAt,
+      new Date(sampledAt).toISOString(), used, Date.parse("2026-02-01T14:00:00Z"), 300, "codex-session-log", "[]");
+  }
+  database.close();
+  const account: CodexLimitAccount = {
+    provider: "codex", email: "work@example.com", devices: ["studio"],
+    updatedAt: new Date(NOW).toISOString(), session: window(),
+  };
+  expect(loadBurnForecasts(path, [account], NOW).has("codex:work@example.com")).toBe(false);
 });

@@ -246,10 +246,10 @@ describe("Keychain items for one service", () => {
 describe("capacity freshness", () => {
   const now = Date.parse("2026-08-18T15:30:00Z");
 
-  test("bounds the staleness budget to 5-60 minutes", () => {
-    expect(staleAfterMs(300)).toBe(15 * 60_000);
+  test("bounds the staleness budget to 5-7 minutes", () => {
+    expect(staleAfterMs(300)).toBe(7 * 60_000);
     expect(staleAfterMs(60)).toBe(5 * 60_000);
-    expect(staleAfterMs(10080)).toBe(60 * 60_000);
+    expect(staleAfterMs(10080)).toBe(7 * 60_000);
   });
 
   test("separates live, stale, and expired samples", () => {

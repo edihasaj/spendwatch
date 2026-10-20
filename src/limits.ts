@@ -4,7 +4,7 @@ import { effectiveSourceHealth, type CapacityAuthenticationRequirement, type Cap
 import { predictWindow } from "./capacity-prediction";
 import { windowFreshness, type WindowFreshness } from "./capacity-freshness";
 import type { BurnForecast } from "./capacity-burn";
-import { buildUtilizationPlans, recommendAccount, UTILIZATION_TARGET_PERCENT, type AccountUtilizationPlan } from "./capacity-planner";
+import { buildUtilizationPlans, UTILIZATION_TARGET_PERCENT, type AccountUtilizationPlan } from "./capacity-planner";
 import { copilotBudgetStatus, copilotCreditWindow, formatCopilotMoney } from "./copilot-budget";
 import { compactDuration } from "./duration";
 import { normalizeLocalQwenCapacity } from "./local-capacity";
@@ -80,6 +80,8 @@ export interface CodexLimitAccount {
   email: string;
   plan: string;
   organization?: string;
+  /** Official Codex quota pool, retained for accurate cross-machine attribution. */
+  quotaPool?: string;
   updatedAt?: string;
   session?: LimitWindow;
   weekly?: LimitWindow;
@@ -127,6 +129,7 @@ interface RawCodexUsage {
   accountEmail?: unknown;
   accountOrganization?: unknown;
   loginMethod?: unknown;
+  quotaPool?: unknown;
   primary?: RawWindow | null;
   secondary?: RawWindow | null;
   tertiary?: RawWindow | null;
@@ -248,6 +251,12 @@ function titleCase(value: string): string {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : "Unknown";
 }
 
+function normalizeQuotaPool(value: unknown): string | undefined {
+  return typeof value === "string" && /^(?:legacy|codex(?:_[a-z0-9-]+)?)$/u.test(value)
+    ? value
+    : undefined;
+}
+
 export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
   const items = Array.isArray(input) ? input : [input];
   const accounts = new Map<string, CodexLimitAccount>();
@@ -292,6 +301,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
       email: emailValue.trim(),
       plan: titleCase(typeof usage.loginMethod === "string" ? usage.loginMethod : "unknown"),
       organization: typeof usage.accountOrganization === "string" ? usage.accountOrganization : undefined,
+      quotaPool: provider === "codex" ? normalizeQuotaPool(usage.quotaPool) : undefined,
       updatedAt,
       session,
       weekly,
@@ -422,28 +432,15 @@ function routeBalanceBlock(route: CloudRouteCapacity): string {
   </section>`;
 }
 
-function paceBlock(window: LimitWindow, nowMs: number): string {
+function paceLabel(window: LimitWindow, nowMs: number): string | undefined {
   const prediction = predictWindow(window, nowMs);
-  if (!prediction) return "";
+  if (!prediction) return undefined;
   const roundedDelta = Math.round(Math.abs(prediction.deltaPercent));
-  const pace = roundedDelta <= 2
+  return roundedDelta <= 2
     ? "On pace"
     : prediction.deltaPercent > 0
       ? `${roundedDelta}% over pace`
       : `${roundedDelta}% under pace`;
-  // The burn line forecasts from the recent slope, which is both more current
-  // and more urgent than this cycle average. Rendering both puts two different
-  // run-out ETAs side by side, so the average yields the forecast and keeps
-  // only the trend it alone reports.
-  if (window.burn) return `<div class="pace"><span>${esc(pace)}</span></div>`;
-  const forecast = window.usedPercent >= 100
-    ? "Ran out"
-    : prediction.willLastToReset
-      ? "Lasts until reset"
-      : prediction.runsOutAt
-        ? `<span class="exhaust" data-exhaust="${esc(prediction.runsOutAt)}">Run-out forecast loading</span>`
-        : "Run-out likely";
-  return `<div class="pace"><span>${esc(pace)}</span><strong>${forecast}</strong></div>`;
 }
 
 export function formatBurnRate(ratePerHour: number): string {
@@ -453,37 +450,19 @@ export function formatBurnRate(ratePerHour: number): string {
   return `${rounded}%/h`;
 }
 
-function burnBlock(window: LimitWindow): string {
-  const burn = window.burn;
-  if (!burn) return "";
-  const multiple = burn.budgetMultiple === undefined || burn.ratePerHour <= 0
-    ? ""
-    : ` · ${burn.budgetMultiple >= 10 ? Math.round(burn.budgetMultiple) : Math.round(burn.budgetMultiple * 10) / 10}\u00d7`;
-  const measured = `Measured from the last ${burn.lookbackMinutes} minutes of samples (${burn.sampleCount})`;
-  const verdict = burn.ratePerHour <= 0
-    ? "<strong>Idle</strong>"
-    : burn.lastsToReset
-      ? "<strong>Fits the window</strong>"
-      : `<strong><span class="exhaust" data-exhaust="${esc(burn.runsOutAt!)}">Run-out forecast loading</span></strong>`;
-  const early = burn.earlyByMinutes !== undefined && burn.earlyByMinutes > 0
-    ? `<em>${esc(compactDuration(burn.earlyByMinutes * 60_000))} before reset</em>`
-    : "";
-  const tone = burn.lastsToReset || burn.ratePerHour <= 0 ? "" : " over";
-  return `<div class="burn${tone}" title="${esc(measured)}"><span>Burn ${esc(formatBurnRate(burn.ratePerHour))} · safe ${esc(formatBurnRate(burn.sustainableRatePerHour))}${multiple}</span>${verdict}${early}</div>`;
-}
-
-function paceMarker(window: LimitWindow, nowMs: number): string {
+function paceMarker(window: LimitWindow, nowMs: number, orientation: "remaining" | "used" = "remaining"): string {
   const prediction = predictWindow(window, nowMs);
   if (!prediction) return "";
   const expectedLeft = Math.min(100, Math.max(0, 100 - prediction.expectedUsedPercent));
+  const expected = orientation === "used" ? 100 - expectedLeft : expectedLeft;
   const roundedDelta = Math.round(Math.abs(prediction.deltaPercent));
   const onPace = roundedDelta <= 2;
   const tone = onPace ? "steady" : prediction.deltaPercent > 0 ? "deficit" : "reserve";
-  const direction = prediction.deltaPercent > 0 ? "over" : "under";
+  const trend = prediction.deltaPercent > 0 ? "over" : "under";
   const label = onPace
-    ? `Expected pace: ${Math.round(expectedLeft)}% left, on pace`
-    : `Expected pace: ${Math.round(expectedLeft)}% left, ${roundedDelta}% ${direction}`;
-  return `<span class="pace-marker ${tone}" style="--pace-left:${expectedLeft}%" role="img" aria-label="${esc(label)}" title="${esc(label)}"><b></b><b></b><b></b></span>`;
+    ? `Expected pace: ${Math.round(expected)}% ${orientation === "used" ? "used" : "left"}, on pace`
+    : `Expected pace: ${Math.round(expected)}% ${orientation === "used" ? "used" : "left"}, ${roundedDelta}% ${trend}`;
+  return `<span class="pace-marker ${tone}" style="--pace-position:${expected}%" role="img" aria-label="${esc(label)}" title="${esc(label)}"><b></b><b></b><b></b></span>`;
 }
 
 function formatUsd(value: number, maximumFractionDigits = 2): string {
@@ -527,7 +506,7 @@ function copilotLimits(account: CodexLimitAccount, nowMs: number): string {
     <div class="limit-head"><span>AI credits used</span><strong>${status.creditsUsed.toLocaleString()} / ${budget.credits.toLocaleString()}</strong></div>
     <div class="track" role="progressbar" aria-label="${status.over ? "Monthly AI credit budget spent" : "Monthly AI credit budget remaining"}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${status.over ? 100 : left}"><i style="width:${status.over ? 100 : left}%"></i>${marker}</div>
     <div class="limit-meta split"><span>${esc(standing)}</span>${reset}</div>
-    ${window && !status.over ? paceBlock(window, nowMs) : ""}
+    ${window && !status.over && paceLabel(window, nowMs) ? `<div class="pace"><span>${esc(paceLabel(window, nowMs)!)}</span></div>` : ""}
   </section><section class="limit copilot-pool ${tone}">
     <div class="limit-head"><span>Monthly budget</span><strong>${esc(formatCopilotMoney(status.usdSpent, budget))} / ${esc(formatCopilotMoney(budget.usd, budget))}</strong></div>
     <div class="limit-meta split"><span>${money}</span><span>${esc(formatCopilotMoney(budget.creditUsd, budget, 4))} per credit</span></div>
@@ -555,29 +534,15 @@ function spendLimits(account: CodexLimitAccount): string {
 }
 
 function localQwenLimits(account: CodexLimitAccount): string {
-  const local = account.local!;
-  const readiness = local.ready === true
-    ? "All callers reachable"
-    : local.ready === false
-      ? "Caller unavailable"
-      : "Availability unknown";
-  const detail = local.detail ? ` · ${local.detail}` : "";
-  const coverage = local.unmeasuredDevices.length
-    ? `Token reports: ${local.measuredDevices.join(", ") || "none"} · missing ${local.unmeasuredDevices.join(", ")}`
-    : `Token reports: ${local.measuredDevices.join(", ") || "not available"}`;
-  const tokens = (label: string, count: number, period: string) => `<section class="limit spend good">
+  const tokens = (label: string, count: number) => `<section class="limit local-usage good">
     <div class="limit-head"><span>${esc(label)}</span><strong>${esc(formatTokens(count))} tokens</strong></div>
-    <div class="limit-meta split"><span>$0 provider fee</span><span>${esc(period)}</span></div>
   </section>`;
   return `<section class="limit local-unlimited good">
-    <div class="limit-head"><span>Local capacity</span><strong>Unlimited</strong></div>
-    <div class="limit-meta split"><span>${esc(local.model)}</span><span>${esc(readiness)}</span></div>
-    <div class="pace"><span>Self-hosted${esc(detail)}</span><strong>No quota cycle</strong></div>
-    <div class="limit-meta">${esc(coverage)}</div>
+    <div class="limit-head"><span>Local Qwen</span><strong>Unlimited</strong></div>
   </section>${account.spend
-    ? `${tokens(`Measured · last ${Math.round(account.spend.recentHours)}h`, account.spend.recentTokens, local.unmeasuredDevices.length ? "Partial client reports" : "Client reports")}
-  ${tokens(`Measured · last ${Math.round(account.spend.monthDays)} days`, account.spend.monthTokens, local.unmeasuredDevices.length ? "Partial client reports" : "Client reports")}`
-    : `<section class="limit spend unreadable"><div class="limit-head"><span>Measured usage</span><strong>Not available</strong></div><div class="pace"><span>Awaiting a successful client report</span></div></section>`}`;
+    ? `${tokens(`Measured · ${Math.round(account.spend.recentHours)}h`, account.spend.recentTokens)}
+  ${tokens(`Measured · ${Math.round(account.spend.monthDays)}d`, account.spend.monthTokens)}`
+    : `<section class="limit local-usage unreadable"><div class="limit-head"><span>Measured usage</span><strong>Unavailable</strong></div></section>`}`;
 }
 
 function providerLimits(account: CodexLimitAccount, nowMs: number): string {
@@ -599,7 +564,7 @@ function providerLimits(account: CodexLimitAccount, nowMs: number): string {
     account.session
       ? limitBlock(account.provider === "lokai" ? "5-hour session" : "5-hour window", account.session, nowMs, account.updatedAt)
       : "",
-    account.weekly ? limitBlock("Weekly window", account.weekly, nowMs, account.updatedAt, account.sessionEquivalent) : "",
+    account.weekly ? limitBlock("Weekly window", account.weekly, nowMs, account.updatedAt) : "",
   ].join("");
 }
 
@@ -608,20 +573,19 @@ function limitBlock(
   window: LimitWindow,
   nowMs: number,
   updatedAt?: string,
-  equivalent?: SessionEquivalentForecast,
 ): string {
   const left = Math.round(100 - window.usedPercent);
   const freshness = windowFreshness(window, updatedAt, nowMs);
   if (freshness !== "live") return unreadableLimitBlock(label, window, left, freshness, updatedAt);
   const tone = left <= 15 ? "danger" : left <= 35 ? "warn" : "good";
-  const marker = paceMarker(window, nowMs);
+  const marker = paceMarker(window, nowMs, "used");
+  const used = Math.round(window.usedPercent);
+  const pace = paceLabel(window, nowMs);
   return `<section class="limit ${tone}">
-    <div class="limit-head"><span>${esc(label)}</span><strong>${left}% left</strong></div>
-    <div class="track" role="progressbar" aria-label="${esc(label)} remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${left}"><i style="width:${left}%"></i>${marker}</div>
+    <div class="limit-head"><span>${esc(label)}</span><strong>${used}% used</strong></div>
+    <div class="track" role="progressbar" aria-label="${esc(label)} utilization" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}"><i style="width:${used}%"></i>${marker}</div>
     <div class="limit-meta"><span class="reset" data-reset="${esc(window.resetsAt ?? "")}">${window.resetsAt ? "Reset time loading" : "Reset time unavailable"}</span></div>
-    ${paceBlock(window, nowMs)}
-    ${burnBlock(window)}
-    ${equivalent ? `<div class="equivalent"><span>Est. ${equivalent.estimatedQuotasLeft} session quota${equivalent.estimatedQuotasLeft === 1 ? "" : "s"} left</span><strong>${equivalent.sampleCount} learned</strong></div>` : ""}
+    ${pace ? `<div class="pace"><span>${esc(pace)}</span></div>` : ""}
   </section>`;
 }
 
@@ -651,16 +615,12 @@ function unreadableLimitBlock(
 
 
 function accountCard(account: CodexLimitAccount, index: number, nowMs: number): string {
-  const deviceLabel = account.devices.length ? ` · ${account.devices.join(" + ")}` : "";
   const accountKey = `${account.provider}:${account.email.toLowerCase()}`;
   const name = account.name ?? (account.provider === "lokai" ? account.email : providerLabel(account.provider));
-  const credits = account.credits
-    ? `<span class="credits" title="Purchased credits, used once the included window runs out">${account.credits.unlimited ? "Unlimited credits" : `${esc(formatCredits(account.credits.balance))} credits`}</span>`
-    : "";
   return `<article class="account-card provider-${account.provider}" data-account-key="${esc(accountKey)}" style="--delay:${index * 60}ms;--accent:${providerAccent(account.provider)}">
     <header class="account-head">
-      <div class="identity"><h2>${esc(name)}</h2>${name === account.email ? "" : `<span class="account-email">${esc(account.email)}</span>`}</div>
-      <div class="account-meta"><strong>${esc(account.plan)}</strong>${credits}<span class="updated" data-updated="${esc(account.updatedAt ?? "")}" data-devices="${esc(deviceLabel)}">${account.updatedAt ? "Updated recently" : "Update time unavailable"}${esc(deviceLabel)}</span></div>
+      <div class="identity"><span class="provider-label">${providerLabel(account.provider)}</span><h2>${esc(name)}</h2>${name === account.email ? "" : `<span class="account-email">${esc(account.email)}</span>`}</div>
+      <div class="account-meta"><strong>${esc(account.plan)}</strong><span class="updated" data-captured="${esc(account.updatedAt ?? "")}">${account.updatedAt ? "Captured recently" : "Capture time unavailable"}</span></div>
     </header>
     <div class="limits">${providerLimits(account, nowMs)}</div>
   </article>`;
@@ -707,19 +667,10 @@ export function renderLimitsText(accounts: CodexLimitAccount[], nowMs = Date.now
       return `${account.email}\t${account.plan}\t${status.creditsUsed} of ${status.budget.credits} AI credits used (${formatCopilotMoney(status.usdSpent, status.budget)} of ${formatCopilotMoney(status.budget.usd, status.budget)})\t${standing}`;
     }
     if (account.provider === "qwen" && account.local) {
-      const local = account.local;
-      const readiness = local.ready === true
-        ? "all callers reachable"
-        : local.ready === false
-          ? "caller unavailable"
-          : "availability unknown";
-      const coverage = local.unmeasuredDevices.length
-        ? `partial token coverage: ${local.measuredDevices.join(", ") || "none"}; missing ${local.unmeasuredDevices.join(", ")}`
-        : `token coverage: ${local.measuredDevices.join(", ") || "not available"}`;
       const usage = account.spend
-        ? `${Math.round(account.spend.recentHours)}h ${formatTokens(account.spend.recentTokens)} tokens\t${Math.round(account.spend.monthDays)}d ${formatTokens(account.spend.monthTokens)} tokens\t$0 provider fee`
-        : "usage not available";
-      return `Qwen · ${account.email}\tunlimited self-hosted\t${local.model}\t${readiness}\t${coverage}\t${usage}`;
+        ? `Measured ${Math.round(account.spend.recentHours)}h ${formatTokens(account.spend.recentTokens)} tokens\tMeasured ${Math.round(account.spend.monthDays)}d ${formatTokens(account.spend.monthTokens)} tokens`
+        : "Measured usage unavailable";
+      return `Qwen · ${account.email}\tUnlimited\t${usage}`;
     }
     if (account.spend) {
       const days = Math.round(account.spend.monthDays);
@@ -762,12 +713,8 @@ export function renderLimitsHtml(
     source,
     effective: effectiveSourceHealth([source], nowMs)[0]!,
   }));
-  const recommendation = recommendAccount(accounts, sourceInputs, nowMs);
   const utilizationPlans = buildUtilizationPlans(accounts, nowMs);
   const utilizationHtml = utilizationPlans.map(utilizationPlanCard).join("");
-  const recommendationHtml = recommendation
-    ? `<div class="best"><span>Best now</span><strong>${providerLabel(recommendation.provider)} · ${esc(recommendation.account)}</strong><em>${recommendation.weeklyLeft}% weekly${recommendation.sessionLeft === undefined ? "" : ` · ${recommendation.sessionLeft}% session`} · ${recommendation.willLastToReset ? "lasts to reset" : "run-out risk"}</em></div>`
-    : `<div class="best unavailable"><span>Best now</span><strong>No fresh recommendation</strong></div>`;
   const sourceHtml = sourceRows.length ? `<div class="sources">${sourceRows.map(({ source, effective }) => {
     const label = effective.status === "snapshot" ? "snapshot · on demand" : effective.status;
     return `<span class="source ${effective.status}" title="${esc(source.detail ?? source.status)}"><i></i><b>${esc(source.device)}</b><em data-source-status="${source.status}" data-source-last="${esc(source.lastSuccessAt ?? source.checkedAt)}">${label}</em></span>`;
@@ -789,28 +736,28 @@ ${BRAND_HEAD_HTML}
 <style>
 :root{--bg:#0a0c0f;--surface:#11151a;--raised:#151a20;--line:#29313a;--ink:#f2f5f7;--muted:#89939d;--cyan:#68d5dc;--cyan2:#2aa7b3;--good:#75d598;--warn:#f2bd64;--danger:#f27b70}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%}body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-family:"Manrope",sans-serif;background-image:linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px),radial-gradient(800px 500px at 50% -180px,rgba(104,213,220,.13),transparent 70%);background-size:38px 38px,38px 38px,auto}
-.shell{width:min(1120px,calc(100% - 36px));margin:0 auto;padding:30px 0 64px}.topbar{display:flex;align-items:center;gap:20px;padding-bottom:22px;border-bottom:1px solid var(--line)}
+.shell{width:min(1460px,calc(100% - 36px));margin:0 auto;padding:30px 0 64px}.topbar{display:flex;align-items:center;gap:20px;padding-bottom:22px;border-bottom:1px solid var(--line)}
 .brand{font-family:"Fragment Mono",monospace;font-size:14px;letter-spacing:-.04em}.brand b{color:var(--cyan);font-weight:400}.nav{display:flex;gap:5px;margin-left:18px;padding:4px;background:#0d1014;border:1px solid #20262d;border-radius:9px}.nav a{padding:7px 11px;border-radius:6px;color:var(--muted);text-decoration:none;font-size:12px;font-weight:600}.nav a.active{color:var(--ink);background:var(--raised)}
 .top-actions{margin-left:auto;display:flex;gap:8px}.button{appearance:none;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:8px;padding:9px 12px;font:600 12px "Manrope",sans-serif;cursor:pointer;text-decoration:none;transition:border-color .15s,transform .15s}.button:hover{border-color:#52606d;transform:translateY(-1px)}.button.primary{border-color:rgba(104,213,220,.5);background:rgba(104,213,220,.09);color:#bdf5f7}.button.push-on{border-color:rgba(117,213,152,.48);color:#bdf2ce;background:rgba(117,213,152,.08)}
-.summary{display:flex;align-items:baseline;justify-content:space-between;gap:20px;padding:20px 0 10px}.summary h1{font-size:22px;line-height:1;letter-spacing:-.045em;margin:0}.summary span{color:var(--muted);font:12px "Fragment Mono",monospace}.planning{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px;margin-bottom:14px;padding:9px 11px;background:rgba(17,21,26,.8);border:1px solid var(--line);border-radius:10px}.best{display:flex;align-items:center;gap:9px;flex:0 0 auto;max-width:60%;min-width:0;font:11px "Fragment Mono",monospace}.best>span{flex:none;color:var(--cyan);text-transform:uppercase;letter-spacing:.08em;white-space:nowrap}.best strong{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.best em{color:var(--muted);font-style:normal;white-space:nowrap}.best.unavailable strong{color:var(--muted)}.sources{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px 12px;flex:0 1 auto;min-width:0}.source{display:flex;align-items:center;gap:5px;white-space:nowrap;color:var(--muted);font:10px "Fragment Mono",monospace}.source i{width:6px;height:6px;border-radius:50%;background:var(--good)}.source.snapshot i{background:#6f7a83}.source.stale i{background:var(--warn)}.source.offline i,.source.error i{background:var(--danger)}.source b{color:#c8d0d6;font-weight:400}.source em{font-style:normal}
+.summary{display:flex;align-items:baseline;justify-content:space-between;gap:20px;padding:20px 0 10px}.summary h1{font-size:22px;line-height:1;letter-spacing:-.045em;margin:0}.summary span{color:var(--muted);font:12px "Fragment Mono",monospace}.planning{display:flex;align-items:center;justify-content:flex-end;margin-bottom:14px;padding:8px 11px;background:rgba(17,21,26,.8);border:1px solid var(--line);border-radius:10px}.planning:empty{display:none}.sources{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px 12px;min-width:0}.source{display:flex;align-items:center;gap:5px;white-space:nowrap;color:var(--muted);font:10px "Fragment Mono",monospace}.source i{width:6px;height:6px;border-radius:50%;background:var(--good)}.source.snapshot i{background:#6f7a83}.source.stale i{background:var(--warn)}.source.offline i,.source.error i{background:var(--danger)}.source b{color:#c8d0d6;font-weight:400}.source em{font-style:normal}
 .utilization{margin:18px 0;padding:17px;background:linear-gradient(145deg,rgba(20,27,31,.96),rgba(12,16,20,.98));border:1px solid rgba(104,213,220,.26);border-radius:14px;box-shadow:0 18px 60px rgba(0,0,0,.18)}.util-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:12px}.util-head h2{margin:0;font-size:18px;letter-spacing:-.035em}.util-head p{margin:4px 0 0;color:var(--muted);font-size:11px}.target-chip{flex:none;padding:6px 8px;border:1px solid rgba(104,213,220,.38);border-radius:99px;color:#bdf5f7;background:rgba(104,213,220,.07);font:10px "Fragment Mono",monospace}.pace-policy{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;margin-bottom:12px;overflow:hidden;border:1px solid #252e36;border-radius:8px;background:#252e36}.pace-policy span{padding:7px 8px;background:#0c1014;color:#87929b;font:9px/1.35 "Fragment Mono",monospace}.pace-policy b{display:block;margin-bottom:2px;color:#cbd3d8;font-weight:400}.util-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.util-card{min-width:0;padding:12px 13px;background:#0c1014;border:1px solid #252e36;border-left:2px solid var(--accent);border-radius:9px;animation:enter .38s both;animation-delay:var(--delay)}.util-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.util-card header span{color:var(--accent);font:9px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.util-card h3{margin:3px 0 0;font-size:12px;line-height:1.25;overflow-wrap:anywhere}.util-card header strong{flex:none;padding:4px 6px;border-radius:5px;background:rgba(117,213,152,.1);color:var(--good);font:9px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.06em}.util-card.action-more header strong{background:rgba(242,123,112,.1);color:var(--danger)}.util-card.action-less header strong,.util-card.action-rebalance header strong{background:rgba(242,189,100,.1);color:var(--warn)}.util-card.action-measure header strong{background:rgba(142,169,255,.1);color:#aebfff}.util-projection{margin-top:12px;color:var(--ink);font:18px "Fragment Mono",monospace;letter-spacing:-.04em}.util-track{position:relative;height:5px;margin:8px 0;background:#050709;border-radius:99px}.util-track i{display:block;height:100%;border-radius:99px;background:var(--accent)}.util-track b{position:absolute;top:-3px;width:2px;height:11px;border-radius:2px;background:#fff;box-shadow:0 0 0 1px #050709;transform:translateX(-50%)}.util-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px;color:#c3cbd1;font:10px/1.3 "Fragment Mono",monospace}.util-metrics span{min-width:0}.util-metrics b{display:block;margin-bottom:2px;color:#6f7a83;font-size:8px;font-weight:400;text-transform:uppercase;letter-spacing:.08em}.util-card p{margin:10px 0 0;padding-top:9px;border-top:1px solid #202830;color:#8f9aa3;font-size:10px;line-height:1.45}
-.accounts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.account-card{display:flex;flex-direction:column;background:linear-gradient(145deg,rgba(21,26,32,.98),rgba(15,19,24,.98));border:1px solid var(--line);border-top-color:color-mix(in srgb,var(--accent) 36%,var(--line));border-radius:13px;padding:15px 16px;box-shadow:0 14px 40px rgba(0,0,0,.16);animation:enter .45s cubic-bezier(.2,.8,.2,1) both;animation-delay:var(--delay)}
+.accounts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.account-card{display:flex;flex-direction:column;background:linear-gradient(145deg,rgba(21,26,32,.98),rgba(15,19,24,.98));border:1px solid var(--line);border-top-color:color-mix(in srgb,var(--accent) 36%,var(--line));border-radius:13px;padding:13px 14px;box-shadow:0 14px 40px rgba(0,0,0,.16);animation:enter .45s cubic-bezier(.2,.8,.2,1) both;animation-delay:var(--delay)}
 .auth-required{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px;padding:12px 14px;border:1px solid rgba(242,189,100,.42);border-radius:10px;background:rgba(242,189,100,.07)}.auth-required div{display:flex;flex-direction:column;gap:2px}.auth-required strong{color:var(--warn);font:11px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.auth-required span{color:#cbd2d7;font-size:12px}.auth-required a{flex:none;color:#101317;background:var(--warn);border-radius:7px;padding:8px 10px;font:700 11px "Manrope",sans-serif;text-decoration:none}
-.account-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.identity{flex:1 1 auto;min-width:min(150px,40%)}.identity h2{font-size:16px;line-height:1.16;letter-spacing:-.025em;margin:0;overflow-wrap:anywhere}.account-email{display:block;margin-top:4px;color:var(--muted);font:10px/1.3 "Fragment Mono",monospace;overflow-wrap:anywhere}.account-meta{flex:0 1 auto;min-width:0;max-width:62%;text-align:right}.account-meta strong{display:block;font:12px "Fragment Mono",monospace;color:#dce2e6}.credits{display:block;margin-top:4px;font:11px/1.3 "Fragment Mono",monospace;color:var(--accent);white-space:nowrap}.updated{display:block;color:var(--muted);font:11px/1.3 "Fragment Mono",monospace;margin-top:4px}
-.limits{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(41,49,58,.75)}.limit-head,.limit-meta,.pace,.equivalent{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.limit-head span{color:#b9c1c8;font-size:11px;font-weight:600}.limit-head strong{font:14px "Fragment Mono",monospace;white-space:nowrap}.track{position:relative;height:6px;margin:8px 0 7px;background:#080a0d;border:1px solid #1b2229;border-radius:99px;overflow:visible}.track>i{display:block;max-width:100%;height:100%;background:var(--accent,var(--cyan));border-radius:99px;box-shadow:0 0 18px color-mix(in srgb,var(--accent,var(--cyan)) 30%,transparent);animation:fill .8s cubic-bezier(.2,.8,.2,1) both}.limit.warn .track>i{background:var(--warn)}.limit.danger .track>i{background:var(--danger)}.pace-marker{--marker-color:#a8ffb9;position:absolute;z-index:2;top:50%;left:var(--pace-left);display:flex;height:12px;gap:3px;transform:translate(-50%,-50%);pointer-events:none}.pace-marker b{display:block;width:2px;height:100%;border-radius:2px;background:var(--marker-color);box-shadow:0 0 0 1px #020304,0 0 7px var(--marker-color)}.pace-marker.deficit{--marker-color:#ff776d}.limit-meta{justify-content:flex-end;color:var(--muted);font:12px/1.35 "Fragment Mono",monospace}.limit-meta.split{justify-content:space-between}.pace{margin-top:6px;color:#aab3ba;font:12px/1.35 "Fragment Mono",monospace}.pace strong{color:var(--accent);font-weight:400;white-space:nowrap}.burn{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;margin-top:5px;color:#8f9aa3;font:11px/1.35 "Fragment Mono",monospace}.burn strong{color:#cbd3d8;font-weight:400;white-space:nowrap}.burn em{flex-basis:100%;text-align:right;font-style:normal;color:#6f7a83}.burn.over{color:#e0b98a}.burn.over strong{color:var(--warn)}.equivalent{margin-top:6px;color:#aab3ba;font:12px/1.35 "Fragment Mono",monospace;padding-top:5px;border-top:1px solid rgba(41,49,58,.55)}.equivalent strong{color:var(--muted);font-weight:400;white-space:nowrap}.limit.balance{justify-content:center;min-height:45px}.limit.unreadable .limit-head strong{color:var(--warn)}.limit.unreadable .limit-meta,.limit.unreadable .pace{color:#7d868e}.track.stale>i{background:#3a444d;box-shadow:none;opacity:.65}.limit.balance .limit-meta{margin-top:7px}.copilot-usage,.copilot-pool,.limit.spend{display:flex;flex-direction:column;justify-content:center;min-height:50px}.copilot-usage .limit-meta,.copilot-pool .limit-meta,.limit.spend .limit-meta{margin-top:7px}
+.account-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.identity{flex:1 1 auto;min-width:min(150px,40%)}.provider-label{display:block;margin-bottom:2px;color:var(--accent);font:9px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.identity h2{font-size:16px;line-height:1.16;letter-spacing:-.025em;margin:0;overflow-wrap:anywhere}.account-email{display:block;margin-top:4px;color:var(--muted);font:10px/1.3 "Fragment Mono",monospace;overflow-wrap:anywhere}.account-meta{flex:0 1 auto;min-width:0;max-width:62%;text-align:right}.account-meta strong{display:block;font:12px "Fragment Mono",monospace;color:#dce2e6}.updated{display:block;color:var(--muted);font:10px/1.3 "Fragment Mono",monospace;margin-top:4px}
+.limits{display:grid;grid-template-columns:1fr;gap:10px;margin-top:11px;padding-top:11px;border-top:1px solid rgba(41,49,58,.75)}.limit-head,.limit-meta,.pace{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.limit-head span{color:#b9c1c8;font-size:11px;font-weight:600}.limit-head strong{font:14px "Fragment Mono",monospace;white-space:nowrap}.track{position:relative;height:6px;margin:7px 0 6px;background:#080a0d;border:1px solid #1b2229;border-radius:99px;overflow:visible}.track>i{display:block;max-width:100%;height:100%;background:var(--accent,var(--cyan));border-radius:99px;box-shadow:0 0 18px color-mix(in srgb,var(--accent,var(--cyan)) 30%,transparent);animation:fill .8s cubic-bezier(.2,.8,.2,1) both}.limit.warn .track>i{background:var(--warn)}.limit.danger .track>i{background:var(--danger)}.pace-marker{--marker-color:#a8ffb9;position:absolute;z-index:2;top:50%;left:var(--pace-position);display:flex;height:12px;gap:3px;transform:translate(-50%,-50%);pointer-events:none}.pace-marker b{display:block;width:2px;height:100%;border-radius:2px;background:var(--marker-color);box-shadow:0 0 0 1px #020304,0 0 7px var(--marker-color)}.pace-marker.deficit{--marker-color:#ff776d}.limit-meta{justify-content:flex-end;color:var(--muted);font:11px/1.35 "Fragment Mono",monospace}.limit-meta.split{justify-content:space-between}.pace{margin-top:5px;color:#aab3ba;font:11px/1.35 "Fragment Mono",monospace}.pace strong{color:var(--accent);font-weight:400;white-space:nowrap}.limit.balance{justify-content:center;min-height:45px}.limit.unreadable .limit-head strong{color:var(--warn)}.limit.unreadable .limit-meta,.limit.unreadable .pace{color:#7d868e}.track.stale>i{background:#3a444d;box-shadow:none;opacity:.65}.limit.balance .limit-meta{margin-top:7px}.copilot-usage,.copilot-pool,.limit.spend{display:flex;flex-direction:column;justify-content:center;min-height:50px}.copilot-usage .limit-meta,.copilot-pool .limit-meta,.limit.spend .limit-meta{margin-top:7px}.local-unlimited,.local-usage{min-height:0}
 .setup{display:none;margin-top:14px;padding:20px;background:#0d1115;border:1px solid #34414c;border-radius:12px}.setup.open{display:block;animation:enter .25s both}.setup-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:15px}.setup h2{font-size:18px;margin:0 0 5px}.setup-head p{color:var(--muted);font-size:12px;margin:0}.profile-field{display:flex;flex-direction:column;gap:5px;flex:0 0 210px}.profile-field span{color:#aab3ba;font:10px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.profile-field input{width:100%;padding:9px 10px;color:var(--ink);background:#07090b;border:1px solid #34414c;border-radius:7px;font:12px "Fragment Mono",monospace;outline:none}.profile-field input:focus{border-color:var(--cyan)}.provider-setup{display:grid;grid-template-columns:1fr 1fr;gap:10px;min-width:0}.setup-item{min-width:0;padding:13px;border:1px solid #242c34;border-radius:9px}.setup-label{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}.setup-label b{color:var(--item-accent);font:11px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.1em}.auth-kind{padding:3px 6px;border:1px solid color-mix(in srgb,var(--item-accent) 45%,#242c34);border-radius:99px;color:#cbd3d8;font:9px "Fragment Mono",monospace;text-transform:uppercase}.setup-item p{font-size:12px;line-height:1.45;color:#aab3ba;margin:0 0 10px}.command{display:flex;align-items:center;gap:10px;min-width:0;padding:10px 11px;background:#07090b;border:1px solid #202830;border-radius:8px}.command+.command{margin-top:7px}.command code{flex:1;min-width:0;font:11px "Fragment Mono",monospace;color:#d5dce0;overflow:auto;white-space:nowrap}.copy{margin-left:auto;flex:none;background:none;border:0;color:var(--item-accent,var(--cyan));font:10px "Fragment Mono",monospace;cursor:pointer}.alternatives{margin-top:8px;color:var(--muted);font-size:11px}.alternatives summary{cursor:pointer}.alternatives .command{margin-top:7px}.page-meta{text-align:right;margin-top:14px;color:#6e7881;font:11px "Fragment Mono",monospace}
 @keyframes enter{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes fill{from{width:0}}
-@media(max-width:900px){.accounts,.util-grid{grid-template-columns:1fr}.pace-policy{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:720px){.shell{width:min(100% - 24px,1120px);padding-top:max(16px,env(safe-area-inset-top));padding-bottom:max(64px,env(safe-area-inset-bottom))}.topbar{display:grid;grid-template-columns:1fr auto;gap:12px 8px}.nav{grid-column:1/-1;grid-row:2;width:100%;margin:0;display:grid;grid-template-columns:repeat(3,1fr)}.nav a{display:grid;place-items:center;min-height:44px;padding:7px 5px;text-align:center}.top-actions{margin:0}.button{min-height:44px}.summary{padding-top:18px}.planning,.util-head{align-items:flex-start;flex-direction:column}.best{flex-wrap:wrap;max-width:none}.best em{white-space:normal}.sources{justify-content:flex-start}.pace-policy{grid-template-columns:1fr 1fr}.limits,.provider-setup{grid-template-columns:1fr}.updated{white-space:normal}.setup-head{align-items:stretch;flex-direction:column}.profile-field{flex-basis:auto}}
+@media(max-width:1120px){.accounts{grid-template-columns:repeat(2,minmax(0,1fr))}.util-grid{grid-template-columns:1fr}.pace-policy{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:720px){.shell{width:min(100% - 24px,1460px);padding-top:max(16px,env(safe-area-inset-top));padding-bottom:max(64px,env(safe-area-inset-bottom))}.topbar{display:grid;grid-template-columns:1fr auto;gap:12px 8px}.nav{grid-column:1/-1;grid-row:2;width:100%;margin:0;display:grid;grid-template-columns:repeat(3,1fr)}.nav a{display:grid;place-items:center;min-height:44px;padding:7px 5px;text-align:center}.top-actions{margin:0}.button{min-height:44px}.summary{padding-top:18px}.planning,.util-head{align-items:flex-start;flex-direction:column}.sources{justify-content:flex-start}.accounts,.pace-policy{grid-template-columns:1fr}.limits,.provider-setup{grid-template-columns:1fr}.updated{white-space:normal}.setup-head{align-items:stretch;flex-direction:column}.profile-field{flex-basis:auto}}
 @media(max-width:480px){.topbar{grid-template-columns:1fr}.brand{padding-top:2px}.top-actions{grid-row:2;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%;gap:6px}.top-actions.install-ready{grid-template-columns:repeat(2,minmax(0,1fr))}.top-actions .button{min-width:0;padding:8px 5px;white-space:normal}.nav{grid-row:3}.summary{align-items:flex-start;flex-direction:column;gap:5px}.planning{padding:11px}.sources{flex-wrap:wrap}.account-card{padding:14px}.account-head{display:block;position:relative;padding-right:42px}.account-meta{max-width:none;text-align:left}.account-meta strong{position:absolute;right:0;top:0}.updated{margin-top:8px;font-size:10px}.auth-required{align-items:stretch;flex-direction:column}.auth-required a{text-align:center;min-height:44px;display:grid;place-items:center}.utilization{padding:14px}.util-metrics{gap:5px}.setup{padding:15px}.command{gap:6px;padding:9px}.copy{min-width:44px;min-height:44px}}
 @media(max-width:900px){.pace-policy span:last-child{grid-column:span 2}}
 @media(max-width:720px){.pace-policy span:last-child{grid-column:1/-1}}
-@media(max-width:480px){.sources{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;width:100%}.source{display:grid;grid-template-columns:6px minmax(0,1fr);column-gap:6px;row-gap:1px;min-width:0}.source i{align-self:start;margin-top:3px}.source b,.source em{grid-column:2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.source em{color:#6f7a83}.burn strong{margin-left:auto}.util-metrics{grid-template-columns:minmax(0,.8fr) minmax(0,1fr) minmax(0,1.3fr)}}
+@media(max-width:480px){.sources{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;width:100%}.source{display:grid;grid-template-columns:6px minmax(0,1fr);column-gap:6px;row-gap:1px;min-width:0}.source i{align-self:start;margin-top:3px}.source b,.source em{grid-column:2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.source em{color:#6f7a83}.util-metrics{grid-template-columns:minmax(0,.8fr) minmax(0,1fr) minmax(0,1.3fr)}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 </style></head><body><main class="shell">
 <div class="topbar"><div class="brand"><b>spend</b>watch</div><nav class="nav"><a class="active" href="./">Capacity</a><a href="${esc(spendHref)}">Spend detail</a><a href="${esc(historyHref)}">History</a></nav><div class="top-actions"><button class="button primary" id="install" hidden>Install app</button><button class="button" id="alerts">Enable alerts</button><button class="button" id="refresh">Refresh</button><button class="button primary" id="add">Add account</button></div></div>
 <section class="summary"><h1>Current capacity</h1><span>${accounts.length} account${accounts.length === 1 ? "" : "s"} · ${providerCount} service${providerCount === 1 ? "" : "s"}</span></section>
-<section class="planning">${recommendationHtml}${sourceHtml}</section>
+<section class="planning">${sourceHtml}</section>
 ${authenticationHtml}
 <section class="setup" id="setup"><div class="setup-head"><div><h2>Connect another account</h2><p>Copy one command to a trusted Mac. Provider credentials never reach this dashboard.</p></div><label class="profile-field"><span>Profile name</span><input id="profile-name" value="new-account" maxlength="32" pattern="[a-z0-9][a-z0-9-]*" spellcheck="false"></label></div><div class="provider-setup">
   <div class="setup-item" style="--item-accent:#68d5dc"><div class="setup-label"><b>Codex</b><span class="auth-kind">ChatGPT OAuth</span></div><p>Official browser sign-in. Each named profile stays logged in and refreshes independently.</p><div class="command"><code data-template="spendwatch account add codex --name {name}">spendwatch account add codex --name new-account</code><button class="copy">COPY</button></div><details class="alternatives"><summary>Headless or metered API key</summary><div class="command"><code data-template="spendwatch account add codex --name {name} --device-auth">spendwatch account add codex --name new-account --device-auth</code><button class="copy">COPY</button></div><div class="command"><code data-template="spendwatch account add codex --name {name} --api-key-env OPENAI_API_KEY">spendwatch account add codex --name new-account --api-key-env OPENAI_API_KEY</code><button class="copy">COPY</button></div></details></div>
@@ -830,7 +777,7 @@ addEventListener('beforeinstallprompt',event=>{event.preventDefault();installPro
 addEventListener('appinstalled',hideInstall);
 installButton.addEventListener('click',async()=>{if(!installPrompt)return;await installPrompt.prompt();await installPrompt.userChoice;hideInstall()});
 const relative=(iso,mode)=>{if(!iso)return mode==='reset'?'Reset unavailable':mode==='exhaust'?'Forecast unavailable':'Update unavailable';const t=Date.parse(iso);if(!Number.isFinite(t))return mode==='reset'?'Reset unavailable':mode==='exhaust'?'Forecast unavailable':'Update unavailable';const delta=t-Date.now(),abs=Math.abs(delta);if(mode==='reset'||mode==='exhaust'){if(delta<=0)return mode==='reset'?'Refreshing limit':'Ran out';const duration=compactDuration(abs);if(duration==='now')return mode==='reset'?'Resets now':'Runs out now';return(mode==='reset'?'Resets in ':'Runs out in ')+duration}if(abs<90000)return'Updated just now';return'Updated '+compactDuration(abs)+' ago'};
-const hydrateRelative=(root=document)=>{root.querySelectorAll('[data-reset]').forEach(el=>el.textContent=relative(el.dataset.reset,'reset'));root.querySelectorAll('[data-exhaust]').forEach(el=>el.textContent=relative(el.dataset.exhaust,'exhaust'));root.querySelectorAll('[data-updated]').forEach(el=>el.textContent=relative(el.dataset.updated,'updated')+(el.dataset.devices||''));root.querySelectorAll('[data-source-status]').forEach(el=>{const raw=el.dataset.sourceStatus,timestamp=Date.parse(el.dataset.sourceLast),elapsed=Number.isFinite(timestamp)&&timestamp<=Date.now()?Date.now()-timestamp:Infinity,age=compactDuration(elapsed),status=raw==='snapshot'?'snapshot':raw==='live'&&elapsed<=240000?'live':(raw==='live'||raw==='stale')&&elapsed<=300000?'stale':(raw==='live'||raw==='stale')?'offline':raw,source=el.closest('.source');source?.classList.remove('live','snapshot','stale','offline','error');source?.classList.add(status);el.textContent=status==='live'?'live':status==='snapshot'?'snapshot · on demand '+age:status+' '+age});const generated=root.querySelector('#generated');if(generated)generated.textContent=relative(generated.dataset.generated,'updated')+' · view sync 15s; collection is separate'};
+const hydrateRelative=(root=document)=>{root.querySelectorAll('[data-reset]').forEach(el=>el.textContent=relative(el.dataset.reset,'reset'));root.querySelectorAll('[data-exhaust]').forEach(el=>el.textContent=relative(el.dataset.exhaust,'exhaust'));root.querySelectorAll('[data-captured]').forEach(el=>el.textContent=relative(el.dataset.captured,'updated').replace(/^Updated/,'Captured'));root.querySelectorAll('[data-source-status]').forEach(el=>{const raw=el.dataset.sourceStatus,timestamp=Date.parse(el.dataset.sourceLast),elapsed=Number.isFinite(timestamp)&&timestamp<=Date.now()?Date.now()-timestamp:Infinity,age=compactDuration(elapsed),status=raw==='snapshot'?'snapshot':raw==='live'&&elapsed<=240000?'live':(raw==='live'||raw==='stale')&&elapsed<=300000?'stale':(raw==='live'||raw==='stale')?'offline':raw,source=el.closest('.source');source?.classList.remove('live','snapshot','stale','offline','error');source?.classList.add(status);el.textContent=status==='live'?'live':status==='snapshot'?'snapshot · on demand '+age:status+' '+age});const generated=root.querySelector('#generated');if(generated)generated.textContent=relative(generated.dataset.generated,'updated')+' · view sync 15s; collection is separate'};
 const syncAttrs=(current,next)=>{for(const attr of [...current.attributes])if(!next.hasAttribute(attr.name))current.removeAttribute(attr.name);for(const attr of [...next.attributes])if(current.getAttribute(attr.name)!==attr.value)current.setAttribute(attr.name,attr.value)};
 const patchNode=(current,next)=>{if(current.nodeType!==next.nodeType||current.nodeName!==next.nodeName){current.replaceWith(next.cloneNode(true));return}if(current.nodeType===Node.TEXT_NODE){if(current.nodeValue!==next.nodeValue)current.nodeValue=next.nodeValue;return}syncAttrs(current,next);const before=[...current.childNodes],after=[...next.childNodes],shared=Math.min(before.length,after.length);for(let i=0;i<shared;i++)patchNode(before[i],after[i]);for(let i=before.length-1;i>=after.length;i--)before[i].remove();for(let i=shared;i<after.length;i++)current.append(after[i].cloneNode(true))};
 const refreshButton=document.querySelector('#refresh');let refreshing=false;

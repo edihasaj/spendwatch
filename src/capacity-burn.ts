@@ -134,7 +134,8 @@ export function loadBurnForecasts(
         sampled_at_ms AS sampledAt, MAX(used_percent) AS usedPercent, MAX(resets_at_ms) AS resetsAt
       FROM capacity_history
       WHERE ${windows.map(() =>
-        "(provider = ? AND account = ? COLLATE NOCASE AND window_kind = ? AND sampled_at_ms >= ?)").join(" OR ")}
+        "(provider = ? AND account = ? COLLATE NOCASE AND window_kind = ? AND sampled_at_ms >= ?" +
+        " AND NOT (provider = 'codex' AND source = 'codex-session-log'))").join(" OR ")}
       GROUP BY provider, account COLLATE NOCASE, window_kind, sampled_at_ms
       ORDER BY sampled_at_ms
     `).all(...windows.flatMap(({ account, kind, sinceMs }) => [account.provider, account.email, kind, sinceMs]));
