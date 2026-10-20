@@ -11,6 +11,12 @@ import type { Period } from "./periods";
 import { groupImported, newestPopulated, primaryPeriod, resolvePeriods } from "./report-window";
 import { loadMonthlySpend, writeMonthlySpend } from "./spend-history";
 import { loadArchivedReports } from "./spend-report-archive";
+import {
+  attachCaptureCoverage,
+  loadCaptureGuards,
+  type CaptureArtifactRef,
+  type CaptureGuard,
+} from "./report-coverage";
 import { importCapacityHistory, loadCapacityHistory, writeCapacitySnapshot } from "./capacity-db";
 import { runCapacityCommand } from "./capacity-cli";
 import { loadCapacityDashboard } from "./capacity-dashboard";
@@ -26,13 +32,14 @@ import { renderLimitsHtml, renderLimitsText, type CapacityProvider } from "./lim
 import { attachSessionEquivalentForecasts } from "./session-equivalents";
 import { serveDashboard, testBackgroundPush } from "./push-server";
 import { renderBrief, renderOverview, renderReport } from "./render";
-import { labelReports, loadReports, type AccountGrouping } from "./reports";
+import { labelReports, loadReportEvidence, loadReports, type AccountGrouping } from "./reports";
 import { settledAmong } from "./gateway-settle";
 import { runRouteCommand } from "./route-cli";
 import { runRunCommand } from "./run-cli";
 import { runEvalCommand } from "./eval-cli";
 import { build, pollWatched, reportsByPeriod, reportsFrom, watchPeriod } from "./build";
 import { discover } from "./sources";
+import { configuredCaptureDir, historyCoverageOptions, publishCaptures, captureRefsForReports } from "./capture-cli";
 import { reportOperationalError } from "./telemetry";
 
 interface Args {
@@ -248,6 +255,10 @@ options:
   --public-dir PATH server dashboard directory
   --vapid-subject S Web Push contact URI, usually mailto:address
 
+environment:
+  SPENDWATCH_CAPTURE_GUARDS  trusted JSON file of historical-coverage guards (report --input --sqlite)
+  SPENDWATCH_CAPTURE_DIR     trusted .../captures dir for immutable latest-scan artifacts (report --input --html)
+
 sources:
   claude   ~/.claude/projects/**/*.jsonl        (token usage ✓)
   codex    ~/.codex/sessions/**/rollout-*.jsonl (token usage ✓)
@@ -278,20 +289,45 @@ async function report(a: Args) {
   const periods = resolvePeriods(a, nowMs());
   const primary = primaryPeriod(periods);
   const built = a.inputs.length ? undefined : build(a, periods);
+  const imported = a.inputs.length ? loadReportEvidence(a.inputs) : [];
   // Imported reports are already aggregated, so the period each machine recorded
   // is the only truth about which month they belong to. `--label` stays a
   // local-export concern: those reports were labelled when they were written.
   let byPeriod = built
     ? new Map([...reportsByPeriod(built, a)].map(([key, rows]) => [key, labelReports(rows, a.label)]))
-    : groupImported(loadReports(a.inputs), primary);
+    : groupImported(imported.map((entry) => entry.report), primary);
   if (!a.inputs.length && a.installationId) {
     byPeriod = new Map([...byPeriod].map(([key, rows]) => [key, rows.map((row) => ({ ...row, installationId: a.installationId }))]));
   }
+  // Trusted guard configuration loads before anything is written, so a malformed or stale guards file stops
+  // the whole run instead of silently archiving a guarded month without its guard.
+  const guards = a.inputs.length && a.sqlite && !a.json ? loadCaptureGuards() : undefined;
+  // Individual capture artifacts publish whenever the runtime names a capture directory, with or without
+  // guards; the main page is only written after every artifact of the run is durable.
+  const captureDir = a.inputs.length && !a.json && (a.html !== undefined || a.open)
+    ? configuredCaptureDir(a.html ?? "spendwatch-report.html")
+    : undefined;
+  const preservedIncoming = [...byPeriod.values()].flat();
+  let captureArtifacts: CaptureArtifactRef[] = [];
+  if (captureDir) {
+    const provenance = new Map(imported.map((entry) => [entry.report, entry]));
+    captureArtifacts = publishCaptures(captureDir, preservedIncoming, preservedIncoming.map((row) => {
+      const evidence = provenance.get(row);
+      if (!evidence) throw new Error("Capture import provenance is missing");
+      return evidence;
+    }));
+  }
   if (a.sqlite && !a.json) {
-    const incoming = [...byPeriod.values()].flat();
-    writeMonthlySpend(resolve(a.sqlite), incoming, { generatedAt: nowMs() });
+    const incoming = preservedIncoming;
+    writeMonthlySpend(resolve(a.sqlite), incoming, { generatedAt: nowMs(), ...(guards ? { guards } : {}) });
     if (incoming.every((row) => row.period?.month) && !a.daysExplicit && !a.project && !a.account && !a.agents) {
       byPeriod = groupImported(loadArchivedReports(resolve(a.sqlite)), primary);
+      // Render-only coverage: what the archive retained, and which published latest scan differs from it.
+      if (guards?.length) {
+        byPeriod = new Map([...byPeriod].map(([key, rows]) => [key, attachCaptureCoverage({
+          path: resolve(a.sqlite!), guards, reports: rows, latest: incoming, artifacts: captureArtifacts,
+        })]));
+      }
     }
   }
   // An import is a fixed set of already-measured months, so with no month asked
@@ -347,6 +383,7 @@ async function report(a: Args) {
       accountGrouping: a.accountGrouping,
       limitsHref: a.limitsHref,
       historyHref: a.historyHref,
+      captureRefs: captureRefsForReports(a.sqlite ? resolve(a.sqlite) : undefined, reports, guards ?? [], preservedIncoming, captureArtifacts),
     }));
     process.stdout.write(`\n\x1b[2m→ HTML report written to ${out}\x1b[0m\n`);
     if (a.open) Bun.spawn(["open", out]);
@@ -383,6 +420,7 @@ async function limits(a: Args) {
         capacityHref: a.html ? relative(dirname(historyOut), resolve(a.html)) || "./" : "./",
         spendHref: a.spendHref,
         months: loadMonthlySpend(out),
+        coverage: historyCoverageOptions(out),
       }));
       notes.push(`\x1b[2m→ History HTML written to ${historyOut}\x1b[0m\n`);
     }

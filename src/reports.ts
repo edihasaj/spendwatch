@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import type { AccountRow, ModelRow, PromptRow, Report, SampleRow, TargetRow, ToolRow } from "./aggregate";
 import { mergeProjectRows } from "./projects";
 import type { TokenDays } from "./token-days";
@@ -42,6 +43,27 @@ export function loadReports(paths: string[]): Report[] {
     const values = Array.isArray(parsed) ? parsed : [parsed];
     if (!values.every(isReport)) throw new Error(`invalid spendwatch report: ${path}`);
     return values.map(normalizeTokenTotals);
+  });
+}
+
+/** Exact import provenance for immutable capture artifacts. */
+export interface ReportEvidence {
+  report: Report;
+  payloadSha256: string;
+  index: number;
+  rawJson: string;
+}
+
+export function loadReportEvidence(paths: string[]): ReportEvidence[] {
+  return paths.flatMap((path) => {
+    const payload = readFileSync(path, "utf8");
+    const parsed: unknown = JSON.parse(payload);
+    const values = Array.isArray(parsed) ? parsed : [parsed];
+    if (!values.every(isReport)) throw new Error(`invalid spendwatch report: ${path}`);
+    const payloadSha256 = createHash("sha256").update(payload, "utf8").digest("hex");
+    return values.map((value, index) => ({
+      report: normalizeTokenTotals(value), payloadSha256, index, rawJson: JSON.stringify(value),
+    }));
   });
 }
 

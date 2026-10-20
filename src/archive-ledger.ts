@@ -15,6 +15,16 @@ type RoutedSource = (typeof ROUTED_SOURCES)[number];
 
 export type Verdict = "accept" | "reject";
 
+/**
+ * Whether a stored read of a month and archive label sits under a historical-coverage guard (report-coverage.ts).
+ * A takeover that involves a guarded member is rejected as a whole: the guarded month is preserved whatever the
+ * other sources do, so letting just one of them move would split the routed turns across placements. The
+ * callback verifies the guard's scope and baseline hash against what is stored and fails closed on a mismatch.
+ */
+export interface GuardedReads {
+  isGuarded(month: string, archiveLabel: string): boolean;
+}
+
 interface StoredRead {
   observed: number;
   routed: number;
@@ -29,6 +39,8 @@ interface Member {
   rest: Report[];
   /** What the archive holds for it, in either table. */
   stored: StoredRead[];
+  /** The label its rows are stored under, when the archive has bound this installation to one. */
+  archived?: string;
 }
 
 const observedOf = (report: Report): number => report.observedCalls ?? report.apiCalls;
@@ -56,7 +68,7 @@ const fuller = (report: Report, stored: StoredRead): boolean =>
  * routed sources: "accept" writes each of them whatever is stored, "reject" writes none of them. A report this
  * returns nothing for is archived on its own, as before.
  */
-export function planLedgerMonths(db: Database, reports: Report[]): Map<Report, Verdict> {
+export function planLedgerMonths(db: Database, reports: Report[], guardedReads?: GuardedReads): Map<Report, Verdict> {
   const groups = new Map<string, { month: string; machine: string; installationId?: string; incoming: Map<RoutedSource, Report[]> }>();
   for (const report of reports) {
     if (!report.period?.month || observedOf(report) <= 0) continue;
@@ -80,7 +92,7 @@ export function planLedgerMonths(db: Database, reports: Report[]): Map<Report, V
         : [];
       // One installation's month offered twice in one run: the fullest offer speaks for it.
       const offers = [...(group.incoming.get(source) ?? [])].sort((a, b) => observedOf(b) - observedOf(a));
-      return { source, incoming: offers[0], rest: offers.slice(1), stored };
+      return { source, incoming: offers[0], rest: offers.slice(1), stored, archived };
     });
     // Codex is where routed turns leave from. Claude and Copilot matter when routed turns reach them (or, for Claude,
     // leave its transcripts), or when this run did not read them, so nothing says whether they do; a read of one that
@@ -89,6 +101,15 @@ export function planLedgerMonths(db: Database, reports: Report[]): Map<Report, V
       || m.stored.some((row) => row.routed > 0) || (!m.incoming && m.stored.length > 0));
     const takesOver = involved.some((m) => routedOf(m.incoming) > 0) && involved.some((m) => m.stored.some((row) => !row.ledger));
     if (!takesOver) continue;
+    // A guarded member cannot take part in a forced move, so none of them does; each source keeps its stored
+    // month and falls back to the ordinary per-source rule rather than half of the month moving.
+    if (guardedReads && involved.some((m) => guardedReads.isGuarded(group.month, m.archived ?? m.source))) {
+      for (const member of involved) {
+        if (member.incoming) verdicts.set(member.incoming, "reject");
+        for (const extra of member.rest) verdicts.set(extra, "reject");
+      }
+      continue;
+    }
     // Every source that holds a read of this month has to offer a fuller one, or none of them changes.
     const together = involved.every((m) => m.incoming ? m.stored.every((row) => fuller(m.incoming!, row)) : !m.stored.length);
     for (const m of involved) {

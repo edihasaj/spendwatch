@@ -111,6 +111,11 @@ export interface Report {
   restoredFromInstallationId?: string;
   /** Overlapping restored snapshots are representative; an exact historical union is unavailable. */
   lineageWarning?: string;
+  /**
+   * Render-only: this archived month is protected by a historical-coverage guard and the latest scan differs.
+   * Attached when a page is rendered, never archived, and never merged into the totals above. See report-coverage.ts.
+   */
+  captureCoverage?: import("./report-coverage").CaptureCoverage;
   /** Window this report covers. Absent on reports written before periods existed. */
   period?: ReportPeriod;
   totalTokens: number;
