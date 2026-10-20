@@ -372,7 +372,10 @@ async function limits(a: Args) {
       const imported = importCapacityHistory(out, a.historyInputs);
       notes.push(`\x1b[2m→ Capacity history (${imported.inserted} new rows from ${imported.accepted} records) imported\x1b[0m\n`);
     }
-    attachSessionEquivalentForecasts(out, accounts, nowMs());
+    // Session-equivalent forecasts are retained in the JSON contract only.
+    // HTML and terminal limits do not render them, so skip their history query
+    // on the time-sensitive collector export path.
+    if (a.json) attachSessionEquivalentForecasts(out, accounts, nowMs());
     attachBurnForecasts(out, accounts, nowMs());
     if (a.historyHtml) {
       const historyOut = resolve(a.historyHtml);
@@ -391,8 +394,8 @@ async function limits(a: Args) {
     writeFileSync(out, renderLimitsHtml(accounts, { generatedAt: nowMs(), spendHref: a.spendHref, historyHref: a.historyHref, sources: dashboard.sources, authentication: dashboard.authentication }));
     notes.push(`\x1b[2m→ Limits HTML written to ${out}\x1b[0m\n`);
   }
-  // Forecasts are attached from the snapshot database, so the summary is written
-  // only after that pass; otherwise the terminal output lags the dashboard.
+  // Burn remains part of the terminal summary. JSON also carries its
+  // session-equivalent forecast when a snapshot database was supplied.
   process.stdout.write(a.json ? JSON.stringify(accounts, null, 2) + "\n" : renderLimitsText(accounts, nowMs()));
   for (const note of notes) process.stdout.write(note);
 }
