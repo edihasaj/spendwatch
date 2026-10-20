@@ -221,17 +221,23 @@ test("a valid newer coordinator row repairs an existing account with no source t
   expect(html).toContain("<strong>30% used</strong>");
 });
 
-test("an initial forecast read failure closes the page reader so the next request reconnects", () => {
+test("the renderer needs no forecast tables and reconnects after a poll-reader failure", () => {
   const dir = tempDir("spendwatch-page-reader-retry-");
   const input = join(dir, "limits.json");
   const database = join(dir, "capacity.db");
   const now = Date.now();
   writeFileSync(input, JSON.stringify([providerSnapshot("codex", "work@example.com", 10, now - 60_000)]));
-  const empty = new Database(database, { create: true });
-  empty.close();
+  const invalidPoll = new Database(database, { create: true });
+  invalidPoll.exec("CREATE TABLE capacity_poll (invalid_column TEXT)");
+  invalidPoll.close();
   const render = createCapacityPageRenderer(input, database);
 
-  expect(() => render(now)).toThrow(/capacity_history/i);
-  writeCapacitySnapshot(database, [], { collectedAt: now });
+  expect(() => render(now)).toThrow(/snapshot/i);
+  const repaired = new Database(database, { create: true });
+  repaired.exec("DROP TABLE capacity_poll");
+  repaired.close();
+
+  // Rendering now needs neither capacity_history nor session-equivalent tables:
+  // it holds one page reader only for the optional shared poll overlay.
   expect(render(now)).toContain("<strong>10% used</strong>");
 });
