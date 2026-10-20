@@ -29,7 +29,7 @@ test("uses an explicit Codex binary override", () => {
   expect(codexBinary("/custom/codex", "/Users/edi", () => false)).toBe("/custom/codex");
 });
 
-test("maps the official Codex rate-limit response to dashboard capacity", () => {
+test("uses the generic Codex pool without stitching in model-specific windows", () => {
   const now = Date.parse("2026-08-16T10:00:00Z");
   const result = capacityResultFromAppServer(
     { type: "chatgpt", email: "edihasaj@gmail.com", planType: "pro" },
@@ -48,9 +48,42 @@ test("maps the official Codex rate-limit response to dashboard capacity", () => 
   expect(result?.account).toBe("edihasaj@gmail.com");
   expect(result?.usage.primary?.usedPercent).toBe(12);
   expect(result?.usage.primary?.windowMinutes).toBe(10080);
-  expect(result?.usage.secondary?.usedPercent).toBe(99);
-  expect(result?.usage.secondary?.windowMinutes).toBe(300);
+  expect(result?.usage.secondary).toBeNull();
+  expect(result?.usage.quotaPool).toBe("codex");
   expect(result?.usage.updatedAt).toBe("2026-08-16T10:00:00.000Z");
+});
+
+test("chooses one deterministic model-specific Codex pool only when generic and legacy pools are absent", () => {
+  const now = Date.parse("2026-08-16T10:00:00Z");
+  const result = capacityResultFromAppServer(
+    { type: "chatgpt", email: "edi@example.com", planType: "pro" },
+    {
+      rateLimitsByLimitId: {
+        codex_zebra: { primary: { usedPercent: 90, windowDurationMins: 300 } },
+        codex_albatross: {
+          primary: { usedPercent: 12, windowDurationMins: 10080 },
+          secondary: { usedPercent: 24, windowDurationMins: 300 },
+        },
+      },
+    },
+    now,
+  );
+  expect(result?.usage.quotaPool).toBe("codex_albatross");
+  expect(result?.usage.primary).toEqual({ usedPercent: 12, windowMinutes: 10080, resetsAt: undefined });
+  expect(result?.usage.secondary).toEqual({ usedPercent: 24, windowMinutes: 300, resetsAt: undefined });
+});
+
+test("uses legacy windows as one coherent pool before any model-specific pool", () => {
+  const result = capacityResultFromAppServer(
+    { type: "chatgpt", email: "edi@example.com", planType: "pro" },
+    {
+      rateLimits: { primary: { usedPercent: 33, windowDurationMins: 10080 } },
+      rateLimitsByLimitId: { codex_bengalfox: { primary: { usedPercent: 99, windowDurationMins: 10080 } } },
+    },
+    Date.parse("2026-08-16T10:00:00Z"),
+  );
+  expect(result?.usage.quotaPool).toBe("legacy");
+  expect(result?.usage.primary?.usedPercent).toBe(33);
 });
 
 test("keeps a returned five-hour Codex window alongside the weekly window", () => {

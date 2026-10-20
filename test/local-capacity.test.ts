@@ -70,23 +70,23 @@ describe("local Qwen capacity", () => {
     });
     const card = html.slice(html.indexOf('data-account-key="qwen:local qwen"'));
     const qwenCard = card.slice(0, card.indexOf("</article>"));
-    expect(qwenCard).toContain("Local capacity");
+    expect(qwenCard).toContain("Local Qwen");
     expect(qwenCard).toContain("Unlimited");
-    expect(qwenCard).toContain("qwen3.8-flash-next");
-    expect(qwenCard).toContain("Availability unknown");
     expect(qwenCard).toContain("12.3K tokens");
     expect(qwenCard).toContain("67.9K tokens");
-    expect(qwenCard).toContain("$0 provider fee");
-    expect(qwenCard).toContain("studio");
+    expect(qwenCard).not.toContain("qwen3.8-flash-next");
+    expect(qwenCard).not.toContain("Availability unknown");
+    expect(qwenCard).not.toContain("$0 provider fee");
+    expect(qwenCard).not.toContain("studio");
     expect(qwenCard).not.toContain("% left");
     expect(qwenCard).not.toContain("progressbar");
     expect(qwenCard).not.toContain("Reset time");
     expect(renderLimitsText([account])).toContain(
-      "Qwen · Local Qwen\tunlimited self-hosted\tqwen3.8-flash-next\tavailability unknown\ttoken coverage: studio\t24h 12.3K tokens\t30d 67.9K tokens\t$0 provider fee",
+      "Qwen · Local Qwen\tUnlimited\tMeasured 24h 12.3K tokens\tMeasured 30d 67.9K tokens",
     );
   });
 
-  test("marks missing client reports as partial instead of turning them into zero usage", () => {
+  test("keeps measured usage distinct from unavailable usage without showing coverage prose", () => {
     const { spend: _missing, ...missingReport } = qwen("macbook", "2026-10-19T10:06:00Z", 999, 999, true);
     const account = normalizeCodexLimits([
       qwen("studio", "2026-10-19T10:05:00Z", 12, 34, true),
@@ -97,13 +97,14 @@ describe("local Qwen capacity", () => {
     expect(account.local?.unmeasuredDevices).toEqual(["macbook"]);
 
     const html = renderLimitsHtml([account], { generatedAt: Date.parse("2026-10-19T10:07:00Z") });
-    expect(html).toContain("Partial client reports");
-    expect(html).toContain("missing macbook");
+    expect(html).toContain("Measured · 24h");
+    expect(html).not.toContain("Partial client reports");
+    expect(html).not.toContain("missing macbook");
 
     const unavailable = normalizeCodexLimits([missingReport])[0]!;
     expect(unavailable.spend).toBeUndefined();
     expect(renderLimitsHtml([unavailable], { generatedAt: Date.parse("2026-10-19T10:07:00Z") }))
-      .toContain("Awaiting a successful client report");
+      .toContain("Measured usage</span><strong>Unavailable");
   });
 
   test("rejects malformed token totals instead of coercing them to measured zero", () => {

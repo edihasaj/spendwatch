@@ -28,6 +28,8 @@ import {
   parseFreeCodexLocalQwen,
   settleFreeCodexLocalQwen,
 } from "./local-qwen-sources";
+import { loadCodexAccountAttributor, UNKNOWN_CODEX_ACCOUNT, type AccountAttributionBasis, type CodexAccountAttributor } from "./codex-account-attribution";
+import { selectCodexRolloutCopies } from "./codex-rollout-copies";
 
 export interface SourceFile {
   path: string;
@@ -36,6 +38,8 @@ export interface SourceFile {
   project: string;
   source: string;
   account: string;
+  accountBasis?: AccountAttributionBasis;
+  codexAttributor?: CodexAccountAttributor;
   parse: (line: string, ctx: any) => Iterable<Event>;
   ctx: any;
   /**
@@ -181,10 +185,14 @@ function isFreeCodexHome(sessionsDir: string): boolean {
 
 // Codex account: email tagged with the profile home it was read from, e.g.
 // "edihasaj@gmail.com (secondary)".
-function codexAccount(sessionsDir: string): string {
+function codexAccount(sessionsDir: string): { account: string; basis: AccountAttributionBasis } {
   const profile = codexProfile(sessionsDir);
   const { email } = codexClaims(sessionsDir);
-  return email ? `${email} (${profile})` : profile;
+  // The default home is continuously overwritten by Codex login. Its current
+  // credential cannot prove historical calls, whereas a named profile is an
+  // explicit local route and remains useful fallback evidence.
+  if (profile === "main") return { account: UNKNOWN_CODEX_ACCOUNT, basis: "unknown" };
+  return { account: email ? `${email} (${profile})` : profile, basis: "profile" };
 }
 
 // Grok profile label: ~/.grok → "main", ~/.grok-work → "work". Mirrors Codex so
@@ -234,16 +242,16 @@ function safeReaddir(d: string): string[] {
   }
 }
 
-// Every "<home>/<dot><suffix>/sessions" profile directory, default home first,
+// Every "<home>/<dot><suffix>/<leaf>" profile directory, default home first,
 // with symlinked duplicates collapsed to one root.
-function profileRoots(home: string, agent: string, dot: string): RootCfg[] {
+function profileRoots(home: string, agent: string, dot: string, leaf = "sessions"): RootCfg[] {
   const names = safeReaddir(home)
     .filter((name) => name === dot || name.startsWith(`${dot}-`))
     .sort((a, b) => (a === dot ? -1 : b === dot ? 1 : a.localeCompare(b)));
   const seen = new Set<string>();
   const roots: RootCfg[] = [];
   for (const name of names) {
-    const path = join(home, name, "sessions");
+    const path = join(home, name, leaf);
     if (!existsSync(path)) continue;
     let canonical: string;
     try {
@@ -267,16 +275,18 @@ function realpathKey(path: string): string | undefined {
 }
 
 export function defaultCodexRoots(home = homedir()): RootCfg[] {
-  // Codex moves a rollout to `archived_sessions` instead of deleting it, so the
-  // same basename can sit in both. Listing the live roots first keeps that copy,
-  // which the rollout-name dedupe in `discover` then bills exactly once.
+  // Codex moves a rollout to `archived_sessions` instead of deleting it. Keep
+  // every profile's live and archive roots, including homes retained only as an
+  // archive; `discover` verifies duplicate basename prefixes before selecting.
   const qwenLive = defaultLocalQwenRoots(home).map((root) => ({ agent: "codex", ...root }));
-  const live = [...profileRoots(home, "codex", ".codex"), ...qwenLive];
+  const codexLive = profileRoots(home, "codex", ".codex");
+  const codexArchived = profileRoots(home, "codex", ".codex", "archived_sessions");
+  const live = [...codexLive, ...qwenLive];
   // A worker refresh may retain only archived rollouts for an older generation.
   // Those homes have no live `sessions` directory, so add them separately.
   const qwenArchived = defaultLocalQwenRoots(home, "archived_sessions").map((root) => ({ agent: "codex", ...root }));
   const seen = new Set<string>();
-  return [...live, ...live.map((root) => ({ agent: "codex", path: join(dirname(root.path), "archived_sessions") })), ...qwenArchived]
+  return [...live, ...codexArchived, ...qwenArchived]
     .filter((root) => {
       if (!existsSync(root.path)) return false;
       const canonical = realpathKey(root.path);
@@ -306,10 +316,11 @@ function collectClaude(dir: string, account: string, sinceMs: number, project?: 
   return collectClaudeSourceFiles(dir, account || claudeAccount(dir), sinceMs, project, gateway);
 }
 
-function collectCodex(dir: string, account: string, sinceMs: number, gateway?: GatewayLedger, localQwenOnly = false): SourceFile[] {
+function collectCodex(dir: string, account: string, sinceMs: number, gateway?: GatewayLedger, localQwenOnly = false, codexAttributor?: CodexAccountAttributor): SourceFile[] {
   const files: SourceFile[] = [];
   if (!existsSync(dir)) return files;
-  const acct = account || (localQwenOnly || isLocalQwenWorkerRoot(dir) ? "Local Qwen" : codexAccount(dir));
+  const fallback = account ? { account, basis: "configured-route" as const } :
+    (localQwenOnly || isLocalQwenWorkerRoot(dir) ? { account: "Local Qwen", basis: "profile" as const } : codexAccount(dir));
   for (const path of walkJsonl(dir)) {
     if (!path.includes("rollout-")) continue;
     if (!mtimeOk(path, sinceMs)) continue;
@@ -317,7 +328,8 @@ function collectCodex(dir: string, account: string, sinceMs: number, gateway?: G
     let renewed = false;
     // A rollout keeps its identity when Codex moves it into archived_sessions, so a watching reader carries on
     // from its offset instead of reading the file again as a new one.
-    files.push({ path, key: `codex:${basename(path)}`, project: "?", source: "codex", account: acct,
+    files.push({ path, key: `codex:${basename(path)}`, project: "?", source: "codex", account: fallback.account, accountBasis: fallback.basis,
+      ...(localQwenOnly ? {} : { codexAttributor }),
       parse: localQwenOnly ? parseFreeCodexLocalQwen : parseCodexLine, ctx,
       settle: (kept: CodexCtx, final: boolean) => localQwenOnly
         ? settleFreeCodexLocalQwen(kept, final)
@@ -389,6 +401,10 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   const gatewayRoot = cfg?.find((r) => r.agent === "gateway");
   const gatewayOn = process.env.SPENDWATCH_GATEWAY_SOURCE !== "off" && (cfg ? !!gatewayRoot : true);
   const gateway = gatewayOn ? GatewayIndex.load({ sinceMs: opts.sinceMs, stateDir: gatewayRoot?.path }) : undefined;
+  // Attribution reads the same private gateway credential and ledger scope as
+  // Codex itself. A Claude-only request or an explicit gateway opt-out must
+  // not inspect either one.
+  const codexAttributor = want("codex") && gatewayOn ? loadCodexAccountAttributor(opts.sinceMs, gatewayRoot?.path) : undefined;
   const ledger = !!gateway?.present;
 
   // A report must not depend on which agents were asked for: the ledger bills its `msg_gl_*` rows for Claude Code
@@ -423,26 +439,19 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
     // in defaultCodexRoots cannot catch it. Bill each rollout id only once, and
     // collect named profiles first so a shared rollout is credited to the real
     // account (primary/secondary) rather than the ~/.codex playground.
-    const seenRollouts = new Set<string>();
     const isPlayground = (root: RootCfg) => basename(dirname(root.path)) === ".codex";
     const ordered = [...codexRoots].sort((a, b) => {
       const freeDifference = Number(isFreeCodexHome(a.path)) - Number(isFreeCodexHome(b.path));
       return freeDifference || Number(isPlayground(a)) - Number(isPlayground(b));
     });
-    const files = ordered
-      .flatMap((r) => collectCodex(
-        r.path,
-        r.account ?? "",
-        opts.sinceMs,
-        gateway,
-        isFreeCodexHome(r.path) || isLocalQwenWorkerRoot(r.path),
-      ))
-      .filter((file) => {
-        const rollout = basename(file.path);
-        if (seenRollouts.has(rollout)) return false;
-        seenRollouts.add(rollout);
-        return true;
-      });
+    const files = selectCodexRolloutCopies(ordered.flatMap((r, priority) => collectCodex(
+      r.path,
+      r.account ?? "",
+      opts.sinceMs,
+      gateway,
+      isFreeCodexHome(r.path) || isLocalQwenWorkerRoot(r.path),
+      codexAttributor,
+    ).map((file) => ({ path: file.path, priority, value: file }))));
     const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger, ...(claimOnly ? { claimOnly } : {}), files,
       ...(gateway ? { carry: (kept: CodexCtx) => carryLedger(kept, gateway) } : {}) };
     // Asked after the rollouts have been read, because only the parser knows what a rollout recorded.

@@ -42,12 +42,19 @@ describe("capacity history", () => {
     const history = loadCapacityHistory(db, Date.parse("2026-08-10T00:00:00Z"));
     expect(history.sampleCount).toBe(5);
     expect(history.firstSampleAt).toBe(Date.parse("2026-06-12T10:00:00Z"));
-    expect(history.series.map((series) => series.kind).sort()).toEqual(["session", "weekly"]);
-    expect(history.series.every((series) => series.sampleCount === 2)).toBe(true);
+    expect(history.series.map((series) => series.kind).sort()).toEqual(["session", "session", "weekly", "weekly"]);
+    expect(history.series.every((series) => series.sampleCount === 1)).toBe(true);
+    expect(history.series.filter((series) => series.kind === "session").map((series) => ({
+      account: series.account, values: series.points.map((point) => point.value),
+    })).sort((a, b) => a.account.localeCompare(b.account))).toEqual([
+      { account: "Unverified historical · work@example.com", values: [10] },
+      { account: "work@example.com", values: [25] },
+    ]);
     const html = renderHistoryHtml(history, { capacityHref: "capacity.html" });
     expect(html).toContain("Past month");
     expect(html).toContain("Older verified archives remain restorable");
     expect(html).toContain("work@example.com");
+    expect(html).toContain("Historical Codex session-log account labels are unverified");
     expect(html).toContain('href="capacity.html">Capacity</a>');
   });
 
@@ -246,6 +253,9 @@ describe("capacity history", () => {
     expect(current.sessionEquivalent?.sampleCount).toBe(3);
     expect(current.sessionEquivalent?.medianWeeklyBurn).toBe(10);
     expect(current.sessionEquivalent?.estimatedQuotasLeft).toBe(6);
-    expect(renderLimitsHtml([current], { generatedAt: Date.parse("2026-08-10T15:00:00Z") })).toContain("Est. 6 session quotas left");
+    const html = renderLimitsHtml([current], { generatedAt: Date.parse("2026-08-10T15:00:00Z") });
+    expect(html).toContain("<strong>40% used</strong>");
+    expect(html).toContain('aria-label="Weekly window utilization"');
+    expect(html).not.toContain("session quotas left");
   });
 });
