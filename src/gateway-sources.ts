@@ -17,13 +17,24 @@ export function carryLedger(kept: { gateway?: GatewayIndex; decisions?: LedgerDe
 }
 
 /** One Claude Code transcript, read against `gateway` with the parser state `settleClaudeRouted` decides on. */
-export function claudeFile(path: string, projectName: string, account: string, gateway?: GatewayIndex): SourceFile {
+export function claudeFile(path: string, projectName: string, account: string, gateway?: GatewayIndex, aliases: ReadonlyMap<string, string> = new Map()): SourceFile {
   // A marked message is settled against the ledger, as a rollout's marked record is: what one line decided, and
   // what a later line of the same message repeats, belongs to this file's parser, which watch keeps between ticks.
   const ctx = newClaudeCtx(gateway);
   let renewed = false;
-  return { path, project: projectName, source: "claude", account, parse: (text: string, kept: ClaudeCtx) => parseLine(text, kept), ctx,
-    settle: (kept: ClaudeCtx, final: boolean) => settleClaudeRouted(kept, final),
+  const normalizeModel = (model: string): string => {
+    const direct = aliases.get(model);
+    if (direct) return direct;
+    const suffix = ` (${UNCONFIRMED})`;
+    if (!model.endsWith(suffix)) return model;
+    const base = model.slice(0, -suffix.length);
+    return aliases.has(base) ? `${aliases.get(base)}${suffix}` : model;
+  };
+  const normalize = function* (events: Iterable<import("./parse").Event>) {
+    for (const event of events) yield event.t === "api" && event.model ? { ...event, model: normalizeModel(event.model) } : event;
+  };
+  return { path, project: projectName, source: "claude", account, parse: (text: string, kept: ClaudeCtx) => normalize(parseLine(text, kept)), ctx,
+    settle: (kept: ClaudeCtx, final: boolean) => normalize(settleClaudeRouted(kept, final)),
     // Once per discovery: what the kept state decided since is already known to this ledger.
     renew: (kept: ClaudeCtx) => { if (renewed) return; renewed = true; carryLedger(kept, ctx.gateway); } };
 }
