@@ -1,8 +1,6 @@
 import { statSync } from "node:fs";
-import { attachBurnForecasts } from "./capacity-burn";
 import { loadCapacityDashboard, type CapacityDashboard } from "./capacity-dashboard";
 import { normalizeCodexLimits, renderLimitsHtml, type CodexLimitAccount } from "./limits";
-import { attachSessionEquivalentForecasts } from "./session-equivalents";
 import { Database } from "./database";
 import { pollKey, sanitizePollSnapshot } from "./capacity-poll";
 
@@ -80,18 +78,13 @@ export function createCapacityPageRenderer(capacityPath: string, databasePath: s
       const signature = `${snapshot.ino}:${snapshot.size}:${snapshot.mtimeMs}:${snapshot.ctimeMs}`;
       if (!cached || cached.signature !== signature) {
         const dashboard = loadCapacityDashboard([capacityPath]);
-        attachSessionEquivalentForecasts(databasePath, dashboard.accounts, nowMs, pageReader);
         cached = { signature, generatedAt: snapshot.mtimeMs, dashboard };
       }
       // The immutable source snapshot remains the fallback. A newer coordinator
       // row is already authenticated and durable, so it can bridge import delay
       // without fabricating an account or changing the cached base dashboard.
       const accounts = structuredClone(cached.dashboard.accounts);
-      if (overlayFreshPollSnapshots(accounts, pageReader(), nowMs)) {
-        attachSessionEquivalentForecasts(databasePath, accounts, nowMs, pageReader);
-      }
-      // Burn is time-sensitive even when the input has not changed.
-      attachBurnForecasts(databasePath, accounts, nowMs, pageReader);
+      overlayFreshPollSnapshots(accounts, pageReader(), nowMs);
       return renderLimitsHtml(accounts, {
         generatedAt: cached.generatedAt,
         nowMs,
