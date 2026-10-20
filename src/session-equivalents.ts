@@ -21,12 +21,14 @@ export function loadSessionEquivalentForecasts(
   path: string,
   accounts: CodexLimitAccount[],
   nowMs: number,
+  reader?: () => Database,
 ): Map<string, SessionEquivalentForecast> {
-  const db = new Database(path, { readonly: true });
+  const db = reader ? reader() : new Database(path, { readonly: true });
   const grouped = new Map<string, PairedRow[]>();
-  // Bound matching timestamps before aggregation. CROSS JOIN keeps this small
-  // set driving indexed lookups; separately limiting each window loses pairs.
-  const pairedSamples = db.query<PairedRow, [string, string]>(`
+  try {
+    // Bound matching timestamps before aggregation. CROSS JOIN keeps this small
+    // set driving indexed lookups; separately limiting each window loses pairs.
+    const pairedSamples = db.query<PairedRow, [string, string]>(`
     WITH recent_times AS MATERIALIZED (
       SELECT w.sampled_at_ms
       FROM capacity_history w
@@ -66,13 +68,15 @@ export function loadSessionEquivalentForecasts(
     JOIN weekly_samples w ON w.sampled_at_ms = s.sampled_at_ms
     ORDER BY s.sampled_at_ms DESC
     LIMIT 5000
-  `);
-  for (const account of accounts) {
-    if (!account.weekly) continue;
-    const key = `${account.provider}:${account.email.toLowerCase()}`;
-    grouped.set(key, pairedSamples.all(account.provider, account.email).reverse());
+    `);
+    for (const account of accounts) {
+      if (!account.weekly) continue;
+      const key = `${account.provider}:${account.email.toLowerCase()}`;
+      grouped.set(key, pairedSamples.all(account.provider, account.email).reverse());
+    }
+  } finally {
+    if (!reader) db.close();
   }
-  db.close();
   const forecasts = new Map<string, SessionEquivalentForecast>();
   for (const account of accounts) {
     if (!account.weekly) continue;
@@ -111,7 +115,9 @@ export function loadSessionEquivalentForecasts(
   return forecasts;
 }
 
-export function attachSessionEquivalentForecasts(path: string, accounts: CodexLimitAccount[], nowMs: number): void {
-  const forecasts = loadSessionEquivalentForecasts(path, accounts, nowMs);
+export function attachSessionEquivalentForecasts(
+  path: string, accounts: CodexLimitAccount[], nowMs: number, reader?: () => Database,
+): void {
+  const forecasts = loadSessionEquivalentForecasts(path, accounts, nowMs, reader);
   for (const account of accounts) account.sessionEquivalent = forecasts.get(`${account.provider}:${account.email.toLowerCase()}`);
 }
