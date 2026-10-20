@@ -2,6 +2,7 @@ import {Database} from "./database";
 import type {Report} from "./aggregate";
 import {archivedCoverage, byMonthSource, bySource, callTotals, dayIn, withoutCalls} from "./gateway-settle";
 import { installationRowKey, restoredMonthlySuppression, type ArchivedInstallationReport } from "./installation-lineage";
+import { verifiedGuardBaseline, loadCaptureGuards, COVERAGE_WARNING, type CaptureGuard } from "./report-coverage";
 
 export interface TokenCounts {total: number; cloud: number; local: number; unclassified: number}
 export interface TokenPeriod {
@@ -32,6 +33,8 @@ const sum = (a: TokenCounts, b: TokenCounts) => {
 /** Read only the existing archive. No provider calls or transcript/identity export. */
 export function tokenSummary(path: string, options: {
   now?: number; timeZone?: string; localModels?: string[]; cloudModels?: string[];
+  /** Historical-coverage guards; a guard whose month is archived adds a fixed note, never a count. */
+  guards?: CaptureGuard[];
 } = {}): TokenSummary {
   const now = options.now ?? Date.now();
   const timeZone = options.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -171,9 +174,22 @@ export function tokenSummary(path: string, options: {
   for (const key of ["day", "month", "year"] as const) {
     if (times[key].length) periods[key].measuredAt = new Date(Math.min(...times[key])).toISOString();
   }
+  // A guard whose month is archived says so in the fixed notes. It changes no count here: the summary keeps
+  // showing the retained archive, and the latest scan is a separate artifact, never folded in.
+  const guardedNotes = new Set<string>();
+  if (options.guards?.length) {
+    const guardDb = new Database(path, {readonly: true, create: false});
+    try {
+      for (const guard of options.guards) {
+        verifiedGuardBaseline(guardDb, guard);
+        guardedNotes.add(guard.month);
+      }
+    } finally {guardDb.close();}
+  }
   return {
     version: 1, timeZone, generatedAt: new Date(now).toISOString(), status: "snapshot", periods,
     notes: [
+      ...(guardedNotes.size ? [COVERAGE_WARNING, `Historical coverage guard months affected: ${[...guardedNotes].sort().join(", ")}.`] : []),
       "Recorded input, output and cache tokens; not cost-derived estimates. Device collection is on demand.",
       "Totals cover available archived sources, not every AI request. Daily coverage may be partial.",
       "Local models use explicit operator mappings; unmapped routes remain unclassified, never inferred from price.",
@@ -197,6 +213,6 @@ export function runTokenCommand(argv: string[]): boolean {
     else throw new Error(`Unknown token summary option: ${flag}`);
   }
   if (!path) throw new Error("tokens requires --sqlite PATH");
-  console.log(JSON.stringify(tokenSummary(path, {timeZone, localModels, cloudModels}), null, 2));
+  console.log(JSON.stringify(tokenSummary(path, {timeZone, localModels, cloudModels, guards: loadCaptureGuards()}), null, 2));
   return true;
 }
