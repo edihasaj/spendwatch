@@ -15,6 +15,35 @@ function localDate(ts: number): string {
   return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
 }
 
+function accountCoverage(reports: Report[]): string {
+  const codex = reports.filter((report) => report.source.split(":").at(-1) === "codex");
+  if (!codex.length) return "";
+  let matched = 0, profile = 0, unknown = 0, legacy = 0;
+  for (const report of codex) {
+    const coverage = report.accountAttribution;
+    if (!coverage || coverage.configuredRoute + coverage.profile + coverage.unknown !== report.apiCalls) {
+      legacy += report.apiCalls;
+      continue;
+    }
+    matched += coverage.configuredRoute;
+    profile += coverage.profile;
+    unknown += coverage.unknown;
+  }
+  return `<details class="account-coverage"><summary>Codex account coverage · ${matched.toLocaleString()} route matches · ${unknown.toLocaleString()} unknown</summary><p>Historical route labels use dated gateway configuration. ${profile.toLocaleString()} calls use profile labels; ${legacy.toLocaleString()} older calls have unverified account labels. Account totals follow recorded evidence.</p></details>`;
+}
+
+function collectionCoverage(reports: Report[]): string {
+  const rows = reports.map((report) => {
+    const measured = report.tokenDays?.measuredAt;
+    const captured = measured && Number.isFinite(measured) && measured > 0
+      ? new Date(measured).toISOString().replace("T", " ").slice(0, 16) + " UTC"
+      : "Historical capture time unavailable";
+    return `<li>${esc(sourceLabel(report.source))} · ${esc(captured)}</li>`;
+  }).join("");
+  const warnings = [...new Set(reports.flatMap((report) => report.lineageWarning ? [report.lineageWarning] : []))];
+  return `<details class="account-coverage"><summary>Source captures · ${reports.length} machine-agent snapshots${warnings.length ? " · restored history has a coverage gap" : ""}</summary><p>Spend and history reflect these captures. Capacity has its own automatic refresh.</p>${warnings.map(warning => `<p>${esc(warning)}</p>`).join("")}<ul>${rows}</ul></details>`;
+}
+
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
@@ -284,6 +313,7 @@ h1,h2,h3{font-family:"Manrope",sans-serif;letter-spacing:-.025em}
 .report-hero{display:grid;grid-template-columns:1fr auto;gap:28px;align-items:end;padding:44px 0 30px}.eyebrow{margin:0 0 8px;color:var(--amber);font:12px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.12em}.report-hero h1{font-size:clamp(34px,6vw,58px);line-height:.98;letter-spacing:-.055em;margin:0}.report-hero h1 span{color:#75808a}.hero-copy{margin:16px 0 0;color:var(--dim);font-size:14px;max-width:680px}.head-total{text-align:right;padding-bottom:4px}.head-total .big{font:28px "Fragment Mono",monospace;color:var(--amber)}.head-total .exact{font:10px "Fragment Mono",monospace;color:var(--dim);margin-top:2px}.head-total .cost{font:13px "Fragment Mono",monospace;color:var(--ink);margin-top:5px}.head-total .meta{color:var(--dim);font:10px "Fragment Mono",monospace;margin-top:6px;max-width:330px}
 .overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-bottom:30px}
 .overview .block{margin-top:0;min-width:0}
+.account-coverage{grid-column:1/-1;margin:0;padding:12px 14px;border:1px solid var(--line);border-radius:9px;color:var(--dim);font-size:12px}.account-coverage summary{cursor:pointer;color:var(--ink)}.account-coverage p{margin:10px 0 0;max-width:800px}
 .break-list{height:calc(100% - 27px);background:linear-gradient(145deg,rgba(21,26,32,.98),rgba(15,19,24,.98));border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .break-row{padding:12px 14px;border-bottom:1px solid var(--line);animation:rise .5s both;animation-delay:calc(var(--i)*35ms)}
 .break-row:last-child{border-bottom:none}
@@ -355,9 +385,9 @@ footer b{color:var(--amber)}
 </style></head>
 <body><div class="wrap">
 <div class="topbar"><div class="brand"><b>spend</b>watch</div>${opts.limitsHref ? `<nav class="nav"><a href="${esc(opts.limitsHref)}">Capacity</a><a class="active" href="./spend.html">Spend detail</a><a href="${esc(opts.historyHref ?? "history.html")}">History</a></nav>` : ""}<div class="top-actions"><button class="button" id="refresh">Refresh</button>${opts.limitsHref ? `<a class="button primary" href="${esc(opts.limitsHref)}#setup">Add account</a>` : ""}</div></div>
-<section class="report-hero"><div><p class="eyebrow">Spend detail</p><h1>Understand where <span>usage goes.</span></h1><p class="hero-copy">Exact token usage with API-equivalent cost estimates across every machine, account, agent, tool, and project for ${esc(periodCopy)}.</p></div><div class="head-total"><div class="big">${fmtTok(totalTokens)} tokens</div><div class="exact">${totalTokens.toLocaleString("en-US")} exact</div><div class="cost">${fmtUsd(total)} estimated</div><div class="meta">${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · since ${esc(sinceStr)} · generated ${esc(genStr)}</div></div></section>
+<section class="report-hero"><div><p class="eyebrow">Spend detail</p><h1>Understand where <span>usage goes.</span></h1><p class="hero-copy">Recorded token usage and API-equivalent cost estimates by machine, account, agent, tool, and project for ${esc(periodCopy)}.</p></div><div class="head-total"><div class="big">${fmtTok(totalTokens)} tokens</div><div class="exact">${totalTokens.toLocaleString("en-US")} recorded</div><div class="cost">${fmtUsd(total)} estimated</div><div class="meta">${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · since ${esc(sinceStr)} · generated ${esc(genStr)}</div></div></section>
 
-<div class="overview">${overview}</div>
+<div class="overview">${collectionCoverage(sources)}${accountCoverage(sources)}${overview}</div>
 
 <div class="tabs">${tabs}</div>
 <div class="panels">${panels}</div>

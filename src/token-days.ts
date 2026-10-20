@@ -2,16 +2,23 @@ export interface TokenDays {
   timeZone: string;
   measuredAt: number;
   rows: Array<{day: string; model: string; tokens: number}>;
+  /**
+   * Optional per-call account evidence. This intentionally lives beside the
+   * day/model total in the report JSON: old archives stay readable and no new
+   * database table is needed.
+   */
+  accountRows?: Array<{day: string; model: string; account: string; tokens: number}>;
 }
 
 /** Calendar buckets of deduplicated provider usage, never prompt-size estimates. */
 export class TokenDayAccumulator {
   private rows = new Map<string, {day: string; model: string; tokens: number}>();
+  private accountRows = new Map<string, {day: string; model: string; account: string; tokens: number}>();
   private format: Intl.DateTimeFormat;
   constructor(private timeZone = process.env.SPENDWATCH_TOKEN_TIME_ZONE || Intl.DateTimeFormat().resolvedOptions().timeZone) {
     this.format = new Intl.DateTimeFormat("en-CA", {timeZone, year: "numeric", month: "2-digit", day: "2-digit"});
   }
-  add(ts: number, model: string, tokens: number): void {
+  add(ts: number, model: string, tokens: number, account = "Unknown account"): void {
     if (!Number.isFinite(ts) || ts <= 0 || !Number.isSafeInteger(tokens) || tokens < 0) return;
     const parts = this.format.formatToParts(ts);
     const part = (type: string) => parts.find(p => p.type === type)!.value;
@@ -20,10 +27,20 @@ export class TokenDayAccumulator {
     const row = this.rows.get(key) || {day, model, tokens: 0};
     row.tokens += tokens;
     this.rows.set(key, row);
+    const accountName = typeof account === "string" && account.trim() ? account : "Unknown account";
+    const accountKey = JSON.stringify([day, model, accountName]);
+    const accountRow = this.accountRows.get(accountKey) || {day, model, account: accountName, tokens: 0};
+    accountRow.tokens += tokens;
+    this.accountRows.set(accountKey, accountRow);
   }
   snapshot(measuredAt = Date.now()): TokenDays {
-    return {timeZone: this.timeZone, measuredAt, rows: [...this.rows.values()].sort((a, b) =>
-      a.day.localeCompare(b.day) || a.model.localeCompare(b.model))};
+    return {
+      timeZone: this.timeZone,
+      measuredAt,
+      rows: [...this.rows.values()].sort((a, b) => a.day.localeCompare(b.day) || a.model.localeCompare(b.model)),
+      accountRows: [...this.accountRows.values()].sort((a, b) =>
+        a.day.localeCompare(b.day) || a.model.localeCompare(b.model) || a.account.localeCompare(b.account)),
+    };
   }
 }
 import type {Database} from "bun:sqlite";

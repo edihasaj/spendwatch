@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { AccountRow, ModelRow, PromptRow, Report, SampleRow, TargetRow, ToolRow } from "./aggregate";
 import { mergeProjectRows } from "./projects";
+import type { TokenDays } from "./token-days";
 
 function isReport(value: unknown): value is Report {
   if (!value || typeof value !== "object") return false;
@@ -253,7 +254,19 @@ export function mergeReports(
     },
     (row) => row.tokens,
   );
+  const tokenDays = mergedTokenDays(reports, accountGrouping, preserveAccountLabels);
+  const attributed = reports.filter((report) => report.accountAttribution);
   return {
+    ...(tokenDays ? { tokenDays } : {}),
+    ...(reports.some((report) => report.lineageWarning)
+      ? { lineageWarning: [...new Set(reports.flatMap((report) => report.lineageWarning ? [report.lineageWarning] : []))].join(" ") }
+      : {}),
+    ...(attributed.length ? { accountAttribution: {
+      version: Math.max(...attributed.map((report) => report.accountAttribution!.version)),
+      configuredRoute: attributed.reduce((n, report) => n + report.accountAttribution!.configuredRoute, 0),
+      profile: attributed.reduce((n, report) => n + report.accountAttribution!.profile, 0),
+      unknown: reports.reduce((n, report) => n + (report.accountAttribution?.unknown ?? report.apiCalls), 0),
+    } } : {}),
     ...(reports.find((report) => report.period) ? { period: reports.find((report) => report.period)!.period } : {}),
     source,
     totalTokens: reports.reduce((sum, report) => sum + report.totalTokens, 0),
@@ -277,5 +290,52 @@ export function mergeReports(
     projects,
     accounts,
     sinceTs: Math.min(...reports.map((report) => report.sinceTs).filter(Boolean)),
+  };
+}
+
+/** Daily detail is complete only when every contributing report reconciles. */
+function mergedTokenDays(reports: Report[], grouping: AccountGrouping, preserve: boolean): TokenDays | undefined {
+  if (!reports.length || reports.some((report) => !report.tokenDays)) return;
+  const zone = reports[0]!.tokenDays!.timeZone;
+  const rows = new Map<string, { day: string; model: string; tokens: number }>();
+  const accountRows = new Map<string, { day: string; model: string; account: string; tokens: number }>();
+  for (const report of reports) {
+    const daily = report.tokenDays!;
+    if (daily.timeZone !== zone || !Number.isSafeInteger(daily.measuredAt) || daily.measuredAt <= 0 ||
+        daily.rows.reduce((n, row) => n + row.tokens, 0) !== report.totalTokens) return;
+    const own = new Map<string, number>();
+    for (const row of daily.rows) {
+      if (!Number.isSafeInteger(row.tokens) || row.tokens < 0) return;
+      const key = JSON.stringify([row.day, row.model]);
+      if (own.has(key)) return;
+      own.set(key, row.tokens);
+      const current = rows.get(key) ?? { ...row, tokens: 0 };
+      current.tokens += row.tokens;
+      rows.set(key, current);
+    }
+    const byAccount = daily.accountRows ?? daily.rows.map((row) => ({ ...row, account: "Unknown account" }));
+    const reconciled = new Map<string, number>();
+    const seen = new Set<string>();
+    for (const row of byAccount) {
+      const key = JSON.stringify([row.day, row.model, row.account]);
+      if (seen.has(key) || typeof row.account !== "string" || !row.account.trim() ||
+          !Number.isSafeInteger(row.tokens) || row.tokens < 0) return;
+      seen.add(key);
+      const modelKey = JSON.stringify([row.day, row.model]);
+      reconciled.set(modelKey, (reconciled.get(modelKey) ?? 0) + row.tokens);
+      const account = preserve ? row.account : accountLabel(report.source, row.account, grouping);
+      const mergedKey = JSON.stringify([row.day, row.model, account]);
+      const current = accountRows.get(mergedKey) ?? { ...row, account, tokens: 0 };
+      current.tokens += row.tokens;
+      accountRows.set(mergedKey, current);
+    }
+    if (own.size !== reconciled.size || [...own].some(([key, tokens]) => reconciled.get(key) !== tokens)) return;
+  }
+  return {
+    timeZone: zone,
+    measuredAt: Math.min(...reports.map((report) => report.tokenDays!.measuredAt)),
+    rows: [...rows.values()].sort((a, b) => a.day.localeCompare(b.day) || a.model.localeCompare(b.model)),
+    accountRows: [...accountRows.values()].sort((a, b) =>
+      a.day.localeCompare(b.day) || a.model.localeCompare(b.model) || a.account.localeCompare(b.account)),
   };
 }

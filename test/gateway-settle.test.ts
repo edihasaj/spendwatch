@@ -49,8 +49,13 @@ describe("settling reports of several Macs", () => {
 
   test("takes out only the calls another report billed, from every row they added", () => {
     const serving = servingReport(["aa"]);
-    const [codex, studio] = settleAcrossMacs([client(), serving]);
+    const original = { ...client(), accountAttribution: { version: 1, configuredRoute: 1, profile: 0, unknown: 1 } };
+    const [codex, studio] = settleAcrossMacs([original, serving]);
     expect(codex).toMatchObject({ apiCalls: 1, totalTokens: 2100, routedCalls: 1 });
+    // Gateway coverage stores the account, not the basis by which each call's
+    // account was proven. A settled report must not claim coverage for a call
+    // that was removed.
+    expect(codex!.accountAttribution).toBeUndefined();
     expect(codex!.gatewayUnconfirmed?.map((call) => call.id)).toEqual(["bb"]);
     expect(codex!.models).toMatchObject([{ calls: 1, inTok: 2000, outTok: 100 }]);
     expect(codex!.accounts).toMatchObject([{ account: "me@example.com", calls: 1, tokens: 2100 }]);

@@ -53,7 +53,7 @@ function watched(options: { records?: boolean; account?: string } = {}) {
     if (!built) { built = build(a, [watchPeriod(now, 1)], { watching: true }); return 1; }
     return pollWatched(built, discover({ sinceMs: now - 86_400_000 }), a);
   };
-  const report = (id: string) => (built!.readers.get(id)!.sink as Aggregator).report();
+  const report = (id: string) => (built!.readers.get(id)!.sink as Aggregator).report(15, options.account);
   const calls = (id: string) => report(id).apiCalls;
   return { now, rollout, elsewhere, ledger, archived, tick, calls, report };
 }

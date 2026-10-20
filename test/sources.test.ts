@@ -60,6 +60,14 @@ describe("Codex profile discovery", () => {
     expect(defaultCodexRoots(home).map((root) => root.path)).toEqual([archived]);
   });
 
+  test("finds an ordinary profile retained only as Codex archive", () => {
+    const home = tempDir("spendwatch-home-");
+    const archived = join(home, ".codex-secondary", "archived_sessions");
+    mkdirSync(archived, { recursive: true });
+
+    expect(defaultCodexRoots(home).map((root) => root.path)).toEqual([archived]);
+  });
+
   test("bills a rollout once when a profile home is a copy, not a symlink", () => {
     // ~/.codex is a copy-on-write clone of ~/.codex-primary: same rollout file,
     // two distinct real paths, so realpath dedupe cannot see it. The surviving
@@ -87,6 +95,29 @@ describe("Codex profile discovery", () => {
     }
   });
 
+  test("uses an archive's longer complete prefix instead of dropping its newer usage", () => {
+    const home = tempDir("spendwatch-home-");
+    const rollout = "rollout-2026-08-18T10-00-00-11111111-2222-3333-4444-555555555555.jsonl";
+    const live = join(home, ".codex-primary", "sessions");
+    const archive = join(home, ".codex-primary", "archived_sessions");
+    mkdirSync(live, { recursive: true });
+    mkdirSync(archive, { recursive: true });
+    writeFileSync(join(live, rollout), "{\"one\":1}\n");
+    writeFileSync(join(archive, rollout), "{\"one\":1}\n{\"two\":2}\n");
+    const config = join(home, "config.json");
+    writeFileSync(config, JSON.stringify([{ agent: "codex", path: live }, { agent: "codex", path: archive }]));
+
+    const previous = process.env.SPENDWATCH_CONFIG;
+    process.env.SPENDWATCH_CONFIG = config;
+    try {
+      const codex = discover({ sinceMs: 0, agents: new Set(["codex"]) }).find((s) => s.id === "codex");
+      expect(codex?.files.map((file) => file.path)).toEqual([join(archive, rollout)]);
+    } finally {
+      if (previous === undefined) delete process.env.SPENDWATCH_CONFIG;
+      else process.env.SPENDWATCH_CONFIG = previous;
+    }
+  });
+
   test("labels each profile home so duplicate accounts stay distinguishable", () => {
     const home = tempDir("spendwatch-home-");
     const roots = [".codex", ".codex-tertiary"].map((p) => join(home, p, "sessions"));
@@ -101,7 +132,7 @@ describe("Codex profile discovery", () => {
     process.env.SPENDWATCH_CONFIG = config;
     try {
       const codex = discover({ sinceMs: 0, agents: new Set(["codex"]) }).find((s) => s.id === "codex");
-      expect(codex?.files.map((f) => f.account).sort()).toEqual(["main", "tertiary"]);
+      expect(codex?.files.map((f) => f.account).sort()).toEqual(["Unknown Codex account", "tertiary"]);
     } finally {
       if (previous === undefined) delete process.env.SPENDWATCH_CONFIG;
       else process.env.SPENDWATCH_CONFIG = previous;

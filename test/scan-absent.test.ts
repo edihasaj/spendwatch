@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { Aggregator } from "../src/aggregate";
 import type { Event } from "../src/parse";
 import { IncrementalReader } from "../src/scan";
 import type { SourceFile } from "../src/sources";
+import { tempDir } from "./tmp";
 
 // `watch` finds the same files again on every tick; a file it found before and does not find now (Codex filed the
 // rollout away, outside the roots) still has parser state, and what that state decided about the gateway ledger counts.
@@ -65,5 +68,39 @@ describe("a file the last discovery did not find again", () => {
     const carried: unknown[] = [];
     reader.renewAbsent([], (kept) => carried.push(kept));
     expect(carried).toEqual([]);
+  });
+});
+
+describe("a watched Codex rollout copy", () => {
+  const sourceFile = (path: string): SourceFile => ({
+    path, key: "codex:rollout-copy.jsonl", project: "p", source: "codex", account: "a", parse: () => [], ctx: {},
+  });
+
+  test("continues from an archived extension with exactly the bytes it has already read", () => {
+    const root = tempDir("spendwatch-scan-copy-");
+    const live = join(root, "sessions", "rollout-copy.jsonl");
+    const archive = join(root, "archived_sessions", "rollout-copy.jsonl");
+    mkdirSync(join(root, "sessions"), { recursive: true });
+    mkdirSync(join(root, "archived_sessions"), { recursive: true });
+    writeFileSync(live, "{\"one\":1}\n");
+    writeFileSync(archive, "{\"one\":1}\n{\"two\":2}\n");
+
+    const reader = new IncrementalReader(new Aggregator());
+    reader.poll(sourceFile(live));
+    expect(() => reader.poll(sourceFile(archive))).not.toThrow();
+  });
+
+  test("fails rather than skipping bytes when a selected copy changes its already-read prefix", () => {
+    const root = tempDir("spendwatch-scan-copy-");
+    const live = join(root, "sessions", "rollout-copy.jsonl");
+    const other = join(root, "other", "rollout-copy.jsonl");
+    mkdirSync(join(root, "sessions"), { recursive: true });
+    mkdirSync(join(root, "other"), { recursive: true });
+    writeFileSync(live, "{\"one\":1}\n");
+    writeFileSync(other, "{\"two\":2}\n");
+
+    const reader = new IncrementalReader(new Aggregator());
+    reader.poll(sourceFile(live));
+    expect(() => reader.poll(sourceFile(other))).toThrow("changed to a non-prefix copy");
   });
 });

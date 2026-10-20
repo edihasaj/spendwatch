@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { coordinatorAccessHeaders } from "../src/capacity-coordinator-client";
 import {
-  CapacityPollStore, coordinatedCapacity, coordinatorRequest, handleCapacityPoll, POLL_INTERVAL_MS, retryAfterMs,
+  CapacityPollStore, CODEX_POLL_INTERVAL_MS, coordinatedCapacity, coordinatorRequest, handleCapacityPoll,
+  MAX_FUTURE_SNAPSHOT_SKEW_MS, POLL_INTERVAL_MS, pollIntervalMs, retryAfterMs, sanitizePollSnapshot,
 } from "../src/capacity-poll";
 import type { CapacityResult } from "../src/capacity-current";
 
@@ -28,9 +29,21 @@ test("three machines and duplicate profiles share one reserved attempt per accou
     expect(claims.filter((claim) => claim.lease)).toHaveLength(1);
     expect(machines[0].claim("claude", "edi@example.com", 1000).lease).toBeDefined();
     expect(machines[1].claim("codex", "other@example.com", 1000).lease).toBeDefined();
-    expect(machines[2].claim("codex", "edi@example.com", 1000 + POLL_INTERVAL_MS - 1).lease).toBeUndefined();
-    expect(machines[2].claim("codex", "edi@example.com", 1000 + POLL_INTERVAL_MS).lease).toBeDefined();
+    expect(machines[2].claim("codex", "edi@example.com", 1000 + CODEX_POLL_INTERVAL_MS - 1).lease).toBeUndefined();
+    expect(machines[2].claim("codex", "edi@example.com", 1000 + CODEX_POLL_INTERVAL_MS).lease).toBeDefined();
   } finally { machines.forEach((store) => store.close()); }
+});
+
+test("Codex and Claude retain account-specific collection cadences", () => {
+  const store = new CapacityPollStore(":memory:");
+  try {
+    expect(pollIntervalMs("codex")).toBe(CODEX_POLL_INTERVAL_MS);
+    expect(pollIntervalMs("claude")).toBe(POLL_INTERVAL_MS);
+    store.claim("codex", "codex@example.com", 0);
+    store.claim("claude", "claude@example.com", 0);
+    expect(store.claim("codex", "codex@example.com", CODEX_POLL_INTERVAL_MS).lease).toBeDefined();
+    expect(store.claim("claude", "claude@example.com", CODEX_POLL_INTERVAL_MS).lease).toBeUndefined();
+  } finally { store.close(); }
 });
 
 test("a shared 429 cooldown survives restarts and retains the original sample time", () => {
@@ -171,6 +184,62 @@ test("coordinator outage returns only a read-only local cache", async () => {
     // A fallback read must not reserve/replace a lease that has become due.
     expect(store.claim("codex", snapshot.account, POLL_INTERVAL_MS + 1).lease).toBeDefined();
   } finally { store.close(); }
+});
+
+test("a coordinator result is cached without replacing a local lease or attempting outage reads", async () => {
+  const store = new CapacityPollStore(":memory:");
+  const path = accessConfig({
+    origin: "https://spendwatch.example/",
+    client_id: "client-id",
+    client_secret: "client-secret",
+  });
+  const now = Date.parse("2026-10-14T10:00:00Z");
+  const fresh = { ...snapshot, usage: { ...snapshot.usage, updatedAt: new Date(now).toISOString() } };
+  const local = store.claim("codex", snapshot.account, now);
+  let providerReads = 0;
+  let action = "";
+  const fetch: typeof globalThis.fetch = async (input) => {
+    action = new URL(String(input)).pathname.split("/").at(-1)!;
+    return Response.json(action === "claim"
+      ? { lease: "remote-lease", nextAt: now + CODEX_POLL_INTERVAL_MS }
+      : { ok: true });
+  };
+  try {
+    await coordinatedCapacity("codex", snapshot.account, async () => {
+      providerReads++;
+      return fresh;
+    }, {
+      store, coordinator: "https://spendwatch.example/", accessConfigPath: path, fetch, now: () => now,
+    });
+    expect(providerReads).toBe(1);
+    expect(action).toBe("complete");
+    // A local lease due later remains owned by its original caller.
+    expect(store.complete("codex", snapshot.account, local.lease!, { snapshot: fresh }, now)).toBe(true);
+
+    const cached = await coordinatedCapacity("codex", snapshot.account, async () => {
+      providerReads++;
+      return fresh;
+    }, {
+      store, coordinator: "https://spendwatch.example/", accessConfigPath: path,
+      fetch: async () => { throw new TypeError("network down"); }, now: () => now + 1,
+    });
+    expect(cached?.usage.updatedAt).toBe(fresh.usage.updatedAt);
+    expect(providerReads).toBe(1);
+  } finally { store.close(); }
+});
+
+test("rejects materially future snapshots while allowing bounded clock skew", () => {
+  const now = Date.parse("2026-10-14T10:00:00Z");
+  const nearFuture = {
+    ...snapshot,
+    usage: { ...snapshot.usage, updatedAt: new Date(now + MAX_FUTURE_SNAPSHOT_SKEW_MS).toISOString(), quotaPool: "codex_bengalfox" },
+  };
+  expect(sanitizePollSnapshot(nearFuture, "codex:edi@example.com", now).usage.quotaPool).toBe("codex_bengalfox");
+  const future = {
+    ...nearFuture,
+    usage: { ...nearFuture.usage, updatedAt: new Date(now + MAX_FUTURE_SNAPSHOT_SKEW_MS + 1).toISOString() },
+  };
+  expect(() => sanitizePollSnapshot(future, "codex:edi@example.com", now)).toThrow("invalid capacity snapshot");
 });
 
 test("three HTTP clients receive one grant, share the result, and do not store credentials", async () => {
