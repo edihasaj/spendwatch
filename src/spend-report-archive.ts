@@ -116,8 +116,19 @@ export function archiveSource(db: Database, report: Report): string {
  */
 export type ArchiveOutcome = "accepted" | "fewer" | "placement";
 
+/**
+ * The stored report JSON of a month under one archive label. Coverage guards compare these exact bytes with
+ * their baseline hash, so the query stays portable (no JSON functions) and the hashing happens in TypeScript.
+ */
+export function storedReportRows(db: Database, month: string, source: string): string[] {
+  return db.query<{ report_json: string }, [string, string]>(
+    "SELECT report_json FROM spend_report WHERE month = ? AND source = ?",
+  ).all(month, source).map((row) => row.report_json);
+}
+
 /** `force` writes the report whatever is stored: the caller has already decided for the month's sources together. */
 export function archiveReport(db: Database, report: Report, source: string, generatedAt: number, force = false): ArchiveOutcome {
+  const { captureCoverage: _renderOnly, ...archived } = report;
   const result = db.prepare(`
     INSERT INTO spend_report(month, source, calls, observed_calls, ledger, routed_calls, report_json, updated_at)
     VALUES (?,?,?,?,?,?,?,?)
@@ -126,7 +137,7 @@ export function archiveReport(db: Database, report: Report, source: string, gene
       routed_calls = excluded.routed_calls, report_json = excluded.report_json, updated_at = excluded.updated_at
     WHERE ${force ? "1 = 1" : fullerRead("spend_report")}
   `).run(report.period!.key, source, report.apiCalls, report.observedCalls ?? report.apiCalls, report.ledger ? 1 : 0,
-    report.routedCalls ?? 0, JSON.stringify(report), generatedAt);
+    report.routedCalls ?? 0, JSON.stringify(archived), generatedAt);
   if (result.changes > 0) return "accepted";
   const stored = db.query<{ routed: number }, [string, string]>(
     "SELECT COALESCE(routed_calls, 0) AS routed FROM spend_report WHERE month = ? AND source = ?",

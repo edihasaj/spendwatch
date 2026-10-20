@@ -30,6 +30,10 @@ import {
 } from "./local-qwen-sources";
 import { loadCodexAccountAttributor, UNKNOWN_CODEX_ACCOUNT, type AccountAttributionBasis, type CodexAccountAttributor } from "./codex-account-attribution";
 import { selectCodexRolloutCopies } from "./codex-rollout-copies";
+import { createCodexRolloutSemanticDominance } from "./codex-rollout-semantics";
+
+// Process-wide so a watch tick re-proves only rollouts whose bytes moved.
+const codexSemanticDominance = createCodexRolloutSemanticDominance();
 
 export interface SourceFile {
   path: string;
@@ -42,6 +46,14 @@ export interface SourceFile {
   codexAttributor?: CodexAccountAttributor;
   parse: (line: string, ctx: any) => Iterable<Event>;
   ctx: any;
+  /**
+   * A duplicate proof uses this to get an isolated parser state. It must not reuse the live
+   * reader context (or its gateway ledger), whose mutable claims would make the proof depend on
+   * discovery order.
+   */
+  semanticCtx?: () => any;
+  /** Identifies the parser/settler contract used to build duplicate manifests. */
+  semanticKey?: string;
   /**
    * Watch mode discovers the same file again on every tick, with a new `ctx`. The reader keeps the first
    * one, because it holds what earlier lines taught the parser, and calls this to hand it whatever the
@@ -331,6 +343,8 @@ function collectCodex(dir: string, account: string, sinceMs: number, gateway?: G
     files.push({ path, key: `codex:${basename(path)}`, project: "?", source: "codex", account: fallback.account, accountBasis: fallback.basis,
       ...(localQwenOnly ? {} : { codexAttributor }),
       parse: localQwenOnly ? parseFreeCodexLocalQwen : parseCodexLine, ctx,
+      semanticCtx: () => newCodexCtx(),
+      semanticKey: localQwenOnly ? "free-local-qwen-v1" : "codex-v1",
       settle: (kept: CodexCtx, final: boolean) => localQwenOnly
         ? settleFreeCodexLocalQwen(kept, final)
         : settleRouted(kept, final),
@@ -439,6 +453,10 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
     // in defaultCodexRoots cannot catch it. Bill each rollout id only once, and
     // collect named profiles first so a shared rollout is credited to the real
     // account (primary/secondary) rather than the ~/.codex playground.
+    // Opt-in only here: when byte-prefix selection diverges, a parsed-event dominance proof may
+    // still pick one lossless copy (see codex-rollout-semantics.ts). Its manifest cache is process-
+    // wide but keyed by file signature, separate from the strict comparison caches, so it neither
+    // mixes with default-mode decisions nor survives a change to the file it describes.
     const isPlayground = (root: RootCfg) => basename(dirname(root.path)) === ".codex";
     const ordered = [...codexRoots].sort((a, b) => {
       const freeDifference = Number(isFreeCodexHome(a.path)) - Number(isFreeCodexHome(b.path));
@@ -451,7 +469,7 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
       gateway,
       isFreeCodexHome(r.path) || isLocalQwenWorkerRoot(r.path),
       codexAttributor,
-    ).map((file) => ({ path: file.path, priority, value: file }))));
+    ).map((file) => ({ path: file.path, priority, value: file }))), { semanticDominance: codexSemanticDominance });
     const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger, ...(claimOnly ? { claimOnly } : {}), files,
       ...(gateway ? { carry: (kept: CodexCtx) => carryLedger(kept, gateway) } : {}) };
     // Asked after the rollouts have been read, because only the parser knows what a rollout recorded.
