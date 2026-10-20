@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeCapacitySnapshot } from "../src/capacity-db";
+import { Database } from "../src/database";
 import { createCapacityPageRenderer } from "../src/capacity-page";
 import { CapacityPollStore } from "../src/capacity-poll";
 import { tempDir } from "./tmp";
@@ -218,4 +219,19 @@ test("a valid newer coordinator row repairs an existing account with no source t
   const html = createCapacityPageRenderer(input, database)(now);
 
   expect(html).toContain("<strong>30% used</strong>");
+});
+
+test("an initial forecast read failure closes the page reader so the next request reconnects", () => {
+  const dir = tempDir("spendwatch-page-reader-retry-");
+  const input = join(dir, "limits.json");
+  const database = join(dir, "capacity.db");
+  const now = Date.now();
+  writeFileSync(input, JSON.stringify([providerSnapshot("codex", "work@example.com", 10, now - 60_000)]));
+  const empty = new Database(database, { create: true });
+  empty.close();
+  const render = createCapacityPageRenderer(input, database);
+
+  expect(() => render(now)).toThrow(/capacity_history/i);
+  writeCapacitySnapshot(database, [], { collectedAt: now });
+  expect(render(now)).toContain("<strong>10% used</strong>");
 });

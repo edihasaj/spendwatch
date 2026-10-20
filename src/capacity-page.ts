@@ -75,34 +75,34 @@ export function createCapacityPageRenderer(capacityPath: string, databasePath: s
     return (reader ??= { db: new Database(databasePath, { readonly: true }), openedAt: at }).db;
   };
   return (nowMs = Date.now()) => {
-    const snapshot = statSync(capacityPath);
-    const signature = `${snapshot.ino}:${snapshot.size}:${snapshot.mtimeMs}:${snapshot.ctimeMs}`;
-    if (!cached || cached.signature !== signature) {
-      const dashboard = loadCapacityDashboard([capacityPath]);
-      attachSessionEquivalentForecasts(databasePath, dashboard.accounts, nowMs);
-      cached = { signature, generatedAt: snapshot.mtimeMs, dashboard };
-    }
-    // The immutable source snapshot remains the fallback. A newer coordinator
-    // row is already authenticated and durable, so it can bridge import delay
-    // without fabricating an account or changing the cached base dashboard.
-    const accounts = structuredClone(cached.dashboard.accounts);
     try {
+      const snapshot = statSync(capacityPath);
+      const signature = `${snapshot.ino}:${snapshot.size}:${snapshot.mtimeMs}:${snapshot.ctimeMs}`;
+      if (!cached || cached.signature !== signature) {
+        const dashboard = loadCapacityDashboard([capacityPath]);
+        attachSessionEquivalentForecasts(databasePath, dashboard.accounts, nowMs, pageReader);
+        cached = { signature, generatedAt: snapshot.mtimeMs, dashboard };
+      }
+      // The immutable source snapshot remains the fallback. A newer coordinator
+      // row is already authenticated and durable, so it can bridge import delay
+      // without fabricating an account or changing the cached base dashboard.
+      const accounts = structuredClone(cached.dashboard.accounts);
       if (overlayFreshPollSnapshots(accounts, pageReader(), nowMs)) {
-        attachSessionEquivalentForecasts(databasePath, accounts, nowMs);
+        attachSessionEquivalentForecasts(databasePath, accounts, nowMs, pageReader);
       }
       // Burn is time-sensitive even when the input has not changed.
       attachBurnForecasts(databasePath, accounts, nowMs, pageReader);
+      return renderLimitsHtml(accounts, {
+        generatedAt: cached.generatedAt,
+        nowMs,
+        sources: cached.dashboard.sources,
+        authentication: cached.dashboard.authentication,
+      });
     } catch (error) {
       // A failed read is reported, never replayed. Only the next request may
       // reconnect; do not retain a broken native socket.
       reader?.db.close(); reader = undefined;
       throw error;
     }
-    return renderLimitsHtml(accounts, {
-      generatedAt: cached.generatedAt,
-      nowMs,
-      sources: cached.dashboard.sources,
-      authentication: cached.dashboard.authentication,
-    });
   };
 }
