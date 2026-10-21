@@ -428,11 +428,11 @@ describe("Codex semantic duplicate dominance", () => {
     expect(codexRolloutManifestSummary(primary)).toEqual({ format: "counts", api: 3, observed: 3, responses: 6, nonbilling: 5 });
   });
 
-  test("proves more than 100k parser facts but refuses a fact above the 250k ceiling", () => {
+  test("proves more than 250k parser facts but refuses a fact above the 1m ceiling", () => {
     const dominance = createCodexRolloutSemanticDominance();
     const root = tempDir("spendwatch-sem-event-budget-");
     const retained = factFile(root, ".codex/sessions", 0);
-    const primary = factFile(root, ".codex-archive/archived_sessions", 100_001);
+    const primary = factFile(root, ".codex-archive/archived_sessions", 250_001);
     const retainedSource = { ...factSource, label: "retained" };
     const primarySource = { ...factSource, label: "primary" };
     expect(selectCodexRolloutCopies(
@@ -440,7 +440,7 @@ describe("Codex semantic duplicate dominance", () => {
       { semanticDominance: dominance },
     )).toEqual([primarySource]);
 
-    const overLimit = factFile(root, ".codex-over-limit/archived_sessions", 250_001);
+    const overLimit = factFile(root, ".codex-over-limit/archived_sessions", 1_000_001);
     expect(() => selectCodexRolloutCopies(
       [{ path: retained, priority: 0, value: retainedSource }, { path: overLimit, priority: 1, value: primarySource }],
       { semanticDominance: createCodexRolloutSemanticDominance() },
