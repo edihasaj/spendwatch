@@ -25,7 +25,9 @@ const CHUNK_BYTES = 64 * 1024;
 const MAX_LINE_BYTES = 16 * 1024 * 1024;
 const MAX_FILE_BYTES = 128 * 1024 * 1024;
 // A manifest larger than this is not a duplicate proof in v1; it fails closed.
-const MAX_EVENTS = 100_000;
+// Studio's verified June copy pair has just over 108k parser facts. Keep a
+// finite proof budget while leaving enough room for that complete snapshot.
+const MAX_EVENTS = 250_000;
 // Candidate manifests are keyed by their stat signature, so an entry can never describe a
 // different revision of a file. Bounded LRU, same discipline as the comparison caches.
 const CACHE_LIMIT = 64;

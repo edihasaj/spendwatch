@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Fixed missing Codex history from compressed native archives and reconciled
+  plain and compressed rollout copies before counting usage. Trusted captures
+  remain available when a replacement has unresolved coverage, with separate
+  downloads for comparison. Retained isolated Claude clients now contribute
+  their recorded usage without inferring a historical account from today's
+  login.
+- Corrected Codex account history using matching gateway evidence and reduced
+  managed capacity query work so incoming snapshots can keep up. Thanks to
+  @edihasaj for reporting and investigating the accounting discrepancies.
+
 - Added optional managed PostgreSQL serving and independently verified history
   archives while retaining native SQLite for the local CLI. Thanks to
   @edihasaj for the database migration and recovery qualification.
