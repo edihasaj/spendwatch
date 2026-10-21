@@ -310,7 +310,7 @@ describe("capacity history", () => {
     expect(current.sessionEquivalent?.medianWeeklyBurn).toBe(10);
     expect(current.sessionEquivalent?.estimatedQuotasLeft).toBe(6);
     const html = renderLimitsHtml([current], { generatedAt: Date.parse("2026-08-10T15:00:00Z") });
-    expect(html).toContain("<strong>40% used</strong>");
+    expect(html).toContain("<strong>60% left</strong>");
     expect(html).toContain('aria-label="Weekly window remaining"');
     expect(html).not.toContain("session quotas left");
   });

@@ -55,7 +55,7 @@ test("a stored page ages out without collection, and a new snapshot restores it"
   const render = createCapacityPageRenderer(input, database);
   const snapshotTime = new Date(statSync(input).mtimeMs).toISOString();
   const live = render(sampledAt);
-  expect(live).toContain("<strong>23% used</strong>");
+  expect(live).toContain("<strong>77% left</strong>");
   expect(live).toContain('aria-label="5-hour window remaining"');
   // The bar drains as the window is used, so a full bar means room to work.
   expect(live).toContain('aria-valuenow="77"><i style="width:77%"></i>');
@@ -63,7 +63,7 @@ test("a stored page ages out without collection, and a new snapshot restores it"
 
   const stale = render(sampledAt + 16 * 60_000);
   expect(stale).toContain("<strong>Not current</strong>");
-  expect(stale).not.toContain("<strong>23% used</strong>");
+  expect(stale).not.toContain("<strong>77% left</strong>");
 
   const expired = render(Date.parse("2026-10-12T15:30:00Z"));
   expect(expired).toContain("<strong>Cycle ended</strong>");
@@ -80,7 +80,7 @@ test("a stored page ages out without collection, and a new snapshot restores it"
   account.usage.primary.resetsAt = "2026-10-12T17:10:00Z";
   writeFileSync(input, JSON.stringify([account]));
   const current = render(Date.parse(account.usage.updatedAt));
-  expect(current).toContain("<strong>100% used</strong>");
+  expect(current).toContain("<strong>0% left</strong>");
   expect(current).not.toContain("<strong>Cycle ended</strong>");
   expect(current).not.toContain("<strong>Not current</strong>");
 });
@@ -166,8 +166,8 @@ test("a newer authenticated coordinator snapshot overlays an existing account wi
 
   const html = createCapacityPageRenderer(input, database)(now);
 
-  expect(html).toContain("<strong>30% used</strong>");
-  expect(html).not.toContain("<strong>10% used</strong>");
+  expect(html).toContain("<strong>70% left</strong>");
+  expect(html).not.toContain("<strong>90% left</strong>");
   expect(html).toContain("Codex Secondary");
   expect(html).toContain("Local Qwen");
   expect(JSON.parse(readFileSync(input, "utf8"))).toEqual(fileRows);
@@ -196,10 +196,10 @@ test("old, future, invalid, and unknown coordinator rows never replace or create
 
   const html = createCapacityPageRenderer(input, database)(now);
 
-  expect(html).toContain("<strong>10% used</strong>");
-  expect(html).toContain("<strong>15% used</strong>");
-  expect(html).not.toContain("<strong>90% used</strong>");
-  expect(html).not.toContain("<strong>99% used</strong>");
+  expect(html).toContain("<strong>90% left</strong>");
+  expect(html).toContain("<strong>85% left</strong>");
+  expect(html).not.toContain("<strong>10% left</strong>");
+  expect(html).not.toContain("<strong>1% left</strong>");
   expect(html).not.toContain("unknown@example.com");
   expect(html).toContain("Local Qwen");
 });
@@ -220,7 +220,7 @@ test("a valid newer coordinator row repairs an existing account with no source t
 
   const html = createCapacityPageRenderer(input, database)(now);
 
-  expect(html).toContain("<strong>30% used</strong>");
+  expect(html).toContain("<strong>70% left</strong>");
 });
 
 test("the renderer needs no forecast tables and reconnects after a poll-reader failure", () => {
@@ -241,5 +241,5 @@ test("the renderer needs no forecast tables and reconnects after a poll-reader f
 
   // Rendering now needs neither capacity_history nor session-equivalent tables:
   // it holds one page reader only for the optional shared poll overlay.
-  expect(render(now)).toContain("<strong>10% used</strong>");
+  expect(render(now)).toContain("<strong>90% left</strong>");
 });
