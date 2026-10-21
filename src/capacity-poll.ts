@@ -2,7 +2,7 @@ import { Database } from "./database";
 import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { CapacityResult, CapacityWindow } from "./capacity-current";
+import type { CapacityCloudCredits, CapacityExtraUsage, CapacityResult, CapacityWindow } from "./capacity-current";
 import type { ClaudeCapacityResult } from "./claude-capacity";
 import {
   CapacityCoordinatorUnavailableError,
@@ -11,7 +11,10 @@ import {
 
 export type PollProvider = "claude" | "codex";
 export type PollSnapshot = CapacityResult | ClaudeCapacityResult;
+// Retained as the established five-minute Claude/default interval.
 export const POLL_INTERVAL_MS = 5 * 60_000;
+export const CODEX_POLL_INTERVAL_MS = 60_000;
+export const MAX_FUTURE_SNAPSHOT_SKEW_MS = 5 * 60_000;
 const RATE_LIMIT_COOLDOWN_MS = 60 * 60_000;
 
 interface PollRow {
@@ -25,6 +28,10 @@ export interface PollClaim {
   lease?: string;
   nextAt: number;
   snapshot?: PollSnapshot;
+}
+
+export function pollIntervalMs(provider: PollProvider): number {
+  return provider === "codex" ? CODEX_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
 }
 
 export function retryAfterMs(value: string | null, now = Date.now()): number | undefined {
@@ -42,12 +49,18 @@ export function pollKey(provider: unknown, account: unknown): string {
   return `${provider}:${account.trim().toLowerCase()}`;
 }
 
+function money(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 // Allowlist the projection before persisting anything supplied by a collector.
 // Tokens, provider responses and exception messages must never enter this table.
-export function sanitizePollSnapshot(value: unknown, key: string): PollSnapshot {
+export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now()): PollSnapshot {
   const input = value as PollSnapshot | undefined;
+  const updatedAtMs = input?.usage ? Date.parse(input.usage.updatedAt) : Number.NaN;
   if (!input || pollKey(input.provider, input.account) !== key ||
-      !input.usage || !Number.isFinite(Date.parse(input.usage.updatedAt))) {
+      !input.usage || !Number.isFinite(updatedAtMs) ||
+      updatedAtMs > now + MAX_FUTURE_SNAPSHOT_SKEW_MS) {
     throw new Error("invalid capacity snapshot");
   }
   const window = (raw: CapacityWindow | null): CapacityWindow | null => {
@@ -59,7 +72,11 @@ export function sanitizePollSnapshot(value: unknown, key: string): PollSnapshot 
     }
     return { usedPercent: raw.usedPercent, windowMinutes: raw.windowMinutes, resetsAt: raw.resetsAt };
   };
-  const usage: CapacityResult["usage"] & { accountOrganization?: string } = {
+  const usage: CapacityResult["usage"] & {
+    accountOrganization?: string;
+    cloudCredits?: CapacityCloudCredits;
+    extraUsage?: CapacityExtraUsage;
+  } = {
     accountEmail: input.account,
     loginMethod: typeof input.usage.loginMethod === "string" ? input.usage.loginMethod.slice(0, 100) : undefined,
     primary: window(input.usage.primary),
@@ -69,13 +86,47 @@ export function sanitizePollSnapshot(value: unknown, key: string): PollSnapshot 
   };
   if (!usage.primary && !usage.secondary && !usage.tertiary) throw new Error("missing capacity windows");
   if (input.provider === "claude") {
-    usage.accountOrganization = typeof input.usage.accountOrganization === "string"
-      ? input.usage.accountOrganization.slice(0, 320) : undefined;
+    const claudeUsage = input.usage;
+    usage.accountOrganization = typeof claudeUsage.accountOrganization === "string"
+      ? claudeUsage.accountOrganization.slice(0, 320) : undefined;
+    // Malformed credit blocks are advisory next to the quota windows: drop them
+    // rather than rejecting a snapshot whose windows are valid.
+    const cloud = claudeUsage.cloudCredits;
+    if (cloud && typeof cloud === "object") {
+      const limit = cloud.limitUsd;
+      const remaining = cloud.remainingUsd;
+      const expiresAt = typeof cloud.expiresAt === "string" && Number.isFinite(Date.parse(cloud.expiresAt))
+        ? cloud.expiresAt
+        : undefined;
+      if (money(limit) && limit > 0 && money(remaining) && remaining <= limit) {
+        usage.cloudCredits = {
+          limitUsd: limit,
+          remainingUsd: remaining,
+          ...(expiresAt ? { expiresAt } : {}),
+          ...(cloud.locked === true ? { locked: true } : {}),
+        };
+      }
+    }
+    const extra = claudeUsage.extraUsage;
+    if (extra && typeof extra === "object") {
+      const used = extra.usedAmount;
+      const limit = extra.limitAmount;
+      if (money(used) && money(limit) && typeof extra.currency === "string" && /^[A-Z]{3}$/.test(extra.currency)) {
+        usage.extraUsage = { usedAmount: used, limitAmount: limit, currency: extra.currency };
+      }
+    }
   } else if (input.usage.credits) {
     const { balance, unlimited } = input.usage.credits;
     if (typeof balance !== "string" || !/^\d+(?:\.\d+)?$/.test(balance) || balance.length > 100 ||
         typeof unlimited !== "boolean") throw new Error("invalid capacity credits");
     usage.credits = { balance, unlimited };
+  }
+  if (input.provider === "codex" && input.usage.quotaPool !== undefined) {
+    if (typeof input.usage.quotaPool !== "string" ||
+        !/^(?:legacy|codex(?:_[a-z0-9-]+)?)$/u.test(input.usage.quotaPool)) {
+      throw new Error("invalid capacity quota pool");
+    }
+    usage.quotaPool = input.usage.quotaPool;
   }
   return { provider: input.provider, account: input.account, usage, pace: null } as PollSnapshot;
 }
@@ -100,7 +151,7 @@ export class CapacityPollStore {
       const snapshot = row?.snapshot ? JSON.parse(row.snapshot) as PollSnapshot : undefined;
       if (row && row.next_at > now) return { nextAt: row.next_at, snapshot };
       const lease = crypto.randomUUID();
-      const nextAt = now + POLL_INTERVAL_MS;
+      const nextAt = now + pollIntervalMs(provider);
       this.db.query(`INSERT INTO capacity_poll(account_key,next_at,lease) VALUES(?,?,?)
         ON CONFLICT(account_key) DO UPDATE SET next_at=excluded.next_at,lease=excluded.lease`)
         .run(key, nextAt, lease);
@@ -116,6 +167,18 @@ export class CapacityPollStore {
     catch { return undefined; }
   }
 
+  // The remote coordinator owns leases and cooldowns. This cache changes only
+  // the validated fallback value, so it cannot steal or extend local state.
+  cacheSnapshot(provider: PollProvider, account: string, value: unknown): void {
+    const key = pollKey(provider, account);
+    const snapshot = sanitizePollSnapshot(value, key);
+    this.db.transaction(() => {
+      this.db.query(`INSERT INTO capacity_poll(account_key,next_at,lease,failures,snapshot) VALUES(?,?, '',0,?)
+        ON CONFLICT(account_key) DO UPDATE SET snapshot=excluded.snapshot`)
+        .run(key, 0, JSON.stringify(snapshot));
+    }).immediate();
+  }
+
   complete(provider: PollProvider, account: string, lease: string,
     result: { snapshot?: unknown; status?: number; retryAfterMs?: number }, now = Date.now()): boolean {
     const key = pollKey(provider, account);
@@ -126,7 +189,7 @@ export class CapacityPollStore {
       const failures = snapshot ? 0 : Math.min(row.failures + 1, 8);
       const backoff = snapshot ? 0 : result.status === 429
         ? RATE_LIMIT_COOLDOWN_MS * 2 ** Math.min(failures - 1, 2)
-        : POLL_INTERVAL_MS * 2 ** Math.min(failures - 1, 3);
+        : pollIntervalMs(provider) * 2 ** Math.min(failures - 1, 3);
       const retry = Number.isFinite(result.retryAfterMs) && result.retryAfterMs! > 0 ? result.retryAfterMs! : 0;
       this.db.query("UPDATE capacity_poll SET next_at=?,lease='',failures=?,snapshot=? WHERE account_key=?")
         .run(Math.max(row.next_at, now + backoff, now + retry), failures,
@@ -185,6 +248,7 @@ export async function coordinatedCapacity<T extends PollSnapshot>(
   const key = pollKey(provider, account);
   const coordinator = options.coordinator ?? pollingCoordinator();
   const now = options.now ?? Date.now;
+  const nowMs = now();
   const local = options.store ?? new CapacityPollStore(
     process.env.SPENDWATCH_CAPACITY_CACHE ?? join(homedir(), ".local/share/spendwatch/capacity-poll.db"));
   try {
@@ -204,8 +268,11 @@ export async function coordinatedCapacity<T extends PollSnapshot>(
         }
         throw new CapacityCoordinatorUnavailableError();
       }
-    } else claim = local.claim(provider, account, now());
-    if (claim.snapshot) sanitizePollSnapshot(claim.snapshot, key);
+    } else claim = local.claim(provider, account, nowMs);
+    if (claim.snapshot) {
+      sanitizePollSnapshot(claim.snapshot, key);
+      if (coordinator) local.cacheSnapshot(provider, account, claim.snapshot);
+    }
     if (!claim.lease) return claim.snapshot as T | undefined;
     let snapshot: T | undefined;
     let failure: unknown;
@@ -227,11 +294,8 @@ export async function coordinatedCapacity<T extends PollSnapshot>(
         );
       }
       catch { /* The reserved attempt still prevents retries when completion is lost. */ }
-      if (snapshot) {
-        const cached = local.claim(provider, account, now());
-        if (cached.lease) local.complete(provider, account, cached.lease, { snapshot }, now());
-      }
-    } else local.complete(provider, account, claim.lease, result, now());
+      if (snapshot) local.cacheSnapshot(provider, account, snapshot);
+    } else local.complete(provider, account, claim.lease, result, nowMs);
     if (failure) throw failure;
     return snapshot ?? claim.snapshot as T | undefined;
   } finally { if (!options.store) local.close(); }

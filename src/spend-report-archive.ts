@@ -1,6 +1,7 @@
 import { Database } from "./database";
 import type { Report } from "./aggregate";
 import { settleAcrossMacs } from "./gateway-settle";
+import { installationRowKey, restoredInstallationLineage, restoredMonthlySuppression, type ArchivedInstallationReport } from "./installation-lineage";
 import { mergeReports } from "./reports";
 
 export function initReportArchive(db: Database): void {
@@ -115,8 +116,19 @@ export function archiveSource(db: Database, report: Report): string {
  */
 export type ArchiveOutcome = "accepted" | "fewer" | "placement";
 
+/**
+ * The stored report JSON of a month under one archive label. Coverage guards compare these exact bytes with
+ * their baseline hash, so the query stays portable (no JSON functions) and the hashing happens in TypeScript.
+ */
+export function storedReportRows(db: Database, month: string, source: string): string[] {
+  return db.query<{ report_json: string }, [string, string]>(
+    "SELECT report_json FROM spend_report WHERE month = ? AND source = ?",
+  ).all(month, source).map((row) => row.report_json);
+}
+
 /** `force` writes the report whatever is stored: the caller has already decided for the month's sources together. */
 export function archiveReport(db: Database, report: Report, source: string, generatedAt: number, force = false): ArchiveOutcome {
+  const { captureCoverage: _renderOnly, ...archived } = report;
   const result = db.prepare(`
     INSERT INTO spend_report(month, source, calls, observed_calls, ledger, routed_calls, report_json, updated_at)
     VALUES (?,?,?,?,?,?,?,?)
@@ -125,7 +137,7 @@ export function archiveReport(db: Database, report: Report, source: string, gene
       routed_calls = excluded.routed_calls, report_json = excluded.report_json, updated_at = excluded.updated_at
     WHERE ${force ? "1 = 1" : fullerRead("spend_report")}
   `).run(report.period!.key, source, report.apiCalls, report.observedCalls ?? report.apiCalls, report.ledger ? 1 : 0,
-    report.routedCalls ?? 0, JSON.stringify(report), generatedAt);
+    report.routedCalls ?? 0, JSON.stringify(archived), generatedAt);
   if (result.changes > 0) return "accepted";
   const stored = db.query<{ routed: number }, [string, string]>(
     "SELECT COALESCE(routed_calls, 0) AS routed FROM spend_report WHERE month = ? AND source = ?",
@@ -141,18 +153,49 @@ export function archiveReport(db: Database, report: Report, source: string, gene
 export function loadArchivedReports(path: string): Report[] {
   const db = new Database(path, { readonly: true, create: false });
   try {
-    const groups = new Map<string, Report[]>();
-    const archived = db.query<{ report_json: string }, []>("SELECT report_json FROM spend_report ORDER BY month, source").all()
-      .map((row) => JSON.parse(row.report_json) as Report);
-    for (const report of settleAcrossMacs(archived)) {
+    const groups = new Map<string, Array<{ report: Report; archiveSource: string; lineage: boolean }>>();
+    const hasMonthlyRows = Boolean(db.query<{ name: string }, []>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='spend_month'",
+    ).get());
+    const archived = db.query<{ month: string; source: string; report_json: string; storedTokens: number | null }, []>(
+      `SELECT r.month, r.source, r.report_json ${hasMonthlyRows ? ", m.tokens AS storedTokens" : ", NULL AS storedTokens"}
+       FROM spend_report r ${hasMonthlyRows ? "LEFT JOIN spend_month m ON m.month=r.month AND m.source=r.source" : ""}
+       ORDER BY r.month, r.source`,
+    ).all().map((row): ArchivedInstallationReport => ({
+      month: row.month, archiveSource: row.source, ...(row.storedTokens === null ? {} : { storedTokens: row.storedTokens }),
+      report: JSON.parse(row.report_json) as Report,
+    }));
+    const monthly = hasMonthlyRows ? restoredMonthlySuppression(archived) : undefined;
+    const lineage = monthly?.lineage ?? restoredInstallationLineage(archived);
+    const suppression = monthly?.suppressed ?? lineage.suppressed;
+    const shadowWinners = new Set(lineage.shadows.map((shadow) => shadow.winner));
+    const uncertain = monthly?.uncertain ?? new Set<string>();
+    const visible = archived.filter((row) => !suppression.has(installationRowKey(row.month, row.archiveSource)));
+    const settled = settleAcrossMacs(visible.map((row) => row.report));
+    for (let index = 0; index < settled.length; index++) {
+      const report = settled[index]!;
+      const row = visible[index]!;
       const key = JSON.stringify([report.period!.key, report.source]);
       const group = groups.get(key) ?? [];
-      group.push(report);
+      group.push({
+        report,
+        archiveSource: row.archiveSource,
+        lineage: shadowWinners.has(installationRowKey(row.month, row.archiveSource)),
+      });
       groups.set(key, group);
     }
-    return [...groups.values()].map((reports) => reports.length === 1
-      ? reports[0]!
-      : mergeReports(reports, reports[0]!.source, "service", true));
+    return [...groups.values()].map((entries) => {
+      const reports = entries.map((entry) => entry.report);
+      const result = reports.length === 1 ? reports[0]! : mergeReports(reports, reports[0]!.source, "service", true);
+      const keys = entries.map((entry) => installationRowKey(entries[0]!.report.period!.key, entry.archiveSource));
+      if (entries.some((entry) => entry.lineage)) {
+        (result as Report & { lineageWarning?: string }).lineageWarning =
+          keys.some((key) => uncertain.has(key))
+            ? "Restored installation snapshots overlap, but stored totals disagree with report detail; both remain visible. Exact historical overlap unavailable."
+            : "Restored installation snapshots overlap; fullest retained snapshot shown. Exact historical overlap unavailable.";
+      }
+      return result;
+    });
   } finally {
     db.close();
   }

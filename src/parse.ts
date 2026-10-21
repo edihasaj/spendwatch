@@ -3,6 +3,7 @@ import type { Usage } from "./pricing";
 import { projectFromCwd } from "./projects";
 import { isMarked, markedId } from "./gateway-ledger-files";
 import { routedMessage, type ClaudeCtx } from "./claude-routed";
+import type { AccountAttribution } from "./codex-account-attribution";
 
 // {sub, deep} for a shell command, for spreading onto a tooluse event.
 export function cmdParts(command: string): { sub: string; deep: string } {
@@ -60,7 +61,7 @@ export interface GatewayMark {
 
 export type Event =
   | { t: "prompt"; sessionId: string; promptId: string; text: string; sidechain: boolean; ts: number }
-  | { t: "api"; sessionId: string; requestId: string; model?: string; usage: Usage; costUsd?: number; sidechain: boolean; ts: number; gateway?: GatewayMark }
+  | { t: "api"; sessionId: string; requestId: string; model?: string; modelProvider?: string; usage: Usage; costUsd?: number; sidechain: boolean; ts: number; gateway?: GatewayMark; accountAttribution?: AccountAttribution }
   | { t: "tooluse"; sessionId: string; requestId: string; id: string; name: string; argChars: number; sub?: string; deep?: string; detail?: string; ts: number }
   | { t: "toolresult"; sessionId: string; id: string; chars: number; error?: boolean; exit?: number; ts: number }
   | { t: "meta"; sessionId: string; project?: string; model?: string; ts: number }
