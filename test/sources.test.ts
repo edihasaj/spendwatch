@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { Aggregator } from "../src/aggregate";
 import { IncrementalReader } from "../src/scan";
-import { defaultCodexRoots, discover, pollOrder } from "../src/sources";
+import { CodexCompressedRolloutError } from "../src/codex-compressed-rollouts";
+import { defaultCodexRoots, discover, pollOrder, type SourceFile } from "../src/sources";
 import { tempDir } from "./tmp";
 
 // Minimal unsigned JWT: Codex reads the payload of auth.json's id_token only.
@@ -12,6 +14,29 @@ function idToken(email: string, plan: string): string {
     JSON.stringify({ email, "https://api.openai.com/auth": { chatgpt_plan_type: plan } }),
   ).toString("base64url");
   return `header.${payload}.signature`;
+}
+
+function compressed(path: string, text: string): void {
+  const result = spawnSync("zstd", ["-q", "-c"], { input: text });
+  if (result.status !== 0 || !Buffer.isBuffer(result.stdout)) throw new Error("zstd test fixture failed");
+  writeFileSync(path, result.stdout);
+}
+
+function rolloutLines(response = "plain", provider = "openai"): string {
+  return [
+    JSON.stringify({ timestamp: "2026-10-18T10:00:00Z", type: "session_meta", payload: { id: "archive", model: "gpt-5.1-codex", model_provider: provider, cwd: "/work/archive" } }),
+    JSON.stringify({ timestamp: "2026-10-18T10:00:01Z", type: "token_usage_record", payload: { response_id: response, usage: { input_tokens: 1_000, cached_input_tokens: 0, output_tokens: 100 } } }),
+  ].join("\n") + "\n";
+}
+
+function codexReport(files: ReadonlyArray<SourceFile>) {
+  const aggregate = new Aggregator();
+  const reader = new IncrementalReader(aggregate);
+  for (const file of files) {
+    reader.poll(file);
+    reader.flush(file);
+  }
+  return aggregate.report();
 }
 
 describe("Codex profile discovery", () => {
@@ -224,6 +249,148 @@ describe("Codex profile discovery", () => {
       if (previousFree === undefined) delete process.env.SPENDWATCH_INCLUDE_FREE;
       else process.env.SPENDWATCH_INCLUDE_FREE = previousFree;
     }
+  });
+});
+
+describe("compressed Codex archives", () => {
+  const rollout = "rollout-2026-10-18T10-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl";
+
+  function discoverCodex(home: string, roots: string[]) {
+    const config = join(home, "config.json");
+    writeFileSync(config, JSON.stringify(roots.map((path) => ({ agent: "codex", path }))));
+    const previous = process.env.SPENDWATCH_CONFIG;
+    process.env.SPENDWATCH_CONFIG = config;
+    try {
+      return discover({ sinceMs: 0, agents: new Set(["codex"]) }).find((status) => status.id === "codex")!;
+    } finally {
+      if (previous === undefined) delete process.env.SPENDWATCH_CONFIG;
+      else process.env.SPENDWATCH_CONFIG = previous;
+    }
+  }
+
+  test("reads a compressed archive with its profile account and native totals", () => {
+    const home = tempDir("spendwatch-zstd-");
+    const archive = join(home, ".codex-personal", "archived_sessions");
+    mkdirSync(archive, { recursive: true });
+    compressed(join(archive, `${rollout}.zst`), rolloutLines());
+
+    const codex = discoverCodex(home, [archive]);
+    expect(codex.files).toHaveLength(1);
+    expect(codex.files[0]!.path).toEndWith(rollout);
+    expect(codex.files[0]!.account).toBe("personal");
+    expect(codexReport(codex.files)).toMatchObject({ apiCalls: 1, totalTokens: 1_100 });
+  });
+
+  test("uses the existing duplicate selection for an identical plain and compressed archive", () => {
+    const home = tempDir("spendwatch-zstd-");
+    const live = join(home, ".codex-personal", "sessions");
+    const archive = join(home, ".codex-personal", "archived_sessions");
+    mkdirSync(live, { recursive: true }); mkdirSync(archive, { recursive: true });
+    writeFileSync(join(live, rollout), rolloutLines());
+    compressed(join(archive, `${rollout}.zst`), rolloutLines());
+
+    const codex = discoverCodex(home, [live, archive]);
+    expect(codex.files.map((file) => file.path)).toEqual([join(live, rollout)]);
+    expect(codexReport(codex.files).totalTokens).toBe(1_100);
+  });
+
+  test("keeps divergent compressed duplicates visible", () => {
+    const home = tempDir("spendwatch-zstd-");
+    const live = join(home, ".codex-personal", "sessions");
+    const archive = join(home, ".codex-personal", "archived_sessions");
+    mkdirSync(live, { recursive: true }); mkdirSync(archive, { recursive: true });
+    writeFileSync(join(live, rollout), rolloutLines("left"));
+    compressed(join(archive, `${rollout}.zst`), rolloutLines("right"));
+
+    expect(() => discoverCodex(home, [live, archive])).toThrow("divergent complete copies");
+  });
+
+  test("rejects malformed and truncated compressed streams before reporting", () => {
+    const home = tempDir("spendwatch-zstd-");
+    const archive = join(home, ".codex-personal", "archived_sessions");
+    mkdirSync(archive, { recursive: true });
+    const path = join(archive, `${rollout}.zst`);
+
+    compressed(path, "{bad json}\n");
+    expect(() => discoverCodex(home, [archive])).toThrow(CodexCompressedRolloutError);
+    compressed(path, JSON.stringify({ valid: true }));
+    expect(() => discoverCodex(home, [archive])).toThrow(CodexCompressedRolloutError);
+    writeFileSync(path, Buffer.from("not a zstd stream"));
+    expect(() => discoverCodex(home, [archive])).toThrow(CodexCompressedRolloutError);
+  });
+
+  test("fails visibly when the decoder is unavailable", () => {
+    const home = tempDir("spendwatch-zstd-");
+    const archive = join(home, ".codex-personal", "archived_sessions");
+    mkdirSync(archive, { recursive: true });
+    compressed(join(archive, `${rollout}.zst`), rolloutLines());
+    const previous = process.env.SPENDWATCH_ZSTD_BIN;
+    process.env.SPENDWATCH_ZSTD_BIN = "spendwatch-test-no-zstd";
+    try {
+      expect(() => discoverCodex(home, [archive])).toThrow(CodexCompressedRolloutError);
+    } finally {
+      if (previous === undefined) delete process.env.SPENDWATCH_ZSTD_BIN;
+      else process.env.SPENDWATCH_ZSTD_BIN = previous;
+    }
+  });
+
+  test("reuses an intact private snapshot across discovery passes", () => {
+    const home = tempDir("spendwatch-zstd-");
+    const archive = join(home, ".codex-personal", "archived_sessions");
+    mkdirSync(archive, { recursive: true });
+    compressed(join(archive, `${rollout}.zst`), rolloutLines());
+    const first = discoverCodex(home, [archive]).files[0]!.path;
+    const second = discoverCodex(home, [archive]).files[0]!.path;
+    expect(second).toBe(first);
+  });
+
+  test("keeps a watch reader's identity when a plain rollout moves to zstd", () => {
+    const home = tempDir("spendwatch-zstd-");
+    const live = join(home, ".codex-personal", "sessions");
+    const archive = join(home, ".codex-personal", "archived_sessions");
+    mkdirSync(live, { recursive: true }); mkdirSync(archive, { recursive: true });
+    const plain = join(live, rollout);
+    const text = rolloutLines();
+    writeFileSync(plain, text);
+    const aggregate = new Aggregator();
+    const reader = new IncrementalReader(aggregate);
+
+    const first = discoverCodex(home, [live, archive]).files[0]!;
+    reader.poll(first); reader.flush(first);
+    renameSync(plain, join(home, "moved-rollout.jsonl"));
+    compressed(join(archive, `${rollout}.zst`), text);
+    const moved = discoverCodex(home, [live, archive]).files[0]!;
+    reader.poll(moved); reader.flush(moved);
+
+    expect(aggregate.report()).toMatchObject({ apiCalls: 1, totalTokens: 1_100 });
+  });
+
+  test("preserves gateway settlement metadata from a compressed native archive", () => {
+    const home = tempDir("spendwatch-zstd-");
+    const archive = join(home, ".codex-personal", "archived_sessions");
+    mkdirSync(archive, { recursive: true });
+    compressed(join(archive, `${rollout}.zst`), rolloutLines("resp_gl_archive", "subscription_gateway"));
+
+    const report = codexReport(discoverCodex(home, [archive]).files);
+    expect(report).toMatchObject({ apiCalls: 1, totalTokens: 1_100 });
+    expect(report.gatewayUnconfirmed?.map((call) => call.id)).toEqual(["archive"]);
+  });
+
+  test("refuses a symlinked archive subdirectory instead of omitting it", () => {
+    const home = tempDir("spendwatch-zstd-");
+    const archive = join(home, ".codex-personal", "archived_sessions");
+    const target = join(home, "outside");
+    mkdirSync(archive, { recursive: true }); mkdirSync(target, { recursive: true });
+    symlinkSync(target, join(archive, "moved"));
+    expect(() => discoverCodex(home, [archive])).toThrow("symlinked Codex archive directory");
+  });
+
+  test("refuses a dangling compressed rollout link before the mtime filter", () => {
+    const home = tempDir("spendwatch-zstd-");
+    const archive = join(home, ".codex-personal", "archived_sessions");
+    mkdirSync(archive, { recursive: true });
+    symlinkSync(join(home, "missing.jsonl.zst"), join(archive, `${rollout}.zst`));
+    expect(() => discoverCodex(home, [archive])).toThrow(CodexCompressedRolloutError);
   });
 });
 

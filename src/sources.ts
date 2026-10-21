@@ -16,7 +16,8 @@ import { carryLedger, claudeFile, gatewayWarning } from "./gateway-sources";
 import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
 import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
-import { walkJsonl } from "./scan";
+import { walkCodexJsonl, walkJsonl } from "./scan";
+import { assertSafeCodexCompressedRollout, codexRolloutSnapshot } from "./codex-compressed-rollouts";
 import { collectCopilot, defaultCopilotRoots } from "./copilot";
 import { defaultMissionRoots, readMission } from "./mission";
 import { collectAutoreview } from "./autoreview";
@@ -337,9 +338,15 @@ function collectCodex(dir: string, account: string, sinceMs: number, gateway?: G
   if (!existsSync(dir)) return files;
   const fallback = account ? { account, basis: "configured-route" as const } :
     (localQwenOnly || isLocalQwenWorkerRoot(dir) ? { account: "Local Qwen", basis: "profile" as const } : codexAccount(dir));
-  for (const path of walkJsonl(dir)) {
-    if (!path.includes("rollout-")) continue;
-    if (!mtimeOk(path, sinceMs)) continue;
+  for (const sourcePath of walkCodexJsonl(dir)) {
+    if (!sourcePath.includes("rollout-")) continue;
+    // A dangling or retargeted compressed link must not disappear through an
+    // mtime check before the adapter can reject it.
+    assertSafeCodexCompressedRollout(sourcePath);
+    // Filter the native archive before decoding. A temp snapshot must never
+    // make an old source file look current.
+    if (!mtimeOk(sourcePath, sinceMs)) continue;
+    const path = codexRolloutSnapshot(sourcePath);
     const ctx = newCodexCtx(gateway);
     let renewed = false;
     // A rollout keeps its identity when Codex moves it into archived_sessions, so a watching reader carries on
