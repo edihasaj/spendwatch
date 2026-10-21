@@ -228,8 +228,10 @@ spendwatch eval --sqlite ~/.local/share/spendwatch/routing.db --json
 
 `spendwatch limits` turns sanitized provider capacity JSON into a focused
 planning page with one compact account card per identity. Wide screens use
-three columns. Cards show provider, account, plan, capture time, utilization
-bars, pace, and reset times; unreported windows are omitted instead of shown as
+three columns. Cards show provider, account, plan, capture time, the percent
+used, a capacity bar, pace, and reset times. The bar shows what is left: it is
+full at the start of a window and drains as the window is used, so a full bar
+means there is room to work. Unreported windows are omitted instead of shown as
 empty limits. Claude shows
 rolling 5-hour and weekly capacity; Codex shows whichever windows its live
 account response currently reports (including the five-hour window when

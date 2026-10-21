@@ -56,7 +56,9 @@ test("a stored page ages out without collection, and a new snapshot restores it"
   const snapshotTime = new Date(statSync(input).mtimeMs).toISOString();
   const live = render(sampledAt);
   expect(live).toContain("<strong>23% used</strong>");
-  expect(live).toContain('aria-label="5-hour window utilization"');
+  expect(live).toContain('aria-label="5-hour window remaining"');
+  // The bar drains as the window is used, so a full bar means room to work.
+  expect(live).toContain('aria-valuenow="77"><i style="width:77%"></i>');
   expect(live).not.toContain("Best now");
 
   const stale = render(sampledAt + 16 * 60_000);
