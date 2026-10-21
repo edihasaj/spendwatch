@@ -447,3 +447,33 @@ describe("Codex semantic duplicate dominance", () => {
     )).toThrow(CodexRolloutCopyError);
   });
 });
+
+describe("Codex semantic dominance for nonbilling differences", () => {
+  const user = (n: number) => J({ timestamp: iso(1600 + n), type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `u${n}` }] } });
+  const assistant = (n: number) => J({ timestamp: iso(1700 + n), type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: `a${n}` }] } });
+  const labelled = (n: number, metadata: unknown) => J({ timestamp: iso(1800 + n), type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: `l${n}` }], metadata } });
+  const pick = (a: readonly string[], b: readonly string[]) => {
+    const root = tempDir("spendwatch-sem-rules-");
+    const left = file(root, ".codex/sessions", a);
+    const right = file(root, ".codex-archive/archived_sessions", b);
+    return selectCodexRolloutCopies([{ path: left, priority: 1, value: "left" }, { path: right, priority: 0, value: "right" }],
+      { semanticDominance: createCodexRolloutSemanticDominance() });
+  };
+
+  test("a bare turn label is not content; any other metadata still differs", () => {
+    expect(pick([META, labelled(1, { turn_id: "t1" }), record(1)], [META, labelled(1, undefined), record(1)])).toHaveLength(1);
+    expect(() => pick([META, labelled(1, { turn_id: "t1", x: 1 }), record(1)], [META, labelled(1, undefined), record(1)])).toThrow();
+  });
+
+  test("extra user or developer messages may only add to the winner within the same billing segment", () => {
+    expect(pick([META, user(1), record(1), user(2), record(2)], [META, record(1), record(2)])).toEqual(["left"]);
+    expect(() => pick([META, assistant(1), record(1)], [META, record(1)])).toThrow();
+    expect(() => pick([META, record(1), user(1), record(2)], [META, user(1), record(1), record(2)])).toThrow();
+    expect(() => pick([META, user(1), record(1)], [META, user(2), record(1)])).toThrow();
+  });
+
+  test("an extra observed call is accepted only as a re-emission of the preceding token_count", () => {
+    expect(pick([META, count(1), count(1), count(2)], [META, count(1), count(2)])).toEqual(["left"]);
+    expect(() => pick([META, count(1), count(3), count(2)], [META, count(1), count(2)])).toThrow();
+  });
+});
