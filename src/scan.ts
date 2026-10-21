@@ -1,5 +1,5 @@
 // File discovery helpers + incremental JSONL reading (shared by report and watch).
-import { readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
+import { readdirSync, statSync, lstatSync, openSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { createHash, type Hash } from "node:crypto";
 import type { EventSink } from "./monthly";
@@ -24,6 +24,45 @@ export function* walkJsonl(dir: string): Generator<string> {
     }
     if (st.isDirectory()) yield* walkJsonl(p);
     else if (e.endsWith(".jsonl")) yield p;
+  }
+}
+
+/**
+ * Codex retains archived sessions as `.jsonl.zst`; other collectors must not
+ * mistake compressed bytes for JSONL, so keep its discovery separate.
+ */
+export function* walkCodexJsonl(dir: string): Generator<string> {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    throw new Error(`Could not read Codex archive directory: ${dir}`);
+  }
+  for (const entry of entries) {
+    const path = join(dir, entry);
+    let stat;
+    try {
+      stat = lstatSync(path);
+    } catch {
+      continue;
+    }
+    if (stat.isDirectory()) yield* walkCodexJsonl(path);
+    else if (stat.isSymbolicLink()) {
+      // A profile root itself may intentionally be an alias, but an archive
+      // subtree changing underneath it makes discovery incomplete or cyclic.
+      // Do not quietly omit it.
+      try {
+        if (statSync(path).isDirectory()) {
+          throw new Error(`Refusing to follow symlinked Codex archive directory: ${path}`);
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("Refusing")) throw error;
+      }
+      if (entry.endsWith(".jsonl") || entry.endsWith(".jsonl.zst")) yield path;
+    }
+    // Yield a symlinked compressed file too: the adapter rejects it visibly
+    // rather than silently omitting potentially billable history.
+    else if (entry.endsWith(".jsonl") || entry.endsWith(".jsonl.zst")) yield path;
   }
 }
 

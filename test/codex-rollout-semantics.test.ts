@@ -29,6 +29,24 @@ function file(root: string, dir: string, lines: readonly string[]): string {
   return path;
 }
 
+const FACT = "{\"fact\":true}\n";
+const EMPTY_FACT = "{\"fact\":false}\n";
+const factSource = {
+  parse: (line: string) => line === FACT.slice(0, -1)
+    ? [{ t: "prompt" as const, sessionId: "facts", promptId: "facts", ts: 1, text: "fact", sidechain: false }]
+    : [],
+  semanticCtx: () => null,
+  semanticKey: "synthetic-facts-v1",
+  project: "?",
+};
+
+function factFile(root: string, dir: string, count: number): string {
+  mkdirSync(join(root, dir), { recursive: true });
+  const path = join(root, dir, ROLLOUT);
+  writeFileSync(path, count === 0 ? EMPTY_FACT : FACT.repeat(count));
+  return path;
+}
+
 describe("Codex semantic duplicate dominance", () => {
   test("keeps the strict default byte-prefix error for divergent complete copies", () => {
     const root = tempDir("spendwatch-sem-default-");
@@ -408,5 +426,24 @@ describe("Codex semantic duplicate dominance", () => {
     )).toEqual(["primary"]);
     // The proof reports shapes only: counts, never the prompts or patch output that made primary dominant.
     expect(codexRolloutManifestSummary(primary)).toEqual({ format: "counts", api: 3, observed: 3, responses: 6, nonbilling: 5 });
+  });
+
+  test("proves more than 100k parser facts but refuses a fact above the 250k ceiling", () => {
+    const dominance = createCodexRolloutSemanticDominance();
+    const root = tempDir("spendwatch-sem-event-budget-");
+    const retained = factFile(root, ".codex/sessions", 0);
+    const primary = factFile(root, ".codex-archive/archived_sessions", 100_001);
+    const retainedSource = { ...factSource, label: "retained" };
+    const primarySource = { ...factSource, label: "primary" };
+    expect(selectCodexRolloutCopies(
+      [{ path: retained, priority: 0, value: retainedSource }, { path: primary, priority: 1, value: primarySource }],
+      { semanticDominance: dominance },
+    )).toEqual([primarySource]);
+
+    const overLimit = factFile(root, ".codex-over-limit/archived_sessions", 250_001);
+    expect(() => selectCodexRolloutCopies(
+      [{ path: retained, priority: 0, value: retainedSource }, { path: overLimit, priority: 1, value: primarySource }],
+      { semanticDominance: createCodexRolloutSemanticDominance() },
+    )).toThrow(CodexRolloutCopyError);
   });
 });

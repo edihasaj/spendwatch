@@ -74,6 +74,18 @@ The proof ignores the recorder's positional `ordinal` and treats absent and
 null `content` as equivalent only for reasoning response items. Other content,
 routing, malformed rows and incomparable copies remain errors. Native files
 are never rewritten or concatenated.
+Each candidate proof is bounded to 128 MiB, 16 MiB per line, and 250,000 parsed
+facts; a larger or incomplete candidate remains an explicit divergent-copy error.
+
+Codex may retain immutable archived rollouts as `.jsonl.zst`. Spendwatch opens
+that native file without following links, checks it did not change while `zstd`
+decodes it, and validates a private immutable `.jsonl` snapshot before its
+normal parser and duplicate proof read it. A missing codec, malformed or
+truncated stream, source race or link fails collection visibly. The snapshot
+retains the original `.jsonl` basename, so a live rollout moving to a compressed
+archive keeps its watch identity. Decoding is capped at 1 GiB per rollout and
+64 GiB across 10,000 private snapshots; reaching either limit fails visibly
+rather than dropping archive history.
 
 ## Isolated Claude clients
 
