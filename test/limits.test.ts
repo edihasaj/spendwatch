@@ -483,6 +483,123 @@ describe("Codex limits", () => {
     expect(text).toContain("Codex · personal@example.com\t5h not active\tweekly 40% left");
   });
 
+  test("renders purchased, promotional, and paid credit lines on capacity cards", () => {
+    const now = Date.parse("2026-08-09T20:55:00Z");
+    const accounts = normalizeCodexLimits([
+      {
+        provider: "codex",
+        account: "credits@example.com",
+        usage: {
+          accountEmail: "credits@example.com",
+          loginMethod: "pro",
+          primary: { usedPercent: 23, windowMinutes: 300 },
+          updatedAt: "2026-08-09T20:49:38Z",
+          credits: { balance: "123", unlimited: false },
+        },
+      },
+      {
+        provider: "codex",
+        account: "unlimited@example.com",
+        usage: {
+          accountEmail: "unlimited@example.com",
+          loginMethod: "pro",
+          primary: { usedPercent: 23, windowMinutes: 300 },
+          updatedAt: "2026-08-09T20:49:38Z",
+          credits: { balance: "0", unlimited: true },
+        },
+      },
+      {
+        provider: "claude",
+        account: "claude@example.com",
+        usage: {
+          accountEmail: "claude@example.com",
+          loginMethod: "max",
+          primary: { usedPercent: 23, windowMinutes: 300 },
+          updatedAt: "2026-08-09T20:49:38Z",
+          cloudCredits: { limitUsd: 300, remainingUsd: 215, expiresAt: "2026-09-01T00:00:00.000Z" },
+          extraUsage: { usedAmount: 12.34, limitAmount: 50, currency: "USD" },
+        },
+      },
+    ]);
+    const html = renderLimitsHtml(accounts, { generatedAt: now });
+    const text = renderLimitsText(accounts, now);
+
+    expect(html).toContain(">123 credits</span>");
+    expect(html).toContain(">Unlimited credits</span>");
+    expect(html).toContain(">$215.00 cloud credits</span>");
+    expect(html).not.toContain("$215.00 cloud credits (expires");
+    expect(html).toContain('title="Promotional cloud credits, expires 2026-09-01"');
+    expect(html).toContain(">$12.34 / $50.00 extra usage</span>");
+    expect(text).toContain("\t$215.00 cloud credits");
+    expect(text).toContain("\t$12.34 / $50.00 extra usage");
+    expect(text).toContain("\tunlimited credits");
+  });
+
+  test("hides expired or locked promotional cloud credits", () => {
+    const now = Date.parse("2026-08-09T20:55:00Z");
+    const accounts = normalizeCodexLimits([
+      {
+        provider: "claude",
+        account: "expired@example.com",
+        usage: {
+          accountEmail: "expired@example.com",
+          loginMethod: "max",
+          primary: { usedPercent: 23, windowMinutes: 300 },
+          updatedAt: "2026-08-09T20:49:38Z",
+          cloudCredits: { limitUsd: 300, remainingUsd: 215, expiresAt: "2026-08-09T20:55:00.000Z" },
+        },
+      },
+      {
+        provider: "claude",
+        account: "locked@example.com",
+        usage: {
+          accountEmail: "locked@example.com",
+          loginMethod: "max",
+          primary: { usedPercent: 23, windowMinutes: 300 },
+          updatedAt: "2026-08-09T20:49:38Z",
+          cloudCredits: { limitUsd: 300, remainingUsd: 215, locked: true },
+        },
+      },
+    ]);
+    const html = renderLimitsHtml(accounts, { generatedAt: now });
+
+    expect(html).not.toContain("$215.00 cloud credits");
+  });
+
+  test("drops malformed Claude credit blocks while retaining quota windows", () => {
+    const accounts = normalizeCodexLimits([
+      {
+        provider: "claude",
+        account: "zero-limit@example.com",
+        usage: {
+          accountEmail: "zero-limit@example.com",
+          loginMethod: "max",
+          primary: { usedPercent: 23, windowMinutes: 300 },
+          cloudCredits: { limitUsd: 0, remainingUsd: 0 },
+        },
+      },
+      {
+        provider: "claude",
+        account: "invalid-shape@example.com",
+        usage: {
+          accountEmail: "invalid-shape@example.com",
+          loginMethod: "max",
+          primary: { usedPercent: 23, windowMinutes: 300 },
+          cloudCredits: { limitUsd: 300, remainingUsd: 215, expiresAt: "not-a-date" },
+          extraUsage: { usedAmount: 12.34, limitAmount: 50, currency: "US" },
+        },
+      },
+    ]);
+    const zeroLimit = accounts.find((account) => account.email === "zero-limit@example.com");
+    const invalidShape = accounts.find((account) => account.email === "invalid-shape@example.com");
+
+    expect(zeroLimit?.session).toMatchObject({ usedPercent: 23, windowMinutes: 300 });
+    expect(zeroLimit?.cloudCredits).toBeUndefined();
+    expect(invalidShape?.session).toMatchObject({ usedPercent: 23, windowMinutes: 300 });
+    expect(invalidShape?.cloudCredits).toEqual({ limitUsd: 300, remainingUsd: 215 });
+    expect(invalidShape?.extraUsage).toBeUndefined();
+  });
+
   test("renders Claude, Copilot, and Lokai with provider-specific capacity", () => {
     const accounts = normalizeCodexLimits([
       {

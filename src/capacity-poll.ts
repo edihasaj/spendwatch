@@ -2,7 +2,7 @@ import { Database } from "./database";
 import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { CapacityResult, CapacityWindow } from "./capacity-current";
+import type { CapacityCloudCredits, CapacityExtraUsage, CapacityResult, CapacityWindow } from "./capacity-current";
 import type { ClaudeCapacityResult } from "./claude-capacity";
 import {
   CapacityCoordinatorUnavailableError,
@@ -49,6 +49,10 @@ export function pollKey(provider: unknown, account: unknown): string {
   return `${provider}:${account.trim().toLowerCase()}`;
 }
 
+function money(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 // Allowlist the projection before persisting anything supplied by a collector.
 // Tokens, provider responses and exception messages must never enter this table.
 export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now()): PollSnapshot {
@@ -68,7 +72,11 @@ export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now
     }
     return { usedPercent: raw.usedPercent, windowMinutes: raw.windowMinutes, resetsAt: raw.resetsAt };
   };
-  const usage: CapacityResult["usage"] & { accountOrganization?: string } = {
+  const usage: CapacityResult["usage"] & {
+    accountOrganization?: string;
+    cloudCredits?: CapacityCloudCredits;
+    extraUsage?: CapacityExtraUsage;
+  } = {
     accountEmail: input.account,
     loginMethod: typeof input.usage.loginMethod === "string" ? input.usage.loginMethod.slice(0, 100) : undefined,
     primary: window(input.usage.primary),
@@ -78,8 +86,35 @@ export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now
   };
   if (!usage.primary && !usage.secondary && !usage.tertiary) throw new Error("missing capacity windows");
   if (input.provider === "claude") {
-    usage.accountOrganization = typeof input.usage.accountOrganization === "string"
-      ? input.usage.accountOrganization.slice(0, 320) : undefined;
+    const claudeUsage = input.usage;
+    usage.accountOrganization = typeof claudeUsage.accountOrganization === "string"
+      ? claudeUsage.accountOrganization.slice(0, 320) : undefined;
+    // Malformed credit blocks are advisory next to the quota windows: drop them
+    // rather than rejecting a snapshot whose windows are valid.
+    const cloud = claudeUsage.cloudCredits;
+    if (cloud && typeof cloud === "object") {
+      const limit = cloud.limitUsd;
+      const remaining = cloud.remainingUsd;
+      const expiresAt = typeof cloud.expiresAt === "string" && Number.isFinite(Date.parse(cloud.expiresAt))
+        ? cloud.expiresAt
+        : undefined;
+      if (money(limit) && limit > 0 && money(remaining) && remaining <= limit) {
+        usage.cloudCredits = {
+          limitUsd: limit,
+          remainingUsd: remaining,
+          ...(expiresAt ? { expiresAt } : {}),
+          ...(cloud.locked === true ? { locked: true } : {}),
+        };
+      }
+    }
+    const extra = claudeUsage.extraUsage;
+    if (extra && typeof extra === "object") {
+      const used = extra.usedAmount;
+      const limit = extra.limitAmount;
+      if (money(used) && money(limit) && typeof extra.currency === "string" && /^[A-Z]{3}$/.test(extra.currency)) {
+        usage.extraUsage = { usedAmount: used, limitAmount: limit, currency: extra.currency };
+      }
+    }
   } else if (input.usage.credits) {
     const { balance, unlimited } = input.usage.credits;
     if (typeof balance !== "string" || !/^\d+(?:\.\d+)?$/.test(balance) || balance.length > 100 ||

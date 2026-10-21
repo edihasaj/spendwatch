@@ -235,9 +235,10 @@ means there is room to work. Unreported windows are omitted instead of shown as
 empty limits. Claude shows
 rolling 5-hour and weekly capacity; Codex shows whichever windows its live
 account response currently reports (including the five-hour window when
-available under a model-specific Codex limit ID). A Codex account that has bought
-credits retains that information in the collected data, while the Capacity card
-stays focused on its quota windows. Copilot is paced against a manual
+available under a model-specific Codex limit ID). Under the plan name, a Codex
+account that has bought credits shows that balance, and a Claude account shows
+valid promotional cloud credits and paid extra usage when either has a balance
+or usage to report. Copilot is paced against a manual
 monthly ceiling instead of GitHub seat maths: 40,000 AI credits for $400 per
 calendar month, which fixes the credit price at $0.01. The card shows credits
 used against that budget, percent left, the money spent against the $400 cap,

@@ -45,3 +45,14 @@ account signed in now. Exports therefore use `Unknown Codex account` for the
 default profile. Named profiles are labelled as unverified profiles unless an
 operator explicitly supplies an account for that export root. The exporter
 never relabels historical quota percentages from a current credential.
+
+Credit blocks are reported next to the quota windows, not inside them, and they
+use different units. Claude's promotional cloud credits arrive as dollar
+amounts, while its paid extra usage arrives as integer cents; the collector
+converts the cents so both reach the dashboard in one currency unit. A
+malformed Claude credit block with invalid amounts — such as a non-finite amount
+or a remaining balance above its limit — is dropped while its snapshot's quota
+windows are kept. An unparsable promotional expiry is omitted, so the valid
+balance remains visible. A malformed Claude credit reading is a reporting gap,
+not a reason to discard an accurate window. Codex purchased-credit fields remain
+part of strict snapshot validation.
