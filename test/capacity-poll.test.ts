@@ -242,6 +242,63 @@ test("rejects materially future snapshots while allowing bounded clock skew", ()
   expect(() => sanitizePollSnapshot(future, "codex:edi@example.com", now)).toThrow("invalid capacity snapshot");
 });
 
+test("keeps valid Claude credit blocks and drops malformed ones without losing windows", () => {
+  const now = Date.parse("2026-10-14T10:00:00Z");
+  const claude = {
+    provider: "claude",
+    account: "claude@example.com",
+    pace: null,
+    usage: {
+      accountEmail: "claude@example.com",
+      primary: { usedPercent: 12, windowMinutes: 300 },
+      secondary: null,
+      tertiary: null,
+      updatedAt: new Date(now).toISOString(),
+      cloudCredits: { limitUsd: 300, remainingUsd: 215, expiresAt: "2026-11-01T00:00:00.000Z" },
+      extraUsage: { usedAmount: 12.34, limitAmount: 50, currency: "USD" },
+    },
+  };
+  const valid = sanitizePollSnapshot(claude, "claude:claude@example.com", now);
+  expect(valid.usage).toMatchObject({
+    primary: { usedPercent: 12, windowMinutes: 300 },
+    cloudCredits: { limitUsd: 300, remainingUsd: 215 },
+    extraUsage: { usedAmount: 12.34, limitAmount: 50, currency: "USD" },
+  });
+
+  const malformed = sanitizePollSnapshot({
+    ...claude,
+    usage: {
+      ...claude.usage,
+      cloudCredits: { limitUsd: "300", remainingUsd: 215, expiresAt: "not-a-date" },
+      extraUsage: { usedAmount: -1, limitAmount: 50, currency: "USD" },
+    },
+  }, "claude:claude@example.com", now);
+  expect(malformed.usage.primary).toEqual({ usedPercent: 12, windowMinutes: 300, resetsAt: undefined });
+  expect(malformed.usage).not.toHaveProperty("cloudCredits");
+  expect(malformed.usage).not.toHaveProperty("extraUsage");
+
+  const zeroLimit = sanitizePollSnapshot({
+    ...claude,
+    usage: { ...claude.usage, cloudCredits: { limitUsd: 0, remainingUsd: 0 } },
+  }, "claude:claude@example.com", now);
+  expect(zeroLimit.usage.primary).not.toBeNull();
+  expect(zeroLimit.usage).not.toHaveProperty("cloudCredits");
+
+  const invalidExpiryAndCurrency = sanitizePollSnapshot({
+    ...claude,
+    usage: {
+      ...claude.usage,
+      cloudCredits: { limitUsd: 300, remainingUsd: 215, expiresAt: "not-a-date" },
+      extraUsage: { usedAmount: 12.34, limitAmount: 50, currency: "US" },
+    },
+  }, "claude:claude@example.com", now);
+  expect(invalidExpiryAndCurrency.usage).toMatchObject({
+    cloudCredits: { limitUsd: 300, remainingUsd: 215 },
+  });
+  expect(invalidExpiryAndCurrency.usage.cloudCredits).not.toHaveProperty("expiresAt");
+  expect(invalidExpiryAndCurrency.usage).not.toHaveProperty("extraUsage");
+});
+
 test("three HTTP clients receive one grant, share the result, and do not store credentials", async () => {
   const store = new CapacityPollStore(":memory:");
   const server = Bun.serve({ port: 0, fetch: (request) => handleCapacityPoll(request, store) });
