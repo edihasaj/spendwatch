@@ -1,6 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { defaultCodexRoots } from "./sources";
+
+const UNKNOWN_CODEX_ACCOUNT = "Unknown Codex account";
 
 interface ExportWindow {
   kind: "session" | "weekly";
@@ -25,26 +27,23 @@ interface SessionEvent {
   windows: ExportWindow[];
 }
 
-function safeJson(path: string): any | undefined {
-  try {
-    return JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    return undefined;
-  }
+export interface CapacityExportRoot {
+  path: string;
+  /** Explicit operator configuration, never inferred from the current auth file. */
+  account?: string;
 }
 
-function accountEmailFromAuth(sessionsPath: string): string | undefined {
-  try {
-    const auth = safeJson(join(dirname(sessionsPath), "auth.json"));
-    const token = auth?.tokens?.id_token;
-    if (typeof token !== "string") return undefined;
-    const payload = token.split(".")[1];
-    if (!payload) return undefined;
-    const decoded = JSON.parse(Buffer.from(payload.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
-    return typeof decoded.email === "string" ? decoded.email : undefined;
-  } catch {
-    return undefined;
-  }
+export interface CapacityExportOptions {
+  roots?: CapacityExportRoot[];
+  write?: (text: string) => void;
+}
+
+function accountForRoot(root: CapacityExportRoot): string {
+  if (root.account?.trim()) return root.account;
+  const home = basename(dirname(root.path));
+  if (home === ".codex") return UNKNOWN_CODEX_ACCOUNT;
+  if (home.startsWith(".codex-")) return `Codex profile: ${home.slice(".codex-".length)} (unverified)`;
+  return UNKNOWN_CODEX_ACCOUNT;
 }
 
 function isoFromEpoch(value: unknown): string | undefined {
@@ -109,36 +108,49 @@ async function sessionEvents(path: string): Promise<SessionEvent[]> {
   return events;
 }
 
-function writeRecords(records: ExportRecord[]): void {
+function writeRecords(records: ExportRecord[], write: (text: string) => void): void {
   const chunkSize = 2000;
   for (let index = 0; index < records.length; index += chunkSize) {
     const text = records.slice(index, index + chunkSize).map((record) => JSON.stringify(record)).join("\n") + "\n";
-    process.stdout.write(text);
+    write(text);
   }
 }
 
-export async function exportCapacityHistory(device: string): Promise<{ records: number; firstAt?: string; lastAt?: string }> {
+export async function exportCapacityHistory(device: string, options: CapacityExportOptions = {}): Promise<{ records: number; firstAt?: string; lastAt?: string }> {
   const records: ExportRecord[] = [];
+  const eventPaths = new Set<string>();
+  const roots = options.roots ?? defaultCodexRoots();
 
-  for (const root of defaultCodexRoots()) {
-    const account = accountEmailFromAuth(root.path) ?? basename(dirname(root.path));
-    const eventPaths = [root.path, join(dirname(root.path), "archived_sessions")];
-    const events = (await Promise.all(eventPaths.map(sessionEvents))).flat();
-    for (const event of events) {
-      records.push({
-        provider: "codex",
-        account,
-        device,
-        source: "codex-session-log",
-        sampledAt: event.sampledAt,
-        plan: event.plan,
-        windows: event.windows,
-      });
+  for (const root of roots) {
+    const account = accountForRoot(root);
+    // `defaultCodexRoots` already includes archived-only homes. Add a sibling
+    // archive for live roots, but scan each physical path exactly once.
+    for (const path of [root.path, join(dirname(root.path), "archived_sessions")]) {
+      if (!existsSync(path)) continue;
+      let canonical: string;
+      try {
+        canonical = realpathSync(path);
+      } catch {
+        continue;
+      }
+      if (eventPaths.has(canonical)) continue;
+      eventPaths.add(canonical);
+      for (const event of await sessionEvents(path)) {
+        records.push({
+          provider: "codex",
+          account,
+          device,
+          source: "codex-session-log",
+          sampledAt: event.sampledAt,
+          plan: event.plan,
+          windows: event.windows,
+        });
+      }
     }
   }
 
   records.sort((a, b) => Date.parse(a.sampledAt) - Date.parse(b.sampledAt));
-  writeRecords(records);
+  writeRecords(records, options.write ?? ((text) => process.stdout.write(text)));
   return {
     records: records.length,
     firstAt: records[0]?.sampledAt,

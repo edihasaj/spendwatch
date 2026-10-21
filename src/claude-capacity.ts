@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
-import { paceFor, type CapacityPaceWindow, type CapacityWindow } from "./capacity-current";
+import { paceFor, type CapacityCloudCredits, type CapacityExtraUsage, type CapacityPaceWindow, type CapacityWindow } from "./capacity-current";
 import { coordinatedCapacity, retryAfterMs } from "./capacity-poll";
 import {
   freshestClaudeKeychainCredential,
@@ -47,6 +47,10 @@ export interface ClaudeCapacityResult {
     primary: CapacityWindow | null;
     secondary: CapacityWindow | null;
     tertiary: CapacityWindow | null;
+    /** Promotional cloud credits reported in dollars, when present. */
+    cloudCredits?: CapacityCloudCredits;
+    /** Paid extra usage beyond the plan, converted from cents. */
+    extraUsage?: CapacityExtraUsage;
     updatedAt: string;
   };
   pace: {
@@ -71,6 +75,23 @@ interface RawClaudeUsage {
   five_hour?: RawUsageWindow | null;
   seven_day?: RawUsageWindow | null;
   seven_day_opus?: RawUsageWindow | null;
+  iguana_necktie?: RawCloudCredits | null;
+  extra_usage?: RawExtraUsage | null;
+}
+
+interface RawCloudCredits {
+  limit_dollars?: unknown;
+  used_dollars?: unknown;
+  remaining_dollars?: unknown;
+  resets_at?: unknown;
+  locked_reason?: unknown;
+}
+
+interface RawExtraUsage {
+  is_enabled?: unknown;
+  monthly_limit?: unknown;
+  used_credits?: unknown;
+  currency?: unknown;
 }
 
 // The endpoint recomputes reset times per call, so the sub-second part drifts
@@ -93,6 +114,41 @@ function windowFrom(value: RawUsageWindow | null | undefined, windowMinutes: num
   };
 }
 
+// The promotional cloud-credit block reports dollars. A malformed block is
+// dropped instead of failing the read: the quota windows are still accurate.
+function cloudCreditsFrom(value: RawCloudCredits | null | undefined): CapacityCloudCredits | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const number = (amount: unknown): amount is number => typeof amount === "number" && Number.isFinite(amount);
+  const limit = value.limit_dollars;
+  if (!number(limit) || limit <= 0) return undefined;
+  const used = value.used_dollars === undefined ? undefined : value.used_dollars;
+  const remaining = value.remaining_dollars === undefined ? undefined : value.remaining_dollars;
+  if (used === undefined && remaining === undefined) return undefined;
+  if (used !== undefined && (!number(used) || used < 0 || used > limit)) return undefined;
+  if (remaining !== undefined && (!number(remaining) || remaining < 0 || remaining > limit)) return undefined;
+  const credits: CapacityCloudCredits = { limitUsd: limit, remainingUsd: remaining ?? limit - used };
+  const expiresAt = typeof value.resets_at === "string" ? Date.parse(value.resets_at) : Number.NaN;
+  if (Number.isFinite(expiresAt)) credits.expiresAt = new Date(expiresAt).toISOString();
+  if (typeof value.locked_reason === "string" && value.locked_reason.trim()) credits.locked = true;
+  return credits;
+}
+
+// Extra usage is reported in integer cents, unlike the dollar cloud-credit
+// block; dividing here keeps every downstream figure in one currency unit.
+function extraUsageFrom(value: RawExtraUsage | null | undefined): CapacityExtraUsage | undefined {
+  if (!value || typeof value !== "object" || value.is_enabled !== true) return undefined;
+  const monthlyLimit = value.monthly_limit;
+  const usedCredits = value.used_credits;
+  if (typeof monthlyLimit !== "number" || !Number.isFinite(monthlyLimit) || monthlyLimit < 0 ||
+      typeof usedCredits !== "number" || !Number.isFinite(usedCredits) || usedCredits < 0) return undefined;
+  const trimmed = typeof value.currency === "string" ? value.currency.trim().toUpperCase() : "";
+  return {
+    usedAmount: usedCredits / 100,
+    limitAmount: monthlyLimit / 100,
+    currency: /^[A-Z]{3}$/.test(trimmed) ? trimmed : "USD",
+  };
+}
+
 export function claudeCapacityFromUsage(
   usageValue: unknown,
   identity: ClaudeIdentity,
@@ -105,6 +161,8 @@ export function claudeCapacityFromUsage(
   const secondary = windowFrom(raw.seven_day, WEEKLY_WINDOW_MINUTES);
   const tertiary = windowFrom(raw.seven_day_opus, WEEKLY_WINDOW_MINUTES);
   if (!primary && !secondary) return undefined;
+  const cloudCredits = cloudCreditsFrom(raw.iguana_necktie);
+  const extraUsage = extraUsageFrom(raw.extra_usage);
   return {
     provider: "claude",
     account: identity.email,
@@ -115,6 +173,8 @@ export function claudeCapacityFromUsage(
       primary,
       secondary,
       tertiary,
+      ...(cloudCredits ? { cloudCredits } : {}),
+      ...(extraUsage ? { extraUsage } : {}),
       updatedAt: new Date(now).toISOString(),
     },
     pace: {

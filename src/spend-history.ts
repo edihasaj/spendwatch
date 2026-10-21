@@ -3,9 +3,11 @@
 import { Database } from "./database";
 import type { Report } from "./aggregate";
 import { monthLabel } from "./periods";
-import { planLedgerMonths } from "./archive-ledger";
-import { archivedCoverage, byMonthSource, callTotals, settledDifference } from "./gateway-settle";
-import { addArchiveColumns, archivedSourceLabels, archiveReport, archiveSource, fullerRead, initReportArchive } from "./spend-report-archive";
+import { planLedgerMonths, type GuardedReads } from "./archive-ledger";
+import { archivedCoverage, byMonthSource, callTotals, settledDifference, withoutCalls } from "./gateway-settle";
+import { installationRowKey, restoredMonthlySuppression, type ArchivedInstallationReport } from "./installation-lineage";
+import { addArchiveColumns, archivedSourceLabels, archiveReport, archiveSource, fullerRead, initReportArchive, storedArchiveSource } from "./spend-report-archive";
+import { guardForReport, verifiedGuardBaseline, type CaptureGuard } from "./report-coverage";
 import {archiveTokenDays} from "./token-days";
 
 const SCHEMA = `
@@ -53,6 +55,18 @@ export interface MonthlySpendProject {
   cost: number;
 }
 
+/** Account totals only where the archived day rows can prove their token sum. */
+export interface MonthlySpendAccount {
+  account: string;
+  source: string;
+  tokens: number;
+}
+
+/** Day totals retain their source; account evidence is never inferred from a monthly split. */
+export interface MonthlySpendAccountDay extends MonthlySpendAccount {
+  day: string;
+}
+
 export interface MonthlySpend {
   month: string;
   label: string;
@@ -64,6 +78,9 @@ export interface MonthlySpend {
   updatedAt: number;
   sources: MonthlySpendSource[];
   projects: MonthlySpendProject[];
+  accounts?: MonthlySpendAccount[];
+  accountDays?: MonthlySpendAccountDay[];
+  lineageNotes?: string[];
 }
 
 /**
@@ -80,7 +97,7 @@ export interface MonthlySpend {
 export function writeMonthlySpend(
   path: string,
   reports: Report[],
-  opts: { generatedAt: number },
+  opts: { generatedAt: number; guards?: CaptureGuard[] },
 ): { months: string[]; rows: number } {
   const db = new Database(path);
   try {
@@ -107,8 +124,16 @@ export function writeMonthlySpend(
     const months = new Set<string>();
     let rows = 0;
     const tx = db.transaction(() => {
-      // Decided before anything is written: the sources of a month the ledger takes over move together.
-      const together = planLedgerMonths(db, reports);
+      // A guard protects the exact stored month under an archive label; its scope and baseline hash are checked
+      // against those stored bytes, and a mismatch fails the run closed rather than writing over the month.
+      const guards = opts.guards;
+      const guardedLabels = new Set((guards ?? []).map((guard) =>
+        JSON.stringify([guard.month, verifiedGuardBaseline(db, guard).archiveLabel])));
+      const isGuarded = (month: string, archiveLabel: string): boolean =>
+        guardedLabels.has(JSON.stringify([month, archiveLabel]));
+      // Decided before anything is written: the sources of a month the ledger takes over move together, and a
+      // takeover that would force a guarded member's month moves no one.
+      const together = planLedgerMonths(db, reports, guards ? { isGuarded } satisfies GuardedReads : undefined);
       for (const report of reports) {
         // A month whose every call was routed to the gateway bills nothing here but still observed calls:
         // it has to replace a stale row that counted those turns, so observed calls decide, not billed ones.
@@ -116,6 +141,11 @@ export function writeMonthlySpend(
         const verdict = together.get(report);
         // Left out with its month's other sources: nothing of it is written, its days included.
         if (verdict === "reject") continue;
+        // A guarded scope keeps its stored month, its projects, and its day rows whatever this read observed —
+        // even a larger, newer count and even a forced takeover: writing nothing of it is the point of the guard.
+        if (guards && guardForReport(guards, report)) {
+          if (isGuarded(report.period.key, storedArchiveSource(db, report.source, report.installationId) ?? report.source)) continue;
+        }
         const force = verdict === "accept";
         const source = archiveSource(db, report);
         // The full report decides first: its acceptance says whether this run
@@ -173,6 +203,7 @@ interface Row {
   sessions: number;
   firstTs: number | null;
   updatedAt: number;
+  reportJson: string | null;
 }
 
 /**
@@ -187,13 +218,29 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
       .get();
     if (!exists) return [];
     const sourceLabels = archivedSourceLabels(db);
-    const rows = db
+    const hasReports = Boolean(db
+      .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name='spend_report'")
+      .get());
+    let rows = db
       .query<Row, []>(`
-        SELECT month, source, tokens, cost, calls, sessions, first_ts AS firstTs, updated_at AS updatedAt
-        FROM spend_month ORDER BY month DESC, tokens DESC
+        SELECT m.month, m.source, m.tokens, m.cost, m.calls, m.sessions, m.first_ts AS firstTs, m.updated_at AS updatedAt
+          ${hasReports ? ", r.report_json AS reportJson" : ", NULL AS reportJson"}
+        FROM spend_month m ${hasReports ? "LEFT JOIN spend_report r ON r.month = m.month AND r.source = m.source" : ""}
+        ORDER BY m.month DESC, m.tokens DESC
       `)
       .all();
-    const coverage = archivedCoverage(db);
+    const lineageRows = rows.flatMap((row): ArchivedInstallationReport[] => {
+      if (!row.reportJson) return [];
+      try {
+        return [{ month: row.month, archiveSource: row.source, storedTokens: row.tokens, report: JSON.parse(row.reportJson) as Report }];
+      } catch {
+        return [];
+      }
+    });
+    const lineage = restoredMonthlySuppression(lineageRows);
+    const shadowWinners = new Set(lineage.lineage.shadows.map((shadow) => shadow.winner));
+    rows = rows.filter((row) => !lineage.suppressed.has(installationRowKey(row.month, row.source)));
+    const coverage = archivedCoverage(db, lineage.suppressed);
     for (const row of rows) {
       const calls = byMonthSource(coverage, row.month, row.source);
       if (!calls.length) continue;
@@ -204,9 +251,10 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
       row.calls = Math.max(0, row.calls - covered.calls);
     }
     if (coverage.size) rows.sort((a, b) => b.month.localeCompare(a.month) || b.tokens - a.tokens);
-    const projectRows = monthProjects(db, coverage);
+    const projectRows = monthProjects(db, coverage, lineage.suppressed);
     const months = new Map<string, MonthlySpend>();
     for (const row of rows) {
+      const covered = byMonthSource(coverage, row.month, row.source);
       let month = months.get(row.month);
       if (!month) {
         if (months.size >= limit) continue;
@@ -230,6 +278,13 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
       month.updatedAt = Math.max(month.updatedAt, row.updatedAt);
       if (row.firstTs) month.firstTs = Math.min(month.firstTs ?? row.firstTs, row.firstTs);
       const source = sourceLabels.get(row.source) ?? row.source;
+      if (shadowWinners.has(installationRowKey(row.month, row.source))) {
+        const notes = month.lineageNotes ?? (month.lineageNotes = []);
+        const note = lineage.uncertain.has(installationRowKey(row.month, row.source))
+          ? "Restored installation snapshots overlap, but stored totals disagree with report detail; both remain visible. Exact historical overlap unavailable."
+          : "Restored installation snapshots overlap; fullest retained snapshot shown. Exact historical overlap unavailable.";
+        if (!notes.includes(note)) notes.push(note);
+      }
       const existingSource = month.sources.find((item) => item.source === source);
       if (existingSource) {
         existingSource.tokens += row.tokens;
@@ -243,6 +298,7 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
         calls: row.calls,
         sessions: row.sessions,
       });
+      addAccountEvidence(month, row, source, covered);
     }
     for (const row of projectRows) {
       const month = months.get(row.month);
@@ -255,13 +311,146 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
   }
 }
 
+const UNKNOWN_ACCOUNT = "Unknown account";
+const dayPattern = /^\d{4}-\d{2}-\d{2}$/;
+
+type AccountEvidence = {
+  totalTokens: number;
+  accounts: Array<{ account: string; tokens: number }>;
+  days: Array<{ day: string; account: string; tokens: number }>;
+};
+
+/**
+ * Account rows are accepted only when they exactly reconcile with both the
+ * archived report total and its global day/model rows. A bad/newer report JSON
+ * therefore cannot make the monthly total look attributed when it is not.
+ */
+function accountEvidence(reportJson: string | null): AccountEvidence | undefined {
+  if (!reportJson) return;
+  let report: Report;
+  try {
+    report = JSON.parse(reportJson) as Report;
+  } catch {
+    return;
+  }
+  const days = report.tokenDays;
+  if (!days || !Array.isArray(days.rows) || !Array.isArray(days.accountRows) ||
+      !Number.isSafeInteger(report.totalTokens) || report.totalTokens < 0) return;
+  const totals = new Map<string, number>();
+  let total = 0;
+  for (const row of days.rows) {
+    if (!dayPattern.test(row.day) || typeof row.model !== "string" || !Number.isSafeInteger(row.tokens) || row.tokens < 0) return;
+    const key = JSON.stringify([row.day, row.model]);
+    if (totals.has(key)) return;
+    totals.set(key, row.tokens);
+    total += row.tokens;
+  }
+  if (total !== report.totalTokens) return;
+  const accountTotals = new Map<string, number>();
+  const accountDays = new Map<string, { day: string; account: string; tokens: number }>();
+  const accountKeys = new Set<string>();
+  let accountTotal = 0;
+  for (const row of days.accountRows) {
+    if (!dayPattern.test(row.day) || typeof row.model !== "string" || typeof row.account !== "string" || !row.account.trim() ||
+        !Number.isSafeInteger(row.tokens) || row.tokens < 0) return;
+    const key = JSON.stringify([row.day, row.model, row.account]);
+    if (accountKeys.has(key)) return;
+    accountKeys.add(key);
+    const modelDay = JSON.stringify([row.day, row.model]);
+    if (!totals.has(modelDay)) return;
+    accountTotals.set(modelDay, (accountTotals.get(modelDay) ?? 0) + row.tokens);
+    const account = accountDays.get(JSON.stringify([row.day, row.account])) ?? { day: row.day, account: row.account, tokens: 0 };
+    account.tokens += row.tokens;
+    accountDays.set(JSON.stringify([row.day, row.account]), account);
+    accountTotal += row.tokens;
+  }
+  if (accountTotal !== report.totalTokens || [...totals].some(([key, tokens]) => accountTotals.get(key) !== tokens)) return;
+  const accounts = new Map<string, number>();
+  for (const row of days.accountRows) accounts.set(row.account, (accounts.get(row.account) ?? 0) + row.tokens);
+  return {
+    totalTokens: report.totalTokens,
+    accounts: [...accounts].map(([account, tokens]) => ({ account, tokens })),
+    days: [...accountDays.values()],
+  };
+}
+
+/** Global daily rows can be honestly labelled Unknown when account evidence was not collected yet. */
+function unknownDailyEvidence(reportJson: string | null, expectedTokens: number): AccountEvidence | undefined {
+  if (!reportJson) return;
+  let report: Report;
+  try {
+    report = JSON.parse(reportJson) as Report;
+  } catch {
+    return;
+  }
+  const rows = report.tokenDays?.rows;
+  if (!rows || !Number.isSafeInteger(report.totalTokens) || report.totalTokens !== expectedTokens) return;
+  let total = 0;
+  const days = new Map<string, { day: string; account: string; tokens: number }>();
+  const keys = new Set<string>();
+  for (const row of rows) {
+    if (!dayPattern.test(row.day) || typeof row.model !== "string" || !Number.isSafeInteger(row.tokens) || row.tokens < 0) return;
+    const key = JSON.stringify([row.day, row.model]);
+    if (keys.has(key)) return;
+    keys.add(key);
+    total += row.tokens;
+    const day = days.get(row.day) ?? { day: row.day, account: UNKNOWN_ACCOUNT, tokens: 0 };
+    day.tokens += row.tokens;
+    days.set(row.day, day);
+  }
+  if (total !== expectedTokens) return;
+  return { totalTokens: expectedTokens, accounts: [{ account: UNKNOWN_ACCOUNT, tokens: expectedTokens }], days: [...days.values()] };
+}
+
+function addAccountEvidence(
+  month: MonthlySpend,
+  row: Row,
+  source: string,
+  covered: ReturnType<typeof byMonthSource>,
+): void {
+  const settled = covered.length ? settledReportJson(row.reportJson, covered) : row.reportJson;
+  const attributed = accountEvidence(settled);
+  const evidence = attributed?.totalTokens === row.tokens ? attributed : unknownDailyEvidence(settled, row.tokens) ??
+    (row.tokens > 0 ? { totalTokens: row.tokens, accounts: [{ account: UNKNOWN_ACCOUNT, tokens: row.tokens }], days: [] } : undefined);
+  if (!evidence) return;
+  const accounts = month.accounts ?? (month.accounts = []);
+  for (const detail of evidence.accounts) {
+    const existing = accounts.find((item) => item.account === detail.account && item.source === source);
+    if (existing) existing.tokens += detail.tokens;
+    else accounts.push({ ...detail, source });
+  }
+  if (!evidence.days.length) return;
+  const days = month.accountDays ?? (month.accountDays = []);
+  for (const detail of evidence.days) {
+    const existing = days.find((item) => item.day === detail.day && item.account === detail.account && item.source === source);
+    if (existing) existing.tokens += detail.tokens;
+    else days.push({ ...detail, source });
+  }
+}
+
+/** Settling happens before validating attribution, exactly as it does for the report and token-summary readers. */
+function settledReportJson(reportJson: string | null, calls: ReturnType<typeof byMonthSource>): string | null {
+  if (!reportJson) return null;
+  try {
+    const report = JSON.parse(reportJson) as Report;
+    return JSON.stringify(withoutCalls(report, calls));
+  } catch {
+    return null;
+  }
+}
+
 /** Project totals per month across sources, largest first, less the calls another Mac's gateway billed. */
-function monthProjects(db: Database, coverage: ReturnType<typeof archivedCoverage>): Array<{ month: string; project: string; tokens: number; cost: number }> {
+function monthProjects(
+  db: Database,
+  coverage: ReturnType<typeof archivedCoverage>,
+  suppressed: ReadonlySet<string> = new Set(),
+): Array<{ month: string; project: string; tokens: number; cost: number }> {
   const totals = new Map<string, { month: string; project: string; tokens: number; cost: number }>();
   const rows = db.query<{ month: string; source: string; project: string; tokens: number; cost: number }, []>(
     "SELECT month, source, project, tokens, cost FROM spend_month_project",
   ).all();
   for (const row of rows) {
+    if (suppressed.has(installationRowKey(row.month, row.source))) continue;
     const calls = byMonthSource(coverage, row.month, row.source).filter((call) => call.project.toLowerCase() === row.project.toLowerCase());
     const covered = callTotals(calls);
     const key = JSON.stringify([row.month, row.project]);
