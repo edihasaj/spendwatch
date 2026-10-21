@@ -23,20 +23,21 @@ import type {
 
 const CHUNK_BYTES = 64 * 1024;
 const MAX_LINE_BYTES = 16 * 1024 * 1024;
-const MAX_FILE_BYTES = 128 * 1024 * 1024;
+const MAX_FILE_BYTES = 1024 * 1024 * 1024;
 // A manifest larger than this is not a duplicate proof in v1; it fails closed.
-// Studio's verified June copy pair has just over 108k parser facts. Keep a
-// finite proof budget while leaving enough room for that complete snapshot.
-const MAX_EVENTS = 250_000;
+const MAX_EVENTS = 1_000_000;
 // Candidate manifests are keyed by their stat signature, so an entry can never describe a
 // different revision of a file. Bounded LRU, same discipline as the comparison caches.
 const CACHE_LIMIT = 64;
+const MAX_CACHED_FACTS = 2_000_000;
 const HASH_CHARS = 32;
 
 /** Which billing representation the file emitted. The two must not be mixed within a candidate pair. */
 type BillingFormat = "records" | "counts" | "none";
 
 interface Manifest {
+  /** Parser-derived facts this manifest retains across its ordered arrays and multisets. */
+  facts: number;
   format: BillingFormat;
   /** Ordered event hashes of every emitted API event. */
   api: string[];
@@ -48,6 +49,10 @@ interface Manifest {
   rawResponses: string[];
   /** Multiset of prompt and non-response-item tool events, hashed with a content digest. */
   nonbilling: Map<string, number>;
+}
+interface CachedManifest {
+  manifest: Manifest;
+  facts: number;
 }
 
 interface SemanticSource {
@@ -161,7 +166,7 @@ function buildManifest(
     return undefined;
   }
   const manifest: Manifest = {
-    format: "none", api: [], observed: [], responses: new Map(), rawResponses: [], nonbilling: new Map(),
+    facts: 0, format: "none", api: [], observed: [], responses: new Map(), rawResponses: [], nonbilling: new Map(),
   };
   let total = 0;
   let sawRecordLine = false;
@@ -255,6 +260,7 @@ function buildManifest(
   }
   if (sawRecordLine && sawCountApi) return undefined; // mixed billing formats within one file
   manifest.format = sawRecordLine ? "records" : sawCountApi ? "counts" : "none";
+  manifest.facts = total;
   return manifest;
 }
 
@@ -403,7 +409,8 @@ function dominates(a: Manifest, b: Manifest): boolean {
  * this callback alone and never shares state with the byte-prefix decisions.
  */
 export function createCodexRolloutSemanticDominance(): CodexRolloutSemanticDominance {
-  const cache = new Map<string, Manifest>();
+  const cache = new Map<string, CachedManifest>();
+  let cachedFacts = 0;
   return <T>(candidates: readonly CodexRolloutSemanticCandidate<T>[]): string | undefined => {
     if (candidates.length < 2) return undefined;
     const parsed: Array<{ candidate: CodexRolloutSemanticCandidate<T>; manifest: Manifest }> = [];
@@ -413,15 +420,28 @@ export function createCodexRolloutSemanticDominance(): CodexRolloutSemanticDomin
       // A path can be parsed by a different source variant without changing its stat signature
       // (notably free/Qwen filtering), and the initial project affects every event identity.
       const cacheKey = `${candidate.signature}\0${source.semanticKey}\0${source.project}`;
-      let manifest = cache.get(cacheKey);
-      if (manifest === undefined) {
+      let cached = cache.get(cacheKey);
+      let manifest: Manifest;
+      if (cached === undefined) {
         manifest = buildManifest(candidate.path, candidate.size, candidate.identity, source);
         if (!manifest) return undefined;
-        cache.set(cacheKey, manifest);
-        if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
+        // A single bounded manifest can be retained only when it also fits the
+        // process-wide fact budget. Never evict decoded files: this cache owns
+        // only in-memory proof summaries.
+        if (manifest.facts <= MAX_CACHED_FACTS) {
+          while (cache.size >= CACHE_LIMIT || cachedFacts + manifest.facts > MAX_CACHED_FACTS) {
+            const [oldestKey, oldest] = cache.entries().next().value! as [string, CachedManifest];
+            cache.delete(oldestKey);
+            cachedFacts -= oldest.facts;
+          }
+          cached = { manifest, facts: manifest.facts };
+          cache.set(cacheKey, cached);
+          cachedFacts += cached.facts;
+        }
       } else {
         cache.delete(cacheKey);
-        cache.set(cacheKey, manifest);
+        cache.set(cacheKey, cached);
+        manifest = cached.manifest;
       }
       parsed.push({ candidate, manifest });
     }
