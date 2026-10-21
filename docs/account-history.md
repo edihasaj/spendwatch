@@ -74,8 +74,10 @@ The proof ignores the recorder's positional `ordinal` and treats absent and
 null `content` as equivalent only for reasoning response items. Other content,
 routing, malformed rows and incomparable copies remain errors. Native files
 are never rewritten or concatenated.
-Each candidate proof is bounded to 128 MiB, 16 MiB per line, and 250,000 parsed
+Each candidate proof is bounded to 1 GiB, 16 MiB per line, and 1,000,000 parsed
 facts; a larger or incomplete candidate remains an explicit divergent-copy error.
+Its 64-entry manifest cache retains at most 2,000,000 parser facts and evicts
+only old in-memory summaries.
 
 Codex may retain immutable archived rollouts as `.jsonl.zst`. Spendwatch opens
 that native file without following links, checks it did not change while `zstd`
@@ -102,3 +104,10 @@ opaque `claude-hg-route-*` aliases to verified model names. It changes API model
 labels only. Counts, timestamps and gateway IDs retain their original semantics,
 including settlement of messages already billed by the gateway. Missing or
 invalid mappings leave models unclassified rather than guessing a provider.
+
+## Legacy archive guards
+
+A guard may explicitly use `timeZone: null` to pin an older report that recorded
+no timezone. Null matches only a missing stored timezone. Its exact report hash,
+source, installation and month remain required; the UI says that the timezone
+is unavailable rather than assigning one retrospectively.
