@@ -64,7 +64,10 @@ export function readerFor(st: SourceStatus, f: SourceFile, a: BuildOptions): "re
   if ((st.id === "claude" || st.id === "grok") && transcript && !matchesProject(f.project, a.project)) {
     return st.id === "claude" && st.ledger ? "claims" : undefined;
   }
-  if (a.account && !f.account.toLowerCase().includes(a.account.toLowerCase())) {
+  // Codex account evidence is assigned per API call after parser deduplication:
+  // a default root is deliberately "Unknown Codex account" until a gateway
+  // vector proves a route. Pre-filtering that root would hide proven calls.
+  if (a.account && st.id !== "codex" && !f.account.toLowerCase().includes(a.account.toLowerCase())) {
     return (st.id === "codex" || st.id === "claude" && transcript) && st.ledger ? "claims" : undefined;
   }
   return "report";
@@ -163,7 +166,6 @@ export function applyFilters(r: Report, a: BuildOptions): Report {
     r.prompts = r.prompts.filter((p) => matchesProject(p.project, a.project));
     r.projects = r.projects.filter((p) => matchesProject(p.project, a.project));
   }
-  if (a.account) r.accounts = r.accounts.filter((ac) => ac.account.toLowerCase().includes(a.account!.toLowerCase()));
   return r;
 }
 
@@ -177,9 +179,9 @@ export function reportsByPeriod(built: Built, a: BuildOptions): Map<string, Repo
     // A report remembers that this Mac's ledger was read, so the archive can tell the month the ledger takes over.
     const tag = (report: Report): Report => applyFilters(status.ledger ? { ...report, ledger: true } : report, a);
     if (sink instanceof MonthlyAggregator) {
-      for (const [key, report] of sink.reports(a.top)) out.get(key)?.push(tag(report));
+      for (const [key, report] of sink.reports(a.top, a.account)) out.get(key)?.push(tag(report));
     } else {
-      out.get(built.periods[0]!.key)?.push(tag(sink.report(a.top)));
+      out.get(built.periods[0]!.key)?.push(tag(sink.report(a.top, a.account)));
     }
   }
   return out;

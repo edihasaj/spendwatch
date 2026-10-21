@@ -9,14 +9,99 @@ import {
   type AccountGrouping,
   type SpendBreakdown,
 } from "./reports";
+import {
+  COVERAGE_ARTIFACT_WARNING,
+  COVERAGE_WARNING,
+  type CaptureCoverage,
+  type CaptureReference,
+} from "./report-coverage";
 
 function localDate(ts: number): string {
   const at = new Date(ts);
   return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
 }
 
+function accountCoverage(reports: Report[]): string {
+  const codex = reports.filter((report) => report.source.split(":").at(-1) === "codex");
+  if (!codex.length) return "";
+  let matched = 0, profile = 0, unknown = 0, legacy = 0;
+  for (const report of codex) {
+    const coverage = report.accountAttribution;
+    if (!coverage || coverage.configuredRoute + coverage.profile + coverage.unknown !== report.apiCalls) {
+      legacy += report.apiCalls;
+      continue;
+    }
+    matched += coverage.configuredRoute;
+    profile += coverage.profile;
+    unknown += coverage.unknown;
+  }
+  return `<details class="account-coverage"><summary>Codex account coverage · ${matched.toLocaleString()} route matches · ${unknown.toLocaleString()} unknown</summary><p>Historical route labels use dated gateway configuration. ${profile.toLocaleString()} calls use profile labels; ${legacy.toLocaleString()} older calls have unverified account labels. Account totals follow recorded evidence.</p></details>`;
+}
+
+function collectionCoverage(reports: Report[], captureRefs: Record<string, { json: string; html: string }>): string {
+  const rows = reports.map((report) => {
+    const measured = report.tokenDays?.measuredAt;
+    const captured = measured && Number.isFinite(measured) && measured > 0
+      ? new Date(measured).toISOString().replace("T", " ").slice(0, 16) + " UTC"
+      : "Historical capture time unavailable";
+    // Published latest-scan artifacts of a guarded scope, linked beside the capture line.
+    const ref = captureRefs[report.source];
+    const artifact = ref && safeHref(ref.html) && safeHref(ref.json)
+      ? ` · <a href="${esc(ref.html)}">View latest scan</a> · <a href="${esc(ref.json)}">Download latest recorded data</a>` : "";
+    return `<li>${esc(sourceLabel(report.source))} · ${esc(captured)}${artifact}</li>`;
+  }).join("");
+  const warnings = [...new Set(reports.flatMap((report) => report.lineageWarning ? [report.lineageWarning] : []))];
+  return `<details class="account-coverage"><summary>Source captures · ${reports.length} machine-agent snapshots${warnings.length ? " · restored history has a coverage gap" : ""}</summary><p>Spend and history reflect these captures. Capacity has its own automatic refresh.</p>${warnings.map(warning => `<p>${esc(warning)}</p>`).join("")}<ul>${rows}</ul></details>`;
+}
+
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+
+/**
+ * Hrefs arrive from data (guard files, published artifact names), so only conservative relative paths pass as
+ * URLs; anything else renders as escaped text instead of a link.
+ */
+const safeHref = (href: string): string | undefined =>
+  /^[A-Za-z0-9._~!$&'()*+,;=:@/-]+$/.test(href) && !href.includes("//") && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(href)
+    ? href
+    : undefined;
+
+const isoInstant = (value: string | null): string =>
+  value ? value.replace("T", " ").slice(0, 16) + " UTC" : "capture time not recorded";
+
+/** One side of a guarded month: what that capture recorded, with its own hash and (when published) its links. */
+function coverageReference(name: string, reference: CaptureReference): string {
+  const htmlHref = reference.htmlHref && safeHref(reference.htmlHref);
+  const jsonHref = reference.jsonHref && safeHref(reference.jsonHref);
+  const links = htmlHref || jsonHref
+    ? `${htmlHref ? `<a class="button" href="${htmlHref}">View latest scan</a>` : ""}` +
+      `${jsonHref ? `<a class="button" href="${jsonHref}">Download latest recorded data</a>` : ""}`
+    : `${reference.htmlHref ? ` <code>${esc(reference.htmlHref)}</code>` : ""}` +
+      `${reference.jsonHref ? ` <code>${esc(reference.jsonHref)}</code>` : ""}`;
+  return `<div class="capture-ref"><b>${esc(name)}</b><span>${esc(fmtTok(reference.tokens))} tokens · ${reference.observedCalls.toLocaleString("en-US")} observed calls · captured ${esc(isoInstant(reference.capturedAt))}</span><code>${esc(reference.reportSha256)}</code>${links}</div>`;
+}
+
+/**
+ * The coverage banners. A retained view shows the preserved archive beside the separately published latest scan;
+ * a latest-scan artifact page says what it is and lists its own exact counts. Numeric totals elsewhere on the
+ * page stay the retained archive's — the two captures are never added together.
+ */
+function coverageBanner(reports: Report[], coverage?: CaptureCoverage, artifactFileName?: string): string {
+  const latestMode = coverage?.status === "latest-scan";
+  const retained = latestMode ? [] : reports.flatMap((report) => (report.captureCoverage ? [report.captureCoverage] : []));
+  if (!latestMode && !retained.length) return "";
+  if (latestMode) {
+    const source = reports[0];
+    const models = source ? source.models.length : 0;
+    const accounts = source ? source.accounts.length : 0;
+    const days = source ? new Set((source.tokenDays?.rows ?? []).map((row) => row.day)).size : 0;
+    return `<section class="capture-coverage" role="note"><h4>Latest scan · separate capture</h4><p>${esc(COVERAGE_ARTIFACT_WARNING)}</p><p>This scan recorded ${models.toLocaleString("en-US")} model row${models === 1 ? "" : "s"}, ${accounts.toLocaleString("en-US")} account${accounts === 1 ? "" : "s"}, and ${days.toLocaleString("en-US")} day${days === 1 ? "" : "s"}.</p><p>Capture time ${esc(isoInstant(coverage!.retained.capturedAt))} · <code>${esc(coverage!.retained.reportSha256)}</code>${artifactFileName ? ` · this file is <code>${esc(artifactFileName)}.html</code>` : ""}.</p></section>`;
+  }
+  return `<section class="capture-coverage" role="note"><h4>Historical coverage unresolved</h4><p>${esc(COVERAGE_WARNING)}</p>${retained.map((item) => {
+    const head = `${sourceLabel(item.scope.source)} · ${item.scope.month}${item.scope.installationId ? ` · installation ${item.scope.installationId}` : ""} · ${item.scope.timeZone ?? "Timezone unavailable"}`;
+    return `<div class="capture-scope"><p class="capture-scope-head">${esc(head)}</p>${coverageReference("Preserved archive", item.retained)}${item.latest ? coverageReference("Latest scan", item.latest) : ""}</div>`;
+  }).join("")}</section>`;
+}
 
 interface Col {
   head: string;
@@ -217,6 +302,12 @@ export function renderHtml(
     accountGrouping?: AccountGrouping;
     limitsHref?: string;
     historyHref?: string;
+    /** Standalone capture coverage state; `latest-scan` marks a separately published artifact page. */
+    coverage?: CaptureCoverage;
+    /** Published latest-scan artifact links, keyed by displayed source, listed under the source captures. */
+    captureRefs?: Record<string, { json: string; html: string }>;
+    /** Set only when rendering a published artifact: the artifact's file-name stem, shown for verification. */
+    artifactFileName?: string;
   },
 ): string {
   const sources = reports.filter((r) => r.apiCalls > 0).sort((a, b) => b.totalTokens - a.totalTokens);
@@ -263,7 +354,7 @@ export function renderHtml(
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 ${BRAND_HEAD_HTML}
-<title>spendwatch — agent spend report</title>
+<title>${opts.coverage?.status === "latest-scan" ? esc(`spendwatch — latest scan ${opts.coverage.scope.source} ${opts.coverage.scope.month}`) : "spendwatch — agent spend report"}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fragment+Mono:ital@0;1&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -284,6 +375,15 @@ h1,h2,h3{font-family:"Manrope",sans-serif;letter-spacing:-.025em}
 .report-hero{display:grid;grid-template-columns:1fr auto;gap:28px;align-items:end;padding:44px 0 30px}.eyebrow{margin:0 0 8px;color:var(--amber);font:12px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.12em}.report-hero h1{font-size:clamp(34px,6vw,58px);line-height:.98;letter-spacing:-.055em;margin:0}.report-hero h1 span{color:#75808a}.hero-copy{margin:16px 0 0;color:var(--dim);font-size:14px;max-width:680px}.head-total{text-align:right;padding-bottom:4px}.head-total .big{font:28px "Fragment Mono",monospace;color:var(--amber)}.head-total .exact{font:10px "Fragment Mono",monospace;color:var(--dim);margin-top:2px}.head-total .cost{font:13px "Fragment Mono",monospace;color:var(--ink);margin-top:5px}.head-total .meta{color:var(--dim);font:10px "Fragment Mono",monospace;margin-top:6px;max-width:330px}
 .overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-bottom:30px}
 .overview .block{margin-top:0;min-width:0}
+.account-coverage{grid-column:1/-1;margin:0;padding:12px 14px;border:1px solid var(--line);border-radius:9px;color:var(--dim);font-size:12px}.account-coverage summary{cursor:pointer;color:var(--ink)}.account-coverage p{margin:10px 0 0;max-width:800px}
+.capture-coverage{grid-column:1/-1;margin:0 0 18px;padding:12px 14px;border:1px dashed rgba(230,154,115,.5);border-radius:9px;background:rgba(230,154,115,.05);color:#d8b199;font-size:12px}
+.capture-coverage h4{margin:0 0 6px;color:var(--ink);font:11px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.1em}
+.capture-coverage p{margin:8px 0 0}
+.capture-scope{margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+.capture-scope-head{color:var(--dim);font:10px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em;margin:0}
+.capture-ref{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;margin:6px 0 2px}
+.capture-ref b{color:var(--ink)}
+.capture-ref code{font:10px "Fragment Mono",monospace;color:var(--dim);overflow-wrap:anywhere}
 .break-list{height:calc(100% - 27px);background:linear-gradient(145deg,rgba(21,26,32,.98),rgba(15,19,24,.98));border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .break-row{padding:12px 14px;border-bottom:1px solid var(--line);animation:rise .5s both;animation-delay:calc(var(--i)*35ms)}
 .break-row:last-child{border-bottom:none}
@@ -355,9 +455,11 @@ footer b{color:var(--amber)}
 </style></head>
 <body><div class="wrap">
 <div class="topbar"><div class="brand"><b>spend</b>watch</div>${opts.limitsHref ? `<nav class="nav"><a href="${esc(opts.limitsHref)}">Capacity</a><a class="active" href="./spend.html">Spend detail</a><a href="${esc(opts.historyHref ?? "history.html")}">History</a></nav>` : ""}<div class="top-actions"><button class="button" id="refresh">Refresh</button>${opts.limitsHref ? `<a class="button primary" href="${esc(opts.limitsHref)}#setup">Add account</a>` : ""}</div></div>
-<section class="report-hero"><div><p class="eyebrow">Spend detail</p><h1>Understand where <span>usage goes.</span></h1><p class="hero-copy">Exact token usage with API-equivalent cost estimates across every machine, account, agent, tool, and project for ${esc(periodCopy)}.</p></div><div class="head-total"><div class="big">${fmtTok(totalTokens)} tokens</div><div class="exact">${totalTokens.toLocaleString("en-US")} exact</div><div class="cost">${fmtUsd(total)} estimated</div><div class="meta">${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · since ${esc(sinceStr)} · generated ${esc(genStr)}</div></div></section>
+<section class="report-hero"><div><p class="eyebrow">Spend detail</p><h1>Understand where <span>usage goes.</span></h1><p class="hero-copy">Recorded token usage and API-equivalent cost estimates by machine, account, agent, tool, and project for ${esc(periodCopy)}.</p></div><div class="head-total"><div class="big">${fmtTok(totalTokens)} tokens</div><div class="exact">${totalTokens.toLocaleString("en-US")} recorded</div><div class="cost">${fmtUsd(total)} estimated</div><div class="meta">${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · since ${esc(sinceStr)} · generated ${esc(genStr)}</div></div></section>
 
-<div class="overview">${overview}</div>
+<div class="overview">${collectionCoverage(sources, opts.captureRefs ?? {})}${accountCoverage(sources)}${overview}</div>
+
+<div class="capture-coverage-slot">${coverageBanner(sources, opts.coverage, opts.artifactFileName)}</div>
 
 <div class="tabs">${tabs}</div>
 <div class="panels">${panels}</div>
@@ -371,7 +473,7 @@ footer b{color:var(--amber)}
 let tabs=[],panels=[],refreshing=false;
 const bindInteractions=()=>{tabs=[...document.querySelectorAll('.tab')];panels=[...document.querySelectorAll('.panel')];tabs.forEach(t=>t.addEventListener('click',()=>{const k=t.dataset.tab;tabs.forEach(x=>x.classList.toggle('active',x===t));panels.forEach(p=>p.classList.toggle('active',p.dataset.panel===k))}));document.querySelectorAll('tr.has-drill').forEach(row=>row.addEventListener('click',()=>{const drill=row.nextElementSibling;if(drill&&drill.classList.contains('drill')){row.classList.toggle('open');drill.classList.toggle('open')}}))};
 const refreshButton=document.querySelector('#refresh');
-const refreshValues=async()=>{if(refreshing)return;refreshing=true;refreshButton.setAttribute('aria-busy','true');refreshButton.textContent='Syncing';const active=document.querySelector('.tab.active')?.dataset.tab,expanded=new Map([...document.querySelectorAll('.panel')].map(panel=>[panel.dataset.panel,[...panel.querySelectorAll('tr.has-drill')].map((row,index)=>row.classList.contains('open')?index:-1).filter(index=>index>=0)]));try{const url=new URL(location.href);url.hash='';url.searchParams.set('_',Date.now().toString());const response=await fetch(url,{cache:'no-store',headers:{Accept:'text/html'}});if(!response.ok)throw new Error('HTTP '+response.status);const next=new DOMParser().parseFromString(await response.text(),'text/html');for(const selector of ['.report-hero','.overview','.tabs','.panels']){const currentElement=document.querySelector(selector),nextElement=next.querySelector(selector);if(currentElement&&nextElement)currentElement.innerHTML=nextElement.innerHTML}bindInteractions();const selected=tabs.find(tab=>tab.dataset.tab===active)||tabs[0];if(selected)selected.click();for(const panel of panels){for(const index of expanded.get(panel.dataset.panel)||[]){const row=panel.querySelectorAll('tr.has-drill')[index];if(row){row.classList.add('open');const drill=row.nextElementSibling;if(drill&&drill.classList.contains('drill'))drill.classList.add('open')}}}refreshButton.textContent='Updated';refreshButton.title='Values updated without reloading the page'}catch(error){refreshButton.textContent='Retry';refreshButton.title='Value refresh failed: '+String(error)}finally{refreshing=false;refreshButton.removeAttribute('aria-busy')}};
+const refreshValues=async()=>{if(refreshing)return;refreshing=true;refreshButton.setAttribute('aria-busy','true');refreshButton.textContent='Syncing';const active=document.querySelector('.tab.active')?.dataset.tab,expanded=new Map([...document.querySelectorAll('.panel')].map(panel=>[panel.dataset.panel,[...panel.querySelectorAll('tr.has-drill')].map((row,index)=>row.classList.contains('open')?index:-1).filter(index=>index>=0)]));try{const url=new URL(location.href);url.hash='';url.searchParams.set('_',Date.now().toString());const response=await fetch(url,{cache:'no-store',headers:{Accept:'text/html'}});if(!response.ok)throw new Error('HTTP '+response.status);const next=new DOMParser().parseFromString(await response.text(),'text/html');for(const selector of ['.report-hero','.overview','.capture-coverage-slot','.tabs','.panels']){const currentElement=document.querySelector(selector),nextElement=next.querySelector(selector);if(currentElement&&nextElement)currentElement.innerHTML=nextElement.innerHTML}bindInteractions();const selected=tabs.find(tab=>tab.dataset.tab===active)||tabs[0];if(selected)selected.click();for(const panel of panels){for(const index of expanded.get(panel.dataset.panel)||[]){const row=panel.querySelectorAll('tr.has-drill')[index];if(row){row.classList.add('open');const drill=row.nextElementSibling;if(drill&&drill.classList.contains('drill'))drill.classList.add('open')}}}refreshButton.textContent='Updated';refreshButton.title='Values updated without reloading the page'}catch(error){refreshButton.textContent='Retry';refreshButton.title='Value refresh failed: '+String(error)}finally{refreshing=false;refreshButton.removeAttribute('aria-busy')}};
 refreshButton.addEventListener('click',refreshValues);bindInteractions();
 </script>
 </body></html>`;

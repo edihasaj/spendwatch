@@ -2,13 +2,69 @@ import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { importCapacityHistory, loadCapacityHistory, writeCapacitySnapshot } from "../src/capacity-db";
+import { importCapacityHistory, loadCapacityHistory, openCapacityDatabase, writeCapacitySnapshot } from "../src/capacity-db";
 import { renderHistoryHtml } from "../src/history";
 import { renderLimitsHtml, type CodexLimitAccount } from "../src/limits";
 import { attachSessionEquivalentForecasts } from "../src/session-equivalents";
 import { tempDir } from "./tmp";
 
 describe("capacity history", () => {
+  test("downsamples dense buckets without changing raw counts or provenance series", () => {
+    const dbPath = join(tempDir("spendwatch-capacity-buckets-"), "history.db");
+    const now = Date.parse("2026-10-20T12:00:00Z");
+    const db = openCapacityDatabase(dbPath);
+    const insert = db.prepare(`
+      INSERT INTO capacity_history(
+        sample_key, provider, account, window_kind, sampled_at_ms, observed_at,
+        used_percent, resets_at_ms, window_minutes, source, devices
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    `);
+    const add = (
+      key: string, at: number, value: number, source = "live", account = "work@example.com", reset = now + 3_600_000,
+    ) => insert.run(key, "codex", account, "session", at, new Date(at).toISOString(), value, reset, 300, source, "[]");
+    // Five raw readings share one five-minute bucket. The latest timestamp
+    // wins; ties pick a stable representative without inflating the count.
+    add("verified-1", now - 3_599_000, 21);
+    add("verified-2", now - 3_598_000, 22);
+    add("verified-latest-low", now - 3_597_000, 30, "live", "work@example.com", now + 1_000);
+    add("verified-latest-high", now - 3_597_000, 31, "live", "work@example.com", now + 2_000);
+    add("legacy-latest", now - 3_596_000, 91, "codex-session-log");
+    // A literal account label may equal the historical display prefix. The
+    // display series must retain the old query's merged raw count and one
+    // latest point, rather than make two series with the same display label.
+    add("literal-prefix", now - 3_595_000, 32, "live", "Unverified historical · work@example.com");
+    // The cutoff timestamps use the same bucket sizes as the production
+    // renderer, including the one-millisecond side of each boundary.
+    add("two-days", now - 2 * 86400_000, 10, "live", "boundaries@example.com");
+    add("two-days-before", now - 2 * 86400_000 - 1, 11, "live", "boundaries@example.com");
+    add("thirty-days", now - 30 * 86400_000, 12, "live", "boundaries@example.com");
+    add("thirty-days-before", now - 30 * 86400_000 - 1, 13, "live", "boundaries@example.com");
+    add("one-eighty-days", now - 180 * 86400_000, 14, "live", "boundaries@example.com");
+    add("one-eighty-days-before", now - 180 * 86400_000 - 1, 15, "live", "boundaries@example.com");
+    db.close();
+    for (const [offset, credits] of [[3_599_000, 10], [3_598_000, 11], [3_597_000, 12]]) {
+      const at = now - offset;
+      writeCapacitySnapshot(dbPath, [{
+        provider: "copilot", email: "credits@example.com", plan: "Business", devices: ["studio"],
+        updatedAt: new Date(at).toISOString(),
+        copilot: {
+          chatUnlimited: true, completionsUnlimited: true, premiumUnlimited: false, premiumCreditsUsed: credits,
+          overagePermitted: true, tokenBasedBilling: false,
+        },
+      }], { collectedAt: at });
+    }
+
+    const history = loadCapacityHistory(dbPath, now);
+    const verified = history.series.find((series) => series.account === "work@example.com");
+    const legacy = history.series.find((series) => series.account === "Unverified historical · work@example.com");
+    expect(verified).toMatchObject({ sampleCount: 4, points: [{ value: 31, resetsAt: now + 2_000 }] });
+    expect(legacy).toMatchObject({ sampleCount: 2, points: [{ value: 32 }] });
+    expect(history.series.find((series) => series.account === "boundaries@example.com")?.sampleCount).toBe(6);
+    expect(history.series.find((series) => series.account === "credits@example.com" && series.kind === "credits"))
+      .toMatchObject({ sampleCount: 3, points: [{ value: 12 }] });
+    expect(history.sampleCount).toBe(15);
+  });
+
   test("stores live and imported samples idempotently", () => {
     const dir = tempDir("spendwatch-capacity-");
     const db = join(dir, "history.db");
@@ -42,12 +98,19 @@ describe("capacity history", () => {
     const history = loadCapacityHistory(db, Date.parse("2026-08-10T00:00:00Z"));
     expect(history.sampleCount).toBe(5);
     expect(history.firstSampleAt).toBe(Date.parse("2026-06-12T10:00:00Z"));
-    expect(history.series.map((series) => series.kind).sort()).toEqual(["session", "weekly"]);
-    expect(history.series.every((series) => series.sampleCount === 2)).toBe(true);
+    expect(history.series.map((series) => series.kind).sort()).toEqual(["session", "session", "weekly", "weekly"]);
+    expect(history.series.every((series) => series.sampleCount === 1)).toBe(true);
+    expect(history.series.filter((series) => series.kind === "session").map((series) => ({
+      account: series.account, values: series.points.map((point) => point.value),
+    })).sort((a, b) => a.account.localeCompare(b.account))).toEqual([
+      { account: "Unverified historical · work@example.com", values: [10] },
+      { account: "work@example.com", values: [25] },
+    ]);
     const html = renderHistoryHtml(history, { capacityHref: "capacity.html" });
     expect(html).toContain("Past month");
     expect(html).toContain("Older verified archives remain restorable");
     expect(html).toContain("work@example.com");
+    expect(html).toContain("Historical Codex session-log account labels are unverified");
     expect(html).toContain('href="capacity.html">Capacity</a>');
   });
 
@@ -246,6 +309,9 @@ describe("capacity history", () => {
     expect(current.sessionEquivalent?.sampleCount).toBe(3);
     expect(current.sessionEquivalent?.medianWeeklyBurn).toBe(10);
     expect(current.sessionEquivalent?.estimatedQuotasLeft).toBe(6);
-    expect(renderLimitsHtml([current], { generatedAt: Date.parse("2026-08-10T15:00:00Z") })).toContain("Est. 6 session quotas left");
+    const html = renderLimitsHtml([current], { generatedAt: Date.parse("2026-08-10T15:00:00Z") });
+    expect(html).toContain("<strong>60% left</strong>");
+    expect(html).toContain('aria-label="Weekly window remaining"');
+    expect(html).not.toContain("session quotas left");
   });
 });

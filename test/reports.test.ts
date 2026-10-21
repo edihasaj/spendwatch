@@ -180,7 +180,7 @@ describe("portable reports", () => {
     expect(html).toContain("Fragment+Mono");
     expect(html).toContain('class="panels"');
     expect(html).toContain('100 tokens');
-    expect(html).toContain('100 exact');
+    expect(html).toContain('100 recorded');
     expect(html.indexOf('100 tokens')).toBeLessThan(html.indexOf('$1.00 estimated'));
     expect(html).toContain('>100</span><span class="l">tokens');
     expect(html).toContain('for the last 30 days');
@@ -190,6 +190,19 @@ describe("portable reports", () => {
     expect(html).not.toContain("location.reload()");
     expect(html).not.toContain("Know what you can");
   });
+});
+
+test("spend account coverage distinguishes route inference, unknown calls and legacy labels", () => {
+  const known = {
+    ...report("studio:codex"), apiCalls: 4,
+    accountAttribution: { version: 1, configuredRoute: 2, profile: 1, unknown: 1 },
+  };
+  const legacy = report("macbook:codex");
+  const html = renderHtml([known, legacy], { generatedAt: 1, days: 7 });
+  expect(html).toContain("2 route matches · 1 unknown");
+  expect(html).toContain("Historical route labels use dated gateway configuration");
+  expect(html).toContain("2 older calls have unverified account labels");
+  expect(html).not.toContain("Exact token usage");
 });
 
 describe("spend report period", () => {

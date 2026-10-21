@@ -264,7 +264,7 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
       const file = Bun.file(filePath);
       if (!await file.exists()) return new Response("Not found", { status: 404 });
       return new Response(request.method === "HEAD" ? null : file, {
-        headers: { "Cache-Control": relativePath.endsWith(".html") ? "no-cache" : "public, max-age=300" },
+        headers: { "Cache-Control": "private, no-store" },
       });
       } catch (error) {
         void reportOperationalError("spendwatch.http.failure", error, {

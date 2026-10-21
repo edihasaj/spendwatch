@@ -2,6 +2,7 @@ import { Database } from "./database";
 import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import type { CapacityProvider, CodexLimitAccount, LimitWindow } from "./limits";
+import { capacityHistoryQueries } from "./capacity-history-query";
 
 const CAPACITY_SCHEMA = `
 CREATE TABLE IF NOT EXISTS capacity_history (
@@ -398,44 +399,9 @@ export function loadCapacityHistory(path: string, nowMs = Date.now()): CapacityH
     SELECT COUNT(*) AS count, MIN(sampled_at_ms) AS firstAt, MAX(sampled_at_ms) AS lastAt
     FROM capacity_account_history
   `).get();
-  const bucketExpression = `CASE
-    WHEN sampled_at_ms >= ${Math.round(nowMs - 2 * 86400_000)} THEN 300000
-    WHEN sampled_at_ms >= ${Math.round(nowMs - 30 * 86400_000)} THEN 1800000
-    WHEN sampled_at_ms >= ${Math.round(nowMs - 180 * 86400_000)} THEN 21600000
-    ELSE 86400000 END`;
-  const rows = db.query<HistoryRow, []>(`
-    WITH ranked AS (
-      SELECT provider, account, window_kind AS kind, sampled_at_ms AS sampledAt,
-             used_percent AS value, resets_at_ms AS resetsAt,
-             COUNT(*) OVER (PARTITION BY provider, account, window_kind) AS sampleCount,
-             ROW_NUMBER() OVER (
-               PARTITION BY provider, account, window_kind,
-                 CAST(sampled_at_ms / (${bucketExpression}) AS INTEGER)
-               ORDER BY sampled_at_ms DESC
-             ) AS rank
-      FROM capacity_history
-    )
-    SELECT provider, account, kind, sampledAt, value, resetsAt, sampleCount
-    FROM ranked WHERE rank = 1
-    ORDER BY provider, account, kind, sampledAt
-  `).all();
-  const creditRows = db.query<CreditRow, []>(`
-    WITH ranked AS (
-      SELECT provider, account, sampled_at_ms AS sampledAt,
-             copilot_premium_credits_used AS value,
-             COUNT(*) OVER (PARTITION BY provider, account) AS sampleCount,
-             ROW_NUMBER() OVER (
-               PARTITION BY provider, account,
-                 CAST(sampled_at_ms / (${bucketExpression}) AS INTEGER)
-               ORDER BY sampled_at_ms DESC
-             ) AS rank
-      FROM capacity_account_history
-      WHERE copilot_premium_credits_used IS NOT NULL
-    )
-    SELECT provider, account, sampledAt, value, sampleCount
-    FROM ranked WHERE rank = 1
-    ORDER BY provider, account, sampledAt
-  `).all();
+  const queries = capacityHistoryQueries(nowMs);
+  const rows = db.query<HistoryRow, []>(queries.history).all();
+  const creditRows = db.query<CreditRow, []>(queries.credits).all();
   const series = new Map<string, CapacityHistorySeries>();
   for (const row of rows) {
     const key = `${row.provider}:${row.account}:${row.kind}`;
