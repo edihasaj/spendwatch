@@ -4,7 +4,13 @@
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { Event } from "./parse";
-import { parseCodexLine, settleRouted, type CodexCtx } from "./codex";
+import {
+  admitCodexHistoryLine,
+  assertCodexHistoryComplete,
+  parseAdmittedCodexLine,
+  settleRouted,
+  type CodexCtx,
+} from "./codex";
 
 const CLAUDE_QWEN_WORKER = ["Library", "Application Support", "Claude-3p", "qwen-worker"];
 
@@ -69,36 +75,34 @@ export function defaultLocalQwenRoots(home: string, sessionDirectory = "sessions
  * can share that profile, so retain its explicit model aliases only.
  */
 export function* parseFreeCodexLocalQwen(line: string, ctx: CodexCtx): Generator<Event> {
-  let record: { type?: unknown; payload?: Record<string, unknown> } | undefined;
-  try {
-    record = JSON.parse(line);
-  } catch {
-    return;
-  }
+  const admission = admitCodexHistoryLine(line, ctx);
+  if (!admission) return;
+  const record = admission.record as { type?: unknown; payload?: Record<string, unknown> };
+  if (admission.inherited && !admission.seedMetadata) return;
   const payload = record?.payload;
   const meta = record?.type === "session_meta";
   const turn = record?.type === "turn_context";
-  if (meta) {
-    // Native Codex commonly establishes the child session/provider before its
-    // first model selection. Keep that identity even while its cloud prompt
-    // events remain suppressed.
-    const id = typeof payload?.id === "string" ? payload.id : "";
-    if (ctx.ownSession !== undefined && id !== ctx.ownSession) return;
-    ctx.ownSession = id;
-    if (id) ctx.sid = id;
-    if (typeof payload?.model_provider === "string") ctx.modelProvider = payload.model_provider;
-  }
   const declaredModel = (meta || turn) && typeof payload?.model === "string" ? payload.model : undefined;
+
+  // A model-less child header still establishes its identity/provider before
+  // its first local-Qwen turn. Consume the normal parser without exposing a
+  // cloud metadata event from this free-only source.
+  if (admission.seedMetadata || (meta && declaredModel === undefined && ctx.ownSession === undefined)) {
+    for (const _ of parseAdmittedCodexLine(admission, ctx)) {}
+    return;
+  }
   if (declaredModel !== undefined && !isLocalQwenModel(declaredModel)) {
-    // Mirror Codex's own fork protection. A copied parent session_meta must not
-    // replace the active Qwen session/model and make its following lines vanish.
-    ctx.model = declaredModel;
+    // Every ordinal was admitted above, but cloud-only metadata and rows stay
+    // out of the local source. Parsing the metadata is necessary to keep the
+    // normal context contract; its event is intentionally discarded.
+    for (const _ of parseAdmittedCodexLine(admission, ctx)) {}
     return;
   }
   if (declaredModel === undefined && !isLocalQwenModel(ctx.model)) return;
-  yield* parseCodexLine(line, ctx);
+  yield* parseAdmittedCodexLine(admission, ctx);
 }
 
 export function settleFreeCodexLocalQwen(ctx: CodexCtx, final: boolean): Event[] {
+  if (final) assertCodexHistoryComplete(ctx);
   return [...settleRouted(ctx, final)].filter((event) => event.t !== "api" || isLocalQwenModel(event.model));
 }
