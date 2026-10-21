@@ -45,6 +45,14 @@ export interface CodexCtx {
    * once they are older than the claim window, or when the read ends.
    */
   pending?: PendingCall[];
+  /**
+   * New paginated subagent rollouts copy an inherited prefix into the child's
+   * file. The native thread store projects only records at or after this
+   * boundary. Keep that decision ahead of every parser side effect.
+   */
+  history?: CodexHistoryState;
+  /** The first session_meta decides whether this file has an ownership gate. */
+  historyHeaderSeen?: boolean;
 }
 
 /** A routed call that waits for its ledger row; see `CodexCtx.pending`. */
@@ -61,9 +69,168 @@ interface PendingCall {
   usage: Usage;
 }
 
+interface CodexHistoryState {
+  boundary: number;
+  lastOrdinal: number;
+  /** The first, file-owning session header. It must not drift later in the file. */
+  header: CodexHistoryHeader;
+}
+
+interface CodexHistoryHeader {
+  id: string;
+  cwd?: string;
+  model?: string;
+  modelProvider?: string;
+  historyMode: string;
+  boundary: number;
+  parent?: string;
+}
+
+export interface CodexHistoryAdmission {
+  /** The already-decoded row. Reusing it prevents a wrapper from admitting twice. */
+  record: any;
+  /** The record belongs to copied parent context and must not create any usage. */
+  inherited: boolean;
+  /**
+   * The header establishes the child's identity even when it is in the copied
+   * prefix. It changes context only and never emits an event in that case.
+   */
+  seedMetadata: boolean;
+}
+
 let codexFallback = 0;
 export function newCodexCtx(gateway?: GatewayIndex): CodexCtx {
   return { sid: `codex-${codexFallback++}`, promptN: 0, callN: 0, callName: new Map(), gateway };
+}
+
+function historyError(message: string): never {
+  throw new Error(`Codex paginated subagent history: ${message}`);
+}
+
+function safeOrdinal(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function parentReference(payload: any): string | undefined {
+  const source = payload?.source;
+  const subagent = source?.subagent;
+  const threadSpawn = subagent?.thread_spawn;
+  const candidates: Array<[string, unknown, boolean]> = [
+    ["forked_from_id", payload?.forked_from_id, Object.prototype.hasOwnProperty.call(payload, "forked_from_id")],
+    ["parent_thread_id", payload?.parent_thread_id, Object.prototype.hasOwnProperty.call(payload, "parent_thread_id")],
+    ["source.subagent.parent_thread_id", subagent?.parent_thread_id, Object.prototype.hasOwnProperty.call(subagent ?? {}, "parent_thread_id")],
+    ["source.subagent.thread_spawn.parent_thread_id", threadSpawn?.parent_thread_id, Object.prototype.hasOwnProperty.call(threadSpawn ?? {}, "parent_thread_id")],
+  ];
+  const refs: string[] = [];
+  for (const [name, value, provided] of candidates) {
+    if (!provided) continue;
+    const reference = nonEmptyString(value);
+    if (!reference) historyError(`session header has an invalid ${name}`);
+    refs.push(reference);
+  }
+  if (new Set(refs).size > 1) historyError("session header has conflicting parent-thread references");
+  return refs[0];
+}
+
+function historyHeader(payload: any, boundary: number): CodexHistoryHeader {
+  return {
+    id: nonEmptyString(payload?.id) ?? "",
+    cwd: nonEmptyString(payload?.cwd),
+    model: nonEmptyString(payload?.model),
+    modelProvider: nonEmptyString(payload?.model_provider),
+    historyMode: nonEmptyString(payload?.history_mode) ?? "",
+    boundary,
+    parent: parentReference(payload),
+  };
+}
+
+function sameHeader(a: CodexHistoryHeader, b: CodexHistoryHeader): boolean {
+  return a.id === b.id
+    && a.cwd === b.cwd
+    && a.model === b.model
+    && a.modelProvider === b.modelProvider
+    && a.historyMode === b.historyMode
+    && a.boundary === b.boundary
+    && a.parent === b.parent;
+}
+
+/** Reject a completed copy that ends in its inherited prefix. */
+export function assertCodexHistoryComplete(ctx: CodexCtx): void {
+  const history = ctx.history;
+  if (history && history.lastOrdinal < history.boundary - 1) {
+    historyError("ended before its child-owned ownership boundary");
+  }
+}
+
+/**
+ * Admit one decoded rollout row before the normal parser can touch counters,
+ * gateway claims, pending calls, or metadata. Codex's native thread store
+ * treats `subagent_history_start_ordinal` as the first child-owned ordinal;
+ * rows before it are copied parent context only.
+ */
+export function admitCodexHistoryLine(line: string, ctx: CodexCtx): CodexHistoryAdmission | undefined {
+  if (!line) return;
+  if (line[0] !== "{") {
+    if (ctx.history) historyError("contains invalid JSON after an explicit ownership header");
+    return;
+  }
+  let record: any;
+  try {
+    record = JSON.parse(line);
+  } catch {
+    if (ctx.history) historyError("contains invalid JSON after an explicit ownership header");
+    return;
+  }
+  if (!record || typeof record !== "object") {
+    if (ctx.history) historyError("contains a non-object row after an explicit ownership header");
+    return;
+  }
+
+  const payload = record.payload ?? {};
+  if (!ctx.history && !ctx.historyHeaderSeen && record.type === "session_meta") {
+    ctx.historyHeaderSeen = true;
+    const hasBoundary = Object.prototype.hasOwnProperty.call(payload, "subagent_history_start_ordinal")
+      && payload.subagent_history_start_ordinal !== null;
+    const paginated = payload.history_mode === "paginated";
+    if (hasBoundary && !paginated) {
+      historyError("has a subagent ownership boundary without paginated history mode");
+    }
+    if (paginated && hasBoundary) {
+      const boundary = safeOrdinal(payload.subagent_history_start_ordinal);
+      if (boundary === undefined) historyError("has an invalid subagent ownership boundary");
+      const ordinal = safeOrdinal(record.ordinal);
+      if (ordinal === undefined) historyError("header is missing a safe ordinal");
+      if (!nonEmptyString(payload.id)) historyError("header is missing a non-empty child id");
+      const header = historyHeader(payload, boundary);
+      ctx.history = { boundary, lastOrdinal: ordinal, header };
+      return { record, inherited: ordinal < boundary, seedMetadata: ordinal < boundary };
+    }
+  }
+
+  const history = ctx.history;
+  if (!history) return { record, inherited: false, seedMetadata: false };
+
+  const ordinal = safeOrdinal(record.ordinal);
+  if (ordinal === undefined) historyError("row is missing a safe ordinal");
+  if (ordinal <= history.lastOrdinal) historyError("row ordinal is not strictly increasing");
+  history.lastOrdinal = ordinal;
+  const inherited = ordinal < history.boundary;
+
+  if (record.type === "session_meta" && !inherited) {
+    const mode = payload.history_mode;
+    const boundary = payload.subagent_history_start_ordinal;
+    if (mode !== "paginated" || safeOrdinal(boundary) !== history.boundary) {
+      historyError("own session metadata changed its history mode or ownership boundary");
+    }
+    if (!sameHeader(history.header, historyHeader(payload, history.boundary))) {
+      historyError("own session metadata changed after its first header");
+    }
+  }
+  return { record, inherited, seedMetadata: false };
 }
 
 // Where a routed rollout call is billed. Only the provider named in session_meta routes, so every other rollout
@@ -136,6 +303,7 @@ function billHere(ctx: CodexCtx, call: PendingCall): Event | undefined {
  * tick with the reloaded ledger; a read calls it with `final` when the file ends.
  */
 export function* settleRouted(ctx: CodexCtx, final = false, now = Date.now()): Generator<Event> {
+  if (final) assertCodexHistoryComplete(ctx);
   const waiting = ctx.pending;
   if (!waiting?.length) return;
   const due = (call: PendingCall): boolean => final || !(now - call.ts <= CLAIM_WINDOW_MS);
@@ -169,13 +337,19 @@ function countSignature(last: any, total: any): string {
 const SHELL_FNS = new Set(["exec_command", "shell", "local_shell_call", "run_command", "container.exec"]);
 
 export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
-  if (!line || line[0] !== "{") return;
-  let d: any;
-  try {
-    d = JSON.parse(line);
-  } catch {
-    return;
-  }
+  const admission = admitCodexHistoryLine(line, ctx);
+  if (!admission) return;
+  yield* parseAdmittedCodexLine(admission, ctx);
+}
+
+/**
+ * Parses an already-admitted Codex record. Source wrappers must call
+ * `admitCodexHistoryLine` first and hand this function the returned admission,
+ * so ownership cannot be checked twice or after a filtering side effect.
+ */
+export function* parseAdmittedCodexLine(admission: CodexHistoryAdmission, ctx: CodexCtx): Generator<Event> {
+  const d = admission.record;
+  if (admission.inherited && !admission.seedMetadata) return;
   const ts = d.timestamp ? Date.parse(d.timestamp) : 0;
   const p = d.payload ?? {};
   
@@ -188,7 +362,12 @@ export function* parseCodexLine(line: string, ctx: CodexCtx): Generator<Event> {
       if (p.model) ctx.model = p.model;
       if (p.model_provider) ctx.modelProvider = p.model_provider;
       if (p.id) ctx.sid = p.id;
-      yield { t: "meta", sessionId: ctx.sid, project: ctx.project, model: ctx.model, ts };
+      // The file header names the child even when native Codex stores it before
+      // a copied parent prefix. It establishes state only; that prefix must not
+      // create an event in this child's report.
+      if (!admission.seedMetadata) {
+        yield { t: "meta", sessionId: ctx.sid, project: ctx.project, model: ctx.model, ts };
+      }
       return;
     }
     case "turn_context": {
