@@ -125,11 +125,11 @@ describe("Codex limits", () => {
     expect(html).toContain("min-height:44px");
     expect(html).toContain('.limit-meta{justify-content:flex-end;color:var(--muted);font:11px/1.35 "Fragment Mono",monospace}');
     expect(html).toContain('.pace{margin-top:5px;color:#aab3ba;font:11px/1.35 "Fragment Mono",monospace}');
-    expect(html).toContain('class="pace-marker reserve" style="--pace-position:28%"');
-    expect(html).toContain('class="pace-marker deficit" style="--pace-position:11%"');
+    expect(html).toContain('class="pace-marker reserve" style="--pace-position:72%"');
+    expect(html).toContain('class="pace-marker deficit" style="--pace-position:89%"');
     expect(html).toContain("--marker-color:#a8ffb9");
     expect(html).toContain("box-shadow:0 0 0 1px #020304,0 0 7px var(--marker-color)");
-    expect(html).toContain('aria-label="Expected pace: 11% used, 3% over"');
+    expect(html).toContain('aria-label="Expected pace: 89% left, 3% over"');
     expect(html).toContain("3% over pace");
     expect(html).not.toContain("Learned ·");
     expect(html).not.toContain("data-exhaust=");
@@ -309,8 +309,8 @@ describe("Codex limits", () => {
         },
       },
     }], { generatedAt: Date.parse("2026-08-11T17:00:00Z") });
-    expect(html).toContain('class="pace-marker steady" style="--pace-position:9%"');
-    expect(html).toContain('aria-label="Expected pace: 9% used, on pace"');
+    expect(html).toContain('class="pace-marker steady" style="--pace-position:91%"');
+    expect(html).toContain('aria-label="Expected pace: 91% left, on pace"');
   });
 
   test("shows Claude pace immediately after a weekly reset", () => {
@@ -327,7 +327,7 @@ describe("Codex limits", () => {
       },
     }], { generatedAt: Date.parse("2026-08-12T12:00:00Z") });
     expect(html).toContain('class="pace-marker steady"');
-    expect(html).toContain('aria-label="Expected pace: 1% used, on pace"');
+    expect(html).toContain('aria-label="Expected pace: 99% left, on pace"');
     expect(html).toContain("On pace");
     expect(html).not.toContain("Lasts until reset");
   });
