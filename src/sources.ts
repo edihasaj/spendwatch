@@ -16,7 +16,8 @@ import { carryLedger, claudeFile, gatewayWarning } from "./gateway-sources";
 import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
 import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
-import { walkJsonl } from "./scan";
+import { walkCodexJsonl, walkJsonl } from "./scan";
+import { assertSafeCodexCompressedRollout, codexRolloutSnapshot } from "./codex-compressed-rollouts";
 import { collectCopilot, defaultCopilotRoots } from "./copilot";
 import { defaultMissionRoots, readMission } from "./mission";
 import { collectAutoreview } from "./autoreview";
@@ -28,6 +29,13 @@ import {
   parseFreeCodexLocalQwen,
   settleFreeCodexLocalQwen,
 } from "./local-qwen-sources";
+import { loadCodexAccountAttributor, UNKNOWN_CODEX_ACCOUNT, type AccountAttributionBasis, type CodexAccountAttributor } from "./codex-account-attribution";
+import { selectCodexRolloutCopies } from "./codex-rollout-copies";
+import { createCodexRolloutSemanticDominance } from "./codex-rollout-semantics";
+import { claudeModelAliases, claudeProofRootDiscovery } from "./claude-proof-roots";
+
+// Process-wide so a watch tick re-proves only rollouts whose bytes moved.
+const codexSemanticDominance = createCodexRolloutSemanticDominance();
 
 export interface SourceFile {
   path: string;
@@ -36,8 +44,18 @@ export interface SourceFile {
   project: string;
   source: string;
   account: string;
+  accountBasis?: AccountAttributionBasis;
+  codexAttributor?: CodexAccountAttributor;
   parse: (line: string, ctx: any) => Iterable<Event>;
   ctx: any;
+  /**
+   * A duplicate proof uses this to get an isolated parser state. It must not reuse the live
+   * reader context (or its gateway ledger), whose mutable claims would make the proof depend on
+   * discovery order.
+   */
+  semanticCtx?: () => any;
+  /** Identifies the parser/settler contract used to build duplicate manifests. */
+  semanticKey?: string;
   /**
    * Watch mode discovers the same file again on every tick, with a new `ctx`. The reader keeps the first
    * one, because it holds what earlier lines taught the parser, and calls this to hand it whatever the
@@ -90,6 +108,7 @@ interface RootCfg {
   agent: string;
   path: string;
   account?: string;
+  isolatedProof?: boolean;
 }
 
 function expand(p: string): string {
@@ -181,10 +200,14 @@ function isFreeCodexHome(sessionsDir: string): boolean {
 
 // Codex account: email tagged with the profile home it was read from, e.g.
 // "alex@example.com (secondary)".
-function codexAccount(sessionsDir: string): string {
+function codexAccount(sessionsDir: string): { account: string; basis: AccountAttributionBasis } {
   const profile = codexProfile(sessionsDir);
   const { email } = codexClaims(sessionsDir);
-  return email ? `${email} (${profile})` : profile;
+  // The default home is continuously overwritten by Codex login. Its current
+  // credential cannot prove historical calls, whereas a named profile is an
+  // explicit local route and remains useful fallback evidence.
+  if (profile === "main") return { account: UNKNOWN_CODEX_ACCOUNT, basis: "unknown" };
+  return { account: email ? `${email} (${profile})` : profile, basis: "profile" };
 }
 
 // Grok profile label: ~/.grok → "main", ~/.grok-work → "work". Mirrors Codex so
@@ -234,16 +257,16 @@ function safeReaddir(d: string): string[] {
   }
 }
 
-// Every "<home>/<dot><suffix>/sessions" profile directory, default home first,
+// Every "<home>/<dot><suffix>/<leaf>" profile directory, default home first,
 // with symlinked duplicates collapsed to one root.
-function profileRoots(home: string, agent: string, dot: string): RootCfg[] {
+function profileRoots(home: string, agent: string, dot: string, leaf = "sessions"): RootCfg[] {
   const names = safeReaddir(home)
     .filter((name) => name === dot || name.startsWith(`${dot}-`))
     .sort((a, b) => (a === dot ? -1 : b === dot ? 1 : a.localeCompare(b)));
   const seen = new Set<string>();
   const roots: RootCfg[] = [];
   for (const name of names) {
-    const path = join(home, name, "sessions");
+    const path = join(home, name, leaf);
     if (!existsSync(path)) continue;
     let canonical: string;
     try {
@@ -267,16 +290,18 @@ function realpathKey(path: string): string | undefined {
 }
 
 export function defaultCodexRoots(home = homedir()): RootCfg[] {
-  // Codex moves a rollout to `archived_sessions` instead of deleting it, so the
-  // same basename can sit in both. Listing the live roots first keeps that copy,
-  // which the rollout-name dedupe in `discover` then bills exactly once.
+  // Codex moves a rollout to `archived_sessions` instead of deleting it. Keep
+  // every profile's live and archive roots, including homes retained only as an
+  // archive; `discover` verifies duplicate basename prefixes before selecting.
   const qwenLive = defaultLocalQwenRoots(home).map((root) => ({ agent: "codex", ...root }));
-  const live = [...profileRoots(home, "codex", ".codex"), ...qwenLive];
+  const codexLive = profileRoots(home, "codex", ".codex");
+  const codexArchived = profileRoots(home, "codex", ".codex", "archived_sessions");
+  const live = [...codexLive, ...qwenLive];
   // A worker refresh may retain only archived rollouts for an older generation.
   // Those homes have no live `sessions` directory, so add them separately.
   const qwenArchived = defaultLocalQwenRoots(home, "archived_sessions").map((root) => ({ agent: "codex", ...root }));
   const seen = new Set<string>();
-  return [...live, ...live.map((root) => ({ agent: "codex", path: join(dirname(root.path), "archived_sessions") })), ...qwenArchived]
+  return [...live, ...codexArchived, ...qwenArchived]
     .filter((root) => {
       if (!existsSync(root.path)) return false;
       const canonical = realpathKey(root.path);
@@ -302,23 +327,35 @@ export function defaultOmpRoots(home = homedir()): RootCfg[] {
 }
 
 // ---- per-agent collectors ---------------------------------------------------
-function collectClaude(dir: string, account: string, sinceMs: number, project?: string, gateway?: GatewayLedger): SourceFile[] {
-  return collectClaudeSourceFiles(dir, account || claudeAccount(dir), sinceMs, project, gateway);
+function collectClaude(dir: string, account: string, sinceMs: number, project?: string, gateway?: GatewayLedger, aliases?: ReadonlyMap<string, string>, isolatedProof = false): SourceFile[] {
+  const files = collectClaudeSourceFiles(dir, account || claudeAccount(dir), sinceMs, project, gateway, aliases, isolatedProof);
+  if (isolatedProof) for (const file of files) file.accountBasis = "unknown";
+  return files;
 }
 
-function collectCodex(dir: string, account: string, sinceMs: number, gateway?: GatewayLedger, localQwenOnly = false): SourceFile[] {
+function collectCodex(dir: string, account: string, sinceMs: number, gateway?: GatewayLedger, localQwenOnly = false, codexAttributor?: CodexAccountAttributor): SourceFile[] {
   const files: SourceFile[] = [];
   if (!existsSync(dir)) return files;
-  const acct = account || (localQwenOnly || isLocalQwenWorkerRoot(dir) ? "Local Qwen" : codexAccount(dir));
-  for (const path of walkJsonl(dir)) {
-    if (!path.includes("rollout-")) continue;
-    if (!mtimeOk(path, sinceMs)) continue;
+  const fallback = account ? { account, basis: "configured-route" as const } :
+    (localQwenOnly || isLocalQwenWorkerRoot(dir) ? { account: "Local Qwen", basis: "profile" as const } : codexAccount(dir));
+  for (const sourcePath of walkCodexJsonl(dir)) {
+    if (!sourcePath.includes("rollout-")) continue;
+    // A dangling or retargeted compressed link must not disappear through an
+    // mtime check before the adapter can reject it.
+    assertSafeCodexCompressedRollout(sourcePath);
+    // Filter the native archive before decoding. A temp snapshot must never
+    // make an old source file look current.
+    if (!mtimeOk(sourcePath, sinceMs)) continue;
+    const path = codexRolloutSnapshot(sourcePath);
     const ctx = newCodexCtx(gateway);
     let renewed = false;
     // A rollout keeps its identity when Codex moves it into archived_sessions, so a watching reader carries on
     // from its offset instead of reading the file again as a new one.
-    files.push({ path, key: `codex:${basename(path)}`, project: "?", source: "codex", account: acct,
+    files.push({ path, key: `codex:${basename(path)}`, project: "?", source: "codex", account: fallback.account, accountBasis: fallback.basis,
+      ...(localQwenOnly ? {} : { codexAttributor }),
       parse: localQwenOnly ? parseFreeCodexLocalQwen : parseCodexLine, ctx,
+      semanticCtx: () => newCodexCtx(),
+      semanticKey: localQwenOnly ? "free-local-qwen-v1" : "codex-v1",
       settle: (kept: CodexCtx, final: boolean) => localQwenOnly
         ? settleFreeCodexLocalQwen(kept, final)
         : settleRouted(kept, final),
@@ -376,7 +413,11 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   const cfg = loadConfig();
 
   // Resolve roots per agent: config overrides defaults.
-  const claudeRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "claude") : [{ agent: "claude", path: join(homedir(), ".claude", "projects") }];
+  const proofRoots = cfg ? undefined : claudeProofRootDiscovery();
+  const claudeRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "claude") : [
+    { agent: "claude", path: join(homedir(), ".claude", "projects") },
+    ...proofRoots!.roots.map((root) => ({ agent: "claude", ...root, isolatedProof: true })),
+  ];
   const codexRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "codex") : defaultCodexRoots();
   const grokRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "grok") : defaultGrokRoots();
 
@@ -389,6 +430,10 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   const gatewayRoot = cfg?.find((r) => r.agent === "gateway");
   const gatewayOn = process.env.SPENDWATCH_GATEWAY_SOURCE !== "off" && (cfg ? !!gatewayRoot : true);
   const gateway = gatewayOn ? GatewayIndex.load({ sinceMs: opts.sinceMs, stateDir: gatewayRoot?.path }) : undefined;
+  // Attribution reads the same private gateway credential and ledger scope as
+  // Codex itself. A Claude-only request or an explicit gateway opt-out must
+  // not inspect either one.
+  const codexAttributor = want("codex") && gatewayOn ? loadCodexAccountAttributor(opts.sinceMs, gatewayRoot?.path) : undefined;
   const ledger = !!gateway?.present;
 
   // A report must not depend on which agents were asked for: the ledger bills its `msg_gl_*` rows for Claude Code
@@ -396,17 +441,19 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   // only, reporting nothing. Like the Codex claim-only status below, this is decided at discovery: a `watch
   // --agents copilot` started before this Mac's ledger holds a Messages row reads no Claude claims until restarted.
   if (want("claude") || gateway?.hasMessages()) {
-    const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project, gateway));
+    const aliases = claudeModelAliases();
+    const files = claudeRoots.flatMap((r) => collectClaude(r.path, r.account ?? "", opts.sinceMs, opts.project, gateway, aliases, r.isolatedProof));
     const carry = gateway ? { carry: (kept: ClaudeCtx) => carryLedger(kept, gateway) } : {};
     if (!want("claude")) {
       // Transcripts only: the ledger's own rows are its reports, and a status that reports nothing has no warning either.
       out.push({ id: "claude", present: claudeRoots.some((r) => existsSync(r.path)), parseable: true, ledger, claimOnly: true, files, ...carry });
     } else {
       const rows = gateway?.files("claude") ?? [];
-      const claude: SourceStatus = { id: "claude", present: claudeRoots.some((r) => existsSync(r.path)) || rows.length > 0, parseable: true, ledger, files: [...files, ...rows], ...carry };
+      const claude: SourceStatus = { id: "claude", present: claudeRoots.some((r) => existsSync(r.path)) || rows.length > 0, parseable: true, ledger, files: [...files, ...rows], ...carry,
+        ...(proofRoots?.unavailable ? { warning: "some isolated Claude proof roots could not be safely scanned" } : {}) };
       // Asked after the transcripts have been read, because only the parser knows what a message recorded.
       if (gateway) Object.defineProperty(claude, "warning", {
-        get: () => claudeGatewayWarning(files.map((f) => f.ctx as ClaudeCtx)),
+        get: () => [proofRoots?.unavailable ? "some isolated Claude proof roots could not be safely scanned" : "", claudeGatewayWarning(files.map((f) => f.ctx as ClaudeCtx))].filter(Boolean).join("; ") || undefined,
         enumerable: true,
         configurable: true,
       });
@@ -423,26 +470,23 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
     // in defaultCodexRoots cannot catch it. Bill each rollout id only once, and
     // collect named profiles first so a shared rollout is credited to the real
     // account (primary/secondary) rather than the ~/.codex playground.
-    const seenRollouts = new Set<string>();
+    // Opt-in only here: when byte-prefix selection diverges, a parsed-event dominance proof may
+    // still pick one lossless copy (see codex-rollout-semantics.ts). Its manifest cache is process-
+    // wide but keyed by file signature, separate from the strict comparison caches, so it neither
+    // mixes with default-mode decisions nor survives a change to the file it describes.
     const isPlayground = (root: RootCfg) => basename(dirname(root.path)) === ".codex";
     const ordered = [...codexRoots].sort((a, b) => {
       const freeDifference = Number(isFreeCodexHome(a.path)) - Number(isFreeCodexHome(b.path));
       return freeDifference || Number(isPlayground(a)) - Number(isPlayground(b));
     });
-    const files = ordered
-      .flatMap((r) => collectCodex(
-        r.path,
-        r.account ?? "",
-        opts.sinceMs,
-        gateway,
-        isFreeCodexHome(r.path) || isLocalQwenWorkerRoot(r.path),
-      ))
-      .filter((file) => {
-        const rollout = basename(file.path);
-        if (seenRollouts.has(rollout)) return false;
-        seenRollouts.add(rollout);
-        return true;
-      });
+    const files = selectCodexRolloutCopies(ordered.flatMap((r, priority) => collectCodex(
+      r.path,
+      r.account ?? "",
+      opts.sinceMs,
+      gateway,
+      isFreeCodexHome(r.path) || isLocalQwenWorkerRoot(r.path),
+      codexAttributor,
+    ).map((file) => ({ path: file.path, priority, value: file }))), { semanticDominance: codexSemanticDominance });
     const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger, ...(claimOnly ? { claimOnly } : {}), files,
       ...(gateway ? { carry: (kept: CodexCtx) => carryLedger(kept, gateway) } : {}) };
     // Asked after the rollouts have been read, because only the parser knows what a rollout recorded.

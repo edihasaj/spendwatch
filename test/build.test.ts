@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { build, reportsByPeriod } from "../src/build";
+import { build, readerFor, reportsByPeriod } from "../src/build";
+import type { SourceFile, SourceStatus } from "../src/sources";
 import { rollingDays } from "../src/periods";
 import { gatewayWorld } from "./gateway-world";
 
@@ -56,6 +57,13 @@ describe("a run with the gateway ledger", () => {
     expect(found.codex!.apiCalls).toBe(0);
     expect(found.codex!.observedCalls).toBe(2);
   });
+});
+
+test("an account filter keeps Codex roots for per-call gateway attribution", () => {
+  const status: SourceStatus = { id: "codex", present: true, parseable: true, files: [] };
+  const file: SourceFile = { path: "/tmp/rollout.jsonl", key: "codex:rollout.jsonl", project: "?", source: "codex",
+    account: "Unknown Codex account", parse: () => [], ctx: null };
+  expect(readerFor(status, file, { top: 5, account: "alex@example.com" })).toBe("report");
 });
 
 describe("a run limited to some agents", () => {

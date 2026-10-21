@@ -52,6 +52,91 @@ describe("Claude capacity", () => {
     expect(claudeCapacityFromUsage(null, { email: "user@example.com" })).toBeUndefined();
   });
 
+  test("collects promotional cloud credits and paid extra usage in dollars", () => {
+    const result = claudeCapacityFromUsage({
+      ...usage,
+      iguana_necktie: {
+        limit_dollars: 300,
+        remaining_dollars: 215,
+        resets_at: "2026-09-01T01:02:03.456789+00:00",
+      },
+      extra_usage: { is_enabled: true, monthly_limit: 5000, used_credits: 1234 },
+    }, { email: "user@example.com" });
+
+    expect(result?.usage.cloudCredits).toEqual({
+      limitUsd: 300,
+      remainingUsd: 215,
+      expiresAt: "2026-09-01T01:02:03.456Z",
+    });
+    expect(result?.usage.extraUsage).toEqual({
+      usedAmount: 12.34,
+      limitAmount: 50,
+      currency: "USD",
+    });
+  });
+
+  test("derives promotional cloud-credit balance from used dollars", () => {
+    const result = claudeCapacityFromUsage({
+      ...usage,
+      iguana_necktie: { limit_dollars: 300, used_dollars: 85 },
+    }, { email: "user@example.com" });
+
+    expect(result?.usage.cloudCredits).toEqual({ limitUsd: 300, remainingUsd: 215 });
+  });
+
+  test("drops malformed credit blocks without losing valid quota windows", () => {
+    const invalidCloudBlocks = [
+      { limit_dollars: 0, remaining_dollars: 0 },
+      { limit_dollars: 100, remaining_dollars: 101 },
+      { limit_dollars: "100", remaining_dollars: 50 },
+      { limit_dollars: 300, used_dollars: null, remaining_dollars: 215 },
+      { limit_dollars: 300, used_dollars: 85, remaining_dollars: null },
+      { limit_dollars: Number.NaN, remaining_dollars: 50 },
+      { limit_dollars: Infinity, remaining_dollars: 50 },
+      { limit_dollars: 100, used_dollars: -1 },
+      { limit_dollars: 100, remaining_dollars: -1 },
+    ];
+    for (const iguana_necktie of invalidCloudBlocks) {
+      const result = claudeCapacityFromUsage({
+        ...usage,
+        iguana_necktie,
+        extra_usage: { is_enabled: true, monthly_limit: "5000", used_credits: 1234 },
+      }, { email: "user@example.com" });
+      expect(result?.usage.primary).toEqual({
+        usedPercent: 100,
+        windowMinutes: 300,
+        resetsAt: "2026-08-18T16:10:00.000Z",
+      });
+      expect(result?.usage.cloudCredits).toBeUndefined();
+      expect(result?.usage.extraUsage).toBeUndefined();
+    }
+  });
+
+  test("drops non-finite and negative extra usage without losing quota windows", () => {
+    const invalidExtraUsageBlocks = [
+      { is_enabled: true, monthly_limit: Number.NaN, used_credits: 1234 },
+      { is_enabled: true, monthly_limit: Infinity, used_credits: 1234 },
+      { is_enabled: true, monthly_limit: 5000, used_credits: -1 },
+      { is_enabled: true, monthly_limit: -1, used_credits: 1234 },
+      { is_enabled: true, monthly_limit: null, used_credits: 1234 },
+    ];
+    for (const extra_usage of invalidExtraUsageBlocks) {
+      const result = claudeCapacityFromUsage({ ...usage, extra_usage }, { email: "user@example.com" });
+      expect(result?.usage.primary).not.toBeNull();
+      expect(result?.usage.extraUsage).toBeUndefined();
+    }
+  });
+
+  test("ignores disabled extra usage while keeping its quota windows", () => {
+    const result = claudeCapacityFromUsage({
+      ...usage,
+      extra_usage: { is_enabled: false, monthly_limit: 5000, used_credits: 1234 },
+    }, { email: "user@example.com" });
+
+    expect(result?.usage.primary).not.toBeNull();
+    expect(result?.usage.extraUsage).toBeUndefined();
+  });
+
   test("discovers the default profile and named profiles", () => {
     const base = tempDir("spendwatch-claude-");
     const write = (home: string, metadata: string, email: string, plan: string) => {
@@ -246,10 +331,10 @@ describe("Keychain items for one service", () => {
 describe("capacity freshness", () => {
   const now = Date.parse("2026-08-18T15:30:00Z");
 
-  test("bounds the staleness budget to 5-60 minutes", () => {
-    expect(staleAfterMs(300)).toBe(15 * 60_000);
+  test("bounds the staleness budget to 5-7 minutes", () => {
+    expect(staleAfterMs(300)).toBe(7 * 60_000);
     expect(staleAfterMs(60)).toBe(5 * 60_000);
-    expect(staleAfterMs(10080)).toBe(60 * 60_000);
+    expect(staleAfterMs(10080)).toBe(7 * 60_000);
   });
 
   test("separates live, stale, and expired samples", () => {

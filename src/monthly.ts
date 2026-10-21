@@ -5,16 +5,18 @@
 // actually happened in, rather than the month the file was last written.
 import { Aggregator, type Report } from "./aggregate";
 import type { Event } from "./parse";
+import type { AccountAttributionBasis, CodexAccountAttributor } from "./codex-account-attribution";
 import { monthKeyOf, type Period } from "./periods";
 
 export interface EventSink {
-  stream(fileKey: string, project: string, source?: string, account?: string): (event: Event) => void;
+  stream(fileKey: string, project: string, source?: string, account?: string, accountBasis?: AccountAttributionBasis, codexAttributor?: CodexAccountAttributor): (event: Event) => void;
   /** Forgets what a file's stream folded, so the next fold of that file starts afresh. */
   reset(fileKey: string): void;
 }
 
 interface StreamRouter {
   fold: (event: Event) => void;
+  renew: (source: string, account: string, accountBasis: AccountAttributionBasis, codexAttributor?: CodexAccountAttributor) => void;
 }
 
 export class MonthlyAggregator implements EventSink {
@@ -30,9 +32,12 @@ export class MonthlyAggregator implements EventSink {
     for (const { agg } of this.months.values()) agg.reset(fileKey);
   }
 
-  stream(fileKey: string, project: string, source = "claude", account = "default"): (event: Event) => void {
+  stream(fileKey: string, project: string, source = "claude", account = "default", accountBasis: AccountAttributionBasis = "profile", codexAttributor?: CodexAccountAttributor): (event: Event) => void {
     const existing = this.routers.get(fileKey);
-    if (existing) return existing.fold;
+    if (existing) {
+      existing.renew(source, account, accountBasis, codexAttributor);
+      return existing.fold;
+    }
 
     // A month only opens a stream for this file once the file has activity in
     // it, otherwise every quiet month would inherit the session count of every
@@ -47,7 +52,7 @@ export class MonthlyAggregator implements EventSink {
       if (open) return open;
       const month = this.months.get(key);
       if (!month) return undefined;
-      const fold = month.agg.stream(fileKey, project, source, account);
+      const fold = month.agg.stream(fileKey, project, source, account, accountBasis, codexAttributor);
       folds.set(key, fold);
       if (lastMeta) fold(lastMeta);
       return fold;
@@ -69,14 +74,19 @@ export class MonthlyAggregator implements EventSink {
       foldFor(key)?.(event);
     };
 
-    this.routers.set(fileKey, { fold });
+    // Watch discovers a fresh ledger index on every tick. The opened month
+    // aggregators must receive it even when no new month router is created.
+    const renew = (nextSource: string, nextAccount: string, nextBasis: AccountAttributionBasis, nextAttributor?: CodexAccountAttributor) => {
+      for (const key of folds.keys()) this.months.get(key)?.agg.stream(fileKey, project, nextSource, nextAccount, nextBasis, nextAttributor);
+    };
+    this.routers.set(fileKey, { fold, renew });
     return fold;
   }
 
   /** Per-month reports keyed by month, oldest first. Months with no traffic are kept. */
-  reports(topN = 15): Map<string, Report> {
+  reports(topN = 15, accountFilter?: string): Map<string, Report> {
     const out = new Map<string, Report>();
-    for (const [key, { agg }] of this.months) out.set(key, agg.report(topN));
+    for (const [key, { agg }] of this.months) out.set(key, agg.report(topN, accountFilter));
     return out;
   }
 

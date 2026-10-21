@@ -1,6 +1,8 @@
 import {Database} from "./database";
 import type {Report} from "./aggregate";
 import {archivedCoverage, byMonthSource, bySource, callTotals, dayIn, withoutCalls} from "./gateway-settle";
+import { installationRowKey, restoredMonthlySuppression, type ArchivedInstallationReport } from "./installation-lineage";
+import { verifiedGuardBaseline, loadCaptureGuards, COVERAGE_WARNING, type CaptureGuard } from "./report-coverage";
 
 export interface TokenCounts {total: number; cloud: number; local: number; unclassified: number}
 export interface TokenPeriod {
@@ -31,6 +33,8 @@ const sum = (a: TokenCounts, b: TokenCounts) => {
 /** Read only the existing archive. No provider calls or transcript/identity export. */
 export function tokenSummary(path: string, options: {
   now?: number; timeZone?: string; localModels?: string[]; cloudModels?: string[];
+  /** Historical-coverage guards; a guard whose month is archived adds a fixed note, never a count. */
+  guards?: CaptureGuard[];
 } = {}): TokenSummary {
   const now = options.now ?? Date.now();
   const timeZone = options.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -63,21 +67,45 @@ export function tokenSummary(path: string, options: {
   let captures: Array<{source: string; measured_at: number}> = [];
   let dailyRows: Array<{source: string; model: string; tokens: number}> = [];
   let coverage: ReturnType<typeof archivedCoverage>;
+  let lineageNote: string | undefined;
   try {
-    // A Codex call another Mac's gateway billed comes out of the client's figures, as in every merged view.
-    coverage = archivedCoverage(db);
-    rows = db.query<Archived, [string, string]>(`
+    const allRows = db.query<Archived, []>(`
       SELECT m.month, m.source, m.tokens, m.updated_at, r.report_json
       FROM spend_month m LEFT JOIN spend_report r ON r.month=m.month AND r.source=m.source
-      WHERE m.month LIKE ? AND m.month <= ? ORDER BY m.month, m.source
-    `).all(`${year}-%`, month);
+      ORDER BY m.month, m.source
+    `).all();
+    const lineageRows = allRows.flatMap((row): ArchivedInstallationReport[] => {
+      if (!row.report_json) return [];
+      try {
+        return [{
+          month: row.month,
+          archiveSource: row.source,
+          storedTokens: row.tokens,
+          report: JSON.parse(row.report_json) as Report,
+        }];
+      } catch {
+        return [];
+      }
+    });
+    const lineage = restoredMonthlySuppression(lineageRows);
+    if (lineage.lineage.shadows.length) {
+      lineageNote = lineage.uncertain.size
+        ? "Restored installation snapshots overlap, but stored totals disagree with report detail; both remain visible. Exact historical overlap unavailable."
+        : "Restored installation snapshots overlap; the fullest retained snapshot is shown. Exact historical overlap unavailable.";
+    }
+    rows = allRows.filter((row) =>
+      row.month.startsWith(`${year}-`) && row.month <= month &&
+      !lineage.suppressed.has(installationRowKey(row.month, row.source)));
+    // A Codex call another Mac's gateway billed comes out of the client's figures, as in every merged view.
+    // Suppressed restored rows cannot settle visible reports.
+    coverage = archivedCoverage(db, lineage.suppressed);
     if (db.query("SELECT 1 FROM sqlite_master WHERE name='spend_token_capture'").get()) {
       captures = db.query<{source: string; measured_at: number}, [string, string]>(
         "SELECT source,measured_at FROM spend_token_capture WHERE time_zone=? AND month=?",
-      ).all(timeZone, month);
+      ).all(timeZone, month).filter((row) => !lineage.suppressed.has(installationRowKey(month, row.source)));
       dailyRows = db.query<{source: string; model: string; tokens: number}, [string, string]>(
         "SELECT source,model,tokens FROM spend_token_day WHERE time_zone=? AND day=?",
-      ).all(timeZone, day).map(row => {
+      ).all(timeZone, day).filter((row) => !lineage.suppressed.has(installationRowKey(month, row.source))).map(row => {
         // The day's own calls, whichever month's report holds them: report months follow the reporting Mac's zone.
         const covered = bySource(coverage, row.source)
           .filter(call => call.model === row.model && Number.isFinite(call.ts) && call.ts > 0 && dayIn(timeZone, call.ts) === day);
@@ -146,13 +174,27 @@ export function tokenSummary(path: string, options: {
   for (const key of ["day", "month", "year"] as const) {
     if (times[key].length) periods[key].measuredAt = new Date(Math.min(...times[key])).toISOString();
   }
+  // A guard whose month is archived says so in the fixed notes. It changes no count here: the summary keeps
+  // showing the retained archive, and the latest scan is a separate artifact, never folded in.
+  const guardedNotes = new Set<string>();
+  if (options.guards?.length) {
+    const guardDb = new Database(path, {readonly: true, create: false});
+    try {
+      for (const guard of options.guards) {
+        verifiedGuardBaseline(guardDb, guard);
+        guardedNotes.add(guard.month);
+      }
+    } finally {guardDb.close();}
+  }
   return {
     version: 1, timeZone, generatedAt: new Date(now).toISOString(), status: "snapshot", periods,
     notes: [
+      ...(guardedNotes.size ? [COVERAGE_WARNING, `Historical coverage guard months affected: ${[...guardedNotes].sort().join(", ")}.`] : []),
       "Recorded input, output and cache tokens; not cost-derived estimates. Device collection is on demand.",
       "Totals cover available archived sources, not every AI request. Daily coverage may be partial.",
       "Local models use explicit operator mappings; unmapped routes remain unclassified, never inferred from price.",
       "Monthly/yearly totals retain legacy archive counts; missing earlier months are not assumed to be zero.",
+      ...(lineageNote ? [lineageNote] : []),
     ],
   };
 }
@@ -171,6 +213,6 @@ export function runTokenCommand(argv: string[]): boolean {
     else throw new Error(`Unknown token summary option: ${flag}`);
   }
   if (!path) throw new Error("tokens requires --sqlite PATH");
-  console.log(JSON.stringify(tokenSummary(path, {timeZone, localModels, cloudModels}), null, 2));
+  console.log(JSON.stringify(tokenSummary(path, {timeZone, localModels, cloudModels, guards: loadCaptureGuards()}), null, 2));
   return true;
 }

@@ -4,11 +4,15 @@ import type { Period } from "./periods";
 import { contextCost, estTokens, usageCost, type Usage } from "./pricing";
 import { mergeProjectRows } from "./projects";
 import {TokenDayAccumulator, type TokenDays} from "./token-days";
+import { CODEX_ACCOUNT_ATTRIBUTION_VERSION, type AccountAttribution, type AccountAttributionBasis, type CodexAccountAttributor } from "./codex-account-attribution";
 
 interface StreamState {
+  fileKey: string;
   project: string;
   source: string;
   account: string;
+  accountBasis: AccountAttributionBasis;
+  codexAttributor?: CodexAccountAttributor;
   sessionId: string;
   sidechain: boolean;
   model?: string;
@@ -19,7 +23,7 @@ interface StreamState {
   currentPromptKey?: string;
   toolUse: Map<string, { name: string; argChars: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string }>;
   results: Array<{ name: string; tokens: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string; error?: boolean; exit?: number }>;
-  usage: Map<string, { model?: string; usage: Usage; costUsd?: number; promptKey?: string; lastTs: number; gateway?: GatewayMark }>;
+  usage: Map<string, { model?: string; modelProvider?: string; usage: Usage; costUsd?: number; promptKey?: string; lastTs: number; gateway?: GatewayMark; accountAttribution?: AccountAttribution }>;
   firstUserText?: string;
 }
 
@@ -103,6 +107,15 @@ export interface Report {
   tokenDays?: TokenDays;
   /** Stable for one installation; changes when the machine starts with fresh history. */
   installationId?: string;
+  /** Explicitly verified restored history; aliases one prior installation of this source. */
+  restoredFromInstallationId?: string;
+  /** Overlapping restored snapshots are representative; an exact historical union is unavailable. */
+  lineageWarning?: string;
+  /**
+   * Render-only: this archived month is protected by a historical-coverage guard and the latest scan differs.
+   * Attached when a page is rendered, never archived, and never merged into the totals above. See report-coverage.ts.
+   */
+  captureCoverage?: import("./report-coverage").CaptureCoverage;
   /** Window this report covers. Absent on reports written before periods existed. */
   period?: ReportPeriod;
   totalTokens: number;
@@ -138,6 +151,8 @@ export interface Report {
   models: ModelRow[];
   projects: Array<{ project: string; tokens: number; cost: number }>;
   accounts: AccountRow[];
+  /** How account labels were proven for calls in this report. */
+  accountAttribution?: { version: number; configuredRoute: number; profile: number; unknown: number };
   source: string;
   sinceTs: number;
 }
@@ -166,13 +181,20 @@ export class Aggregator {
     this.streams.delete(fileKey);
   }
 
-  stream(fileKey: string, project: string, source = "claude", account = "default"): (e: Event) => void {
+  stream(fileKey: string, project: string, source = "claude", account = "default", accountBasis: AccountAttributionBasis = "profile", codexAttributor?: CodexAccountAttributor): (e: Event) => void {
     let s = this.streams.get(fileKey);
+    if (s && codexAttributor && s.codexAttributor !== codexAttributor) {
+      codexAttributor.adoptReservations(s.codexAttributor);
+      s.codexAttributor = codexAttributor;
+    }
     if (!s) {
       s = {
+        fileKey,
         project,
         source,
         account,
+        accountBasis,
+        codexAttributor,
         sessionId: "?",
         sidechain: fileKey.includes("agent-"),
         observed: 0,
@@ -219,7 +241,14 @@ export class Aggregator {
         s.model = e.model ?? s.model;
         if (!s.callIdx.has(e.requestId)) s.callIdx.set(e.requestId, s.nCalls++);
         // Streamed responses rewrite the same requestId with growing usage — keep latest.
-        s.usage.set(e.requestId, { model: e.model, usage: e.usage, costUsd: e.costUsd, promptKey: s.currentPromptKey, lastTs: e.ts, gateway: e.gateway });
+        const prior = s.usage.get(e.requestId);
+        const sameVector = prior && prior.model === e.model && prior.modelProvider === e.modelProvider && prior.lastTs === e.ts &&
+          prior.usage.input === e.usage.input && prior.usage.output === e.usage.output && prior.usage.cacheRead === e.usage.cacheRead &&
+          prior.usage.cache5m === e.usage.cache5m && prior.usage.cache1h === e.usage.cache1h;
+        s.usage.set(e.requestId, {
+          model: e.model, modelProvider: e.modelProvider, usage: e.usage, costUsd: e.costUsd, promptKey: s.currentPromptKey,
+          lastTs: e.ts, gateway: e.gateway, ...(sameVector && prior?.accountAttribution ? { accountAttribution: prior.accountAttribution } : {}),
+        });
         break;
       }
       case "tooluse": {
@@ -243,7 +272,9 @@ export class Aggregator {
     }
   }
 
-  report(topN = 15): Report {
+  report(topN = 15, accountFilter?: string): Report {
+    const accountNeedle = accountFilter?.trim().toLowerCase();
+    const includesAccount = (account: string): boolean => !accountNeedle || account.toLowerCase().includes(accountNeedle);
     const tokenDays = new TokenDayAccumulator();
     const tools = new Map<string, ToolRow>();
     const bash = new Map<string, ToolRow>();
@@ -276,21 +307,43 @@ export class Aggregator {
     let sinceTs = Infinity;
     const gatewayUnconfirmed: UnconfirmedCall[] = [];
     const gatewayBilled: string[] = [];
+    const attribution = { configuredRoute: 0, profile: 0, unknown: 0 };
 
     for (const s of this.streams.values()) {
-      // Streams from parsers that never emit `observed` (Claude, Grok, pi) still
-      // know how many calls they folded, so fall back to those — and to the routed calls a
-      // rollout handed to the ledger, which it made all the same (a ledger row is both).
-      let routedOnly = 0;
-      for (const id of s.routed) if (!s.usage.has(id)) routedOnly++;
-      observedCalls += s.observed || s.usage.size + routedOnly;
-      routedCalls += s.routed.size;
-      sessions.add(s.sessionId);
+      const includedCallIndices = new Set<number>();
+      if (!accountNeedle) {
+        // Streams from parsers that never emit `observed` (Claude, Grok, pi) still
+        // know how many calls they folded, so fall back to those — and to the routed calls a
+        // rollout handed to the ledger, which it made all the same (a ledger row is both).
+        let routedOnly = 0;
+        for (const id of s.routed) if (!s.usage.has(id)) routedOnly++;
+        observedCalls += s.observed || s.usage.size + routedOnly;
+        routedCalls += s.routed.size;
+        sessions.add(s.sessionId);
+      }
       sources.add(s.source);
-      let acc = accounts.get(s.account);
-      if (!acc) accounts.set(s.account, (acc = { tokens: 0, cost: 0, calls: 0, sessions: new Set() }));
-      acc.sessions.add(s.sessionId);
-      for (const [, u] of s.usage) {
+      for (const [requestId, u] of s.usage) {
+        const gatewayRoute = u.modelProvider === "subscription_gateway";
+        const configuredAlias = s.codexAttributor?.hasConfiguredAlias(u.model) ?? false;
+        const resolved = u.accountAttribution ?? (s.source === "codex" && (gatewayRoute || configuredAlias)
+          ? s.codexAttributor?.resolve(`${s.fileKey}\u0000${requestId}`, u.model, u.usage, u.lastTs, requestId, gatewayRoute)
+          : undefined);
+        if (resolved) u.accountAttribution = resolved;
+        const account = resolved?.account ?? s.account;
+        const basis = resolved?.basis ?? s.accountBasis;
+        // Resolve every call before deciding whether it is displayed: an
+        // unselected call still reserves its unique ledger row, so it cannot
+        // be claimed by a selected neighbour with the same vector.
+        if (!includesAccount(account)) continue;
+        if (basis === "configured-route") attribution.configuredRoute++;
+        else if (basis === "profile") attribution.profile++;
+        else attribution.unknown++;
+        let acc = accounts.get(account);
+        if (!acc) accounts.set(account, (acc = { tokens: 0, cost: 0, calls: 0, sessions: new Set() }));
+        acc.sessions.add(s.sessionId);
+        sessions.add(s.sessionId);
+        const callIndex = s.callIdx.get(requestId);
+        if (callIndex !== undefined) includedCallIndices.add(callIndex);
         apiCalls++;
         const tokens = u.usage.input + u.usage.output + u.usage.cacheRead + u.usage.cache5m + u.usage.cache1h;
         const cost = u.costUsd ?? usageCost(u.model, u.usage);
@@ -305,7 +358,7 @@ export class Aggregator {
         project.cost += cost;
         projects.set(s.project, project);
         const mk = u.model ?? "unknown";
-        tokenDays.add(u.lastTs, mk, tokens);
+        tokenDays.add(u.lastTs, mk, tokens, account);
         let m = models.get(mk);
         if (!m) models.set(mk, (m = { model: mk, calls: 0, inTok: 0, outTok: 0, cacheReadTok: 0, cacheWriteTok: 0, cost: 0 }));
         m.calls++;
@@ -316,7 +369,7 @@ export class Aggregator {
         m.cost += cost;
         if (u.gateway?.role === "billed") gatewayBilled.push(u.gateway.id);
         else if (u.gateway) gatewayUnconfirmed.push({
-          id: u.gateway.id, ts: u.lastTs, model: mk, account: s.account, project: s.project, tokens,
+          id: u.gateway.id, ts: u.lastTs, model: mk, account, project: s.project, tokens,
           inTok: u.usage.input, outTok: u.usage.output, cacheReadTok: u.usage.cacheRead, cacheWriteTok: u.usage.cache5m + u.usage.cache1h, cost,
         });
         if (u.promptKey) {
@@ -328,7 +381,13 @@ export class Aggregator {
           }
         }
       }
+      if (accountNeedle) {
+        // `observed` and `routed` events do not carry accounts. The selected,
+        // deduplicated API calls are the only truthful denominator here.
+        observedCalls += includedCallIndices.size;
+      }
       for (const [, tu] of s.toolUse) {
+        if (accountNeedle && !includedCallIndices.has(tu.idx)) continue;
         const targets: Array<[Map<string, ToolRow>, Map<string, Map<string, SampleRow>>, string]> = [[tools, samp.tools, tu.name]];
         if (tu.sub) targets.push([bash, samp.bash, tu.sub]);
         if (tu.deep) targets.push([deep, samp.deep, tu.deep]);
@@ -345,7 +404,11 @@ export class Aggregator {
         }
       }
       for (const r of s.results) {
-        const cost = contextCost(r.tokens, s.model, s.nCalls - r.idx - 1);
+        if (accountNeedle && !includedCallIndices.has(r.idx)) continue;
+        const laterCalls = accountNeedle
+          ? [...includedCallIndices].filter((index) => index > r.idx).length
+          : s.nCalls - r.idx - 1;
+        const cost = contextCost(r.tokens, s.model, laterCalls);
         const targets: Array<[Map<string, ToolRow>, Map<string, Map<string, SampleRow>>, string]> = [[tools, samp.tools, r.name]];
         if (r.sub) targets.push([bash, samp.bash, r.sub]);
         if (r.deep) targets.push([deep, samp.deep, r.deep]);
@@ -421,6 +484,7 @@ export class Aggregator {
       models: by([...models.values()], (m) => m.cost),
       projects: mergeProjectRows([...projects.entries()].map(([project, usage]) => ({ project, ...usage }))),
       accounts: by([...accounts.entries()].map(([account, a]) => ({ account, tokens: a.tokens, cost: a.cost, calls: a.calls, sessions: a.sessions.size })), (a) => a.tokens),
+      ...(apiCalls ? { accountAttribution: { version: CODEX_ACCOUNT_ATTRIBUTION_VERSION, ...attribution } } : {}),
       source: sources.size === 1 ? [...sources][0] : "all",
       sinceTs: sinceTs === Infinity ? 0 : sinceTs,
     };

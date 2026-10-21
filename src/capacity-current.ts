@@ -29,6 +29,22 @@ export interface CapacityCredits {
   unlimited: boolean;
 }
 
+/** Promotional cloud-credit allowance, reported in whole dollars. */
+export interface CapacityCloudCredits {
+  limitUsd: number;
+  remainingUsd: number;
+  expiresAt?: string;
+  /** The provider has frozen the allowance, usually pending verification. */
+  locked?: true;
+}
+
+/** Metered pay-as-you-go usage beyond the plan, reported in the provider currency. */
+export interface CapacityExtraUsage {
+  usedAmount: number;
+  limitAmount: number;
+  currency: string;
+}
+
 export interface CapacityResult {
   provider: "codex";
   account: string;
@@ -39,6 +55,8 @@ export interface CapacityResult {
     secondary: CapacityWindow | null;
     tertiary: CapacityWindow | null;
     credits?: CapacityCredits | null;
+    /** The one official quota pool that supplied these windows. */
+    quotaPool?: string;
     updatedAt: string;
   };
   pace: {
@@ -121,6 +139,40 @@ function creditsFrom(value: AppServerCredits | null | undefined): CapacityCredit
   return { balance, unlimited: false };
 }
 
+function windowsFrom(limits: AppServerRateLimits | null | undefined): CapacityWindow[] {
+  return [limits?.primary, limits?.secondary, limits?.tertiary]
+    .map(windowFrom)
+    .filter((window): window is CapacityWindow => Boolean(window));
+}
+
+interface CodexPool {
+  id: string;
+  limits: AppServerRateLimits;
+  windows: CapacityWindow[];
+}
+
+// An app-server response can describe independently metered Codex model pools.
+// A dashboard card needs one coherent account reading, never percentages
+// stitched together from different pools.
+function codexPool(response: AppServerRateLimitResponse | undefined): CodexPool | undefined {
+  const generic = response?.rateLimitsByLimitId?.codex;
+  const genericWindows = windowsFrom(generic);
+  if (generic && genericWindows.length) return { id: "codex", limits: generic, windows: genericWindows };
+
+  const legacy = response?.rateLimits;
+  const legacyWindows = windowsFrom(legacy);
+  if (legacy && legacyWindows.length) return { id: "legacy", limits: legacy, windows: legacyWindows };
+
+  // Object order is not an API contract. Select one viable model pool
+  // deterministically, then retain all of its windows together.
+  for (const id of Object.keys(response?.rateLimitsByLimitId ?? {}).filter((key) => key.startsWith("codex_")).sort()) {
+    const limits = response?.rateLimitsByLimitId?.[id];
+    const windows = windowsFrom(limits);
+    if (limits && windows.length) return { id, limits, windows };
+  }
+  return undefined;
+}
+
 export function paceFor(window: CapacityWindow | null, now = Date.now()): CapacityPaceWindow | null {
   if (!window || !window.resetsAt) return null;
   const resetsAtMs = Date.parse(window.resetsAt);
@@ -150,19 +202,8 @@ export function capacityResultFromAppServer(
   const account = accountValue as AppServerAccount | undefined;
   const response = rateLimitValue as AppServerRateLimitResponse | undefined;
   if (account?.type !== "chatgpt" || typeof account.email !== "string" || !account.email.includes("@")) return undefined;
-  const snapshot = response?.rateLimitsByLimitId?.codex;
-  const relatedSnapshots = Object.entries(response?.rateLimitsByLimitId ?? {})
-    .filter(([limitId, value]) => limitId.startsWith("codex_") && Boolean(value))
-    .map(([, value]) => value!);
-  const windows = [snapshot, ...relatedSnapshots, response?.rateLimits]
-    .flatMap((limits) => [limits?.primary, limits?.secondary, limits?.tertiary])
-    .map(windowFrom)
-    .filter((window): window is CapacityWindow => Boolean(window))
-    // Model-specific and generic snapshots repeat the base Codex windows. A
-    // duration is one quota window, so retain the base reading first while
-    // still picking up a short window reported only under a Codex-family ID.
-    .filter((window, index, all) => all.findIndex((candidate) => candidate.windowMinutes === window.windowMinutes) === index);
-  const [primary = null, secondary = null, tertiary = null] = windows;
+  const pool = codexPool(response);
+  const [primary = null, secondary = null, tertiary = null] = pool?.windows ?? [];
   if (!primary) return undefined;
   return {
     provider: "codex",
@@ -173,7 +214,8 @@ export function capacityResultFromAppServer(
       primary,
       secondary,
       tertiary,
-      credits: creditsFrom(snapshot?.credits ?? response?.rateLimits?.credits),
+      credits: creditsFrom(pool?.limits.credits),
+      quotaPool: pool?.id,
       updatedAt: new Date(now).toISOString(),
     },
     pace: {
