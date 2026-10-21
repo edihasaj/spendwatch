@@ -29,6 +29,22 @@ export interface CapacityCredits {
   unlimited: boolean;
 }
 
+/** Promotional cloud-credit allowance, reported in whole dollars. */
+export interface CapacityCloudCredits {
+  limitUsd: number;
+  remainingUsd: number;
+  expiresAt?: string;
+  /** The provider has frozen the allowance, usually pending verification. */
+  locked?: true;
+}
+
+/** Metered pay-as-you-go usage beyond the plan, reported in the provider currency. */
+export interface CapacityExtraUsage {
+  usedAmount: number;
+  limitAmount: number;
+  currency: string;
+}
+
 export interface CapacityResult {
   provider: "codex";
   account: string;
