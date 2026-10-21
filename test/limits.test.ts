@@ -99,7 +99,7 @@ describe("Codex limits", () => {
     });
     expect(html).toContain("5-hour window");
     expect(html).toContain("Weekly window");
-    expect(html).toContain("14% used");
+    expect(html).toContain("86% left");
     expect(html).toContain("Connect another account");
     expect(html).toContain("spendwatch account add codex --name new-account");
     expect(html).toContain("spendwatch account add codex --name new-account --device-auth");
@@ -138,7 +138,7 @@ describe("Codex limits", () => {
     expect((html.match(/<div class="limit-head"><span>5-hour window/g) ?? []).length).toBe(1);
     expect(html).not.toContain("Not active");
     expect(html).not.toContain("No current limit reported");
-    expect(html).toContain("14% used");
+    expect(html).toContain("86% left");
     expect(html).not.toContain("Comfortable");
     expect(html).not.toContain("Know what you can");
     expect(html).not.toContain("account-number");
@@ -443,7 +443,7 @@ describe("Codex limits", () => {
     const html = renderLimitsHtml(accounts, { generatedAt: Date.parse("2026-08-10T02:00:00Z") });
     const card = html.slice(html.indexOf('data-account-key="claude:claude@example.com"'));
     const claudeCard = card.slice(0, card.indexOf("</article>"));
-    expect(claudeCard).toContain("100% used");
+    expect(claudeCard).toContain("0% left");
     expect(claudeCard).not.toContain("Ran out");
     expect(claudeCard).not.toContain("Runs out");
   });
@@ -663,7 +663,7 @@ describe("Codex limits", () => {
     ]);
     const html = renderLimitsHtml(accounts, { generatedAt: Date.parse("2026-08-09T21:00:00Z") });
     expect(html).toContain("Claude");
-    expect(html).toContain("0% used");
+    expect(html).toContain("100% left");
     expect(html).toContain("Copilot");
     expect(html).toContain("AI credits used");
     expect(html).toContain("186,179");

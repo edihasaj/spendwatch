@@ -685,11 +685,10 @@ function limitBlock(
   const tone = left <= 15 ? "danger" : left <= 35 ? "warn" : "good";
   // The bar drains as the window is used: a full bar means room to work.
   const marker = paceMarker(window, nowMs);
-  const used = Math.round(window.usedPercent);
   const fill = Math.min(100, Math.max(0, left));
   const pace = paceLabel(window, nowMs);
   return `<section class="limit ${tone}">
-    <div class="limit-head"><span>${esc(label)}</span><strong>${used}% used</strong></div>
+    <div class="limit-head"><span>${esc(label)}</span><strong>${fill}% left</strong></div>
     <div class="track" role="progressbar" aria-label="${esc(label)} remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${fill}"><i style="width:${fill}%"></i>${marker}</div>
     <div class="limit-meta"><span class="reset" data-reset="${esc(window.resetsAt ?? "")}">${window.resetsAt ? "Reset time loading" : "Reset time unavailable"}</span></div>
     ${pace ? `<div class="pace"><span>${esc(pace)}</span></div>` : ""}
