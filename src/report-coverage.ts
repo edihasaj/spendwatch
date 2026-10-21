@@ -30,7 +30,8 @@ export interface CaptureGuard {
   source: string;
   month: string;
   installationId?: string;
-  timeZone: string;
+  /** Null pins a legacy baseline that did not record any timezone. */
+  timeZone: string | null;
   baselineSha256: string;
   reason: typeof COVERAGE_GUARD_REASON;
 }
@@ -56,7 +57,7 @@ export interface CaptureCoverage {
   status: "unreconciled" | "latest-scan";
   display: "retained-archive";
   reason: typeof COVERAGE_GUARD_REASON;
-  scope: { source: string; month: string; installationId?: string; timeZone: string };
+  scope: { source: string; month: string; installationId?: string; timeZone: string | null };
   retained: CaptureReference;
   latest?: CaptureReference;
 }
@@ -101,7 +102,7 @@ function parseGuard(value: unknown, index: number): CaptureGuard {
   if (item.installationId !== undefined && (typeof item.installationId !== "string" || !INSTALLATION.test(item.installationId))) {
     throw new Error(`capture guards: entry ${index} installationId must be a non-empty string`);
   }
-  if (!validTimeZone(item.timeZone)) throw new Error(`capture guards: entry ${index} has an invalid timeZone`);
+  if (item.timeZone !== null && !validTimeZone(item.timeZone)) throw new Error(`capture guards: entry ${index} has an invalid timeZone`);
   if (typeof item.baselineSha256 !== "string" || !HASH.test(item.baselineSha256)) {
     throw new Error(`capture guards: entry ${index} baselineSha256 must be 64 lowercase hex digits`);
   }
@@ -158,7 +159,7 @@ export function guardStoredStatus(
   if (guard.installationId !== undefined && guard.installationId !== stored.installationId) {
     throw new Error(`capture guards: ${guard.source} ${guard.month} is stored under installation ${stored.installationId}, not ${guard.installationId}`);
   }
-  if (stored.timeZone !== guard.timeZone) {
+  if (guard.timeZone === null ? stored.timeZone !== undefined : stored.timeZone !== guard.timeZone) {
     throw new Error(`capture guards: ${guard.source} ${guard.month} is stored in timezone ${stored.timeZone}, not ${guard.timeZone}`);
   }
   if (sha256Hex(stored.reportJson) !== guard.baselineSha256) {

@@ -98,7 +98,7 @@ function coverageBanner(reports: Report[], coverage?: CaptureCoverage, artifactF
     return `<section class="capture-coverage" role="note"><h4>Latest scan · separate capture</h4><p>${esc(COVERAGE_ARTIFACT_WARNING)}</p><p>This scan recorded ${models.toLocaleString("en-US")} model row${models === 1 ? "" : "s"}, ${accounts.toLocaleString("en-US")} account${accounts === 1 ? "" : "s"}, and ${days.toLocaleString("en-US")} day${days === 1 ? "" : "s"}.</p><p>Capture time ${esc(isoInstant(coverage!.retained.capturedAt))} · <code>${esc(coverage!.retained.reportSha256)}</code>${artifactFileName ? ` · this file is <code>${esc(artifactFileName)}.html</code>` : ""}.</p></section>`;
   }
   return `<section class="capture-coverage" role="note"><h4>Historical coverage unresolved</h4><p>${esc(COVERAGE_WARNING)}</p>${retained.map((item) => {
-    const head = `${sourceLabel(item.scope.source)} · ${item.scope.month}${item.scope.installationId ? ` · installation ${item.scope.installationId}` : ""} · ${item.scope.timeZone}`;
+    const head = `${sourceLabel(item.scope.source)} · ${item.scope.month}${item.scope.installationId ? ` · installation ${item.scope.installationId}` : ""} · ${item.scope.timeZone ?? "Timezone unavailable"}`;
     return `<div class="capture-scope"><p class="capture-scope-head">${esc(head)}</p>${coverageReference("Preserved archive", item.retained)}${item.latest ? coverageReference("Latest scan", item.latest) : ""}</div>`;
   }).join("")}</section>`;
 }
