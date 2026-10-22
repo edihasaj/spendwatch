@@ -132,7 +132,7 @@ describe("Codex limits", () => {
     expect(html).toContain('aria-label="Expected pace: 89% left, 3% over"');
     expect(html).toContain("3% over pace");
     expect(html).not.toContain("Learned ·");
-    expect(html).not.toContain("data-exhaust=");
+    expect(html).toContain("data-exhaust=");
     expect(html).not.toContain("data-devices=");
     expect(html).toContain("view sync 15s; collection is separate");
     expect((html.match(/<div class="limit-head"><span>5-hour window/g) ?? []).length).toBe(1);
@@ -176,7 +176,7 @@ describe("Codex limits", () => {
     expect(html).not.toContain("location.reload()");
     expect(html).not.toContain("token cost");
     expect(html).not.toContain("Best now");
-    expect(html).not.toContain("Run-out forecast");
+    expect(html).toContain("Run-out forecast loading");
     expect(html).not.toContain("session quota");
   });
 
@@ -329,10 +329,11 @@ describe("Codex limits", () => {
     expect(html).toContain('class="pace-marker steady"');
     expect(html).toContain('aria-label="Expected pace: 99% left, on pace"');
     expect(html).toContain("On pace");
-    expect(html).not.toContain("Lasts until reset");
+    expect(html).toContain("Lasts until reset");
+    expect(html).toContain('title="From the average pace this cycle"');
   });
 
-  test("shows only the pace signal when a burn forecast exists", () => {
+  test("forecasts run-out from the recent burn rate when it exists", () => {
     const html = renderLimitsHtml([{
       provider: "codex",
       email: "secondary@example.com",
@@ -355,9 +356,8 @@ describe("Codex limits", () => {
         },
       },
     }], { generatedAt: Date.parse("2026-08-18T12:00:00Z") });
-    expect(html).toContain('<div class="pace"><span>20% over pace</span></div>');
-    expect(html).not.toContain("Run-out forecast");
-    expect(html).not.toContain('class="exhaust"');
+    expect(html).toContain('<div class="pace"><span>20% over pace</span><strong title="From the last 360 minutes of use"><span class="exhaust" data-exhaust="2026-08-18T12:27:00.000Z">');
+    expect((html.match(/class="exhaust"/g) ?? []).length).toBe(1);
   });
 
   test("keeps the cycle-average pace when burn has no reading yet", () => {
@@ -374,6 +374,36 @@ describe("Codex limits", () => {
       },
     }], { generatedAt: Date.parse("2026-08-18T12:00:00Z") });
     expect(html).toContain("69% under pace");
+    expect(html).toContain('title="From the average pace this cycle">Lasts until reset</strong>');
+  });
+
+  test("forecasts run-out from the cycle average when there is no burn reading", () => {
+    const html = renderLimitsHtml([{
+      provider: "claude",
+      email: "busy@example.com",
+      plan: "Max",
+      devices: ["studio"],
+      updatedAt: "2026-08-18T11:59:00Z",
+      weekly: { usedPercent: 80, resetsAt: "2026-08-20T00:00:00Z", windowMinutes: 10080 },
+    }], { generatedAt: Date.parse("2026-08-18T12:00:00Z") });
+    expect(html).toContain('title="From the average pace this cycle"><span class="exhaust" data-exhaust="');
+    expect(html).not.toContain("Lasts until reset");
+  });
+
+  test("treats an idle recent burn rate as lasting until reset", () => {
+    const html = renderLimitsHtml([{
+      provider: "codex",
+      email: "idle@example.com",
+      plan: "Pro",
+      devices: ["studio"],
+      updatedAt: "2026-08-18T11:59:00Z",
+      weekly: {
+        usedPercent: 80, resetsAt: "2026-08-20T00:00:00Z", windowMinutes: 10080,
+        burn: { ratePerHour: 0, sustainableRatePerHour: 0.5, lookbackMinutes: 360, sampleCount: 8, lastsToReset: false },
+      },
+    }], { generatedAt: Date.parse("2026-08-18T12:00:00Z") });
+    expect(html).toContain('title="From the last 360 minutes of use">Lasts until reset</strong>');
+    expect(html).not.toContain("data-exhaust=");
   });
 
   test("renders Grok as a plan-covered spend card ordered after Lokai", () => {
@@ -425,7 +455,7 @@ describe("Codex limits", () => {
     expect(text).toContain("plan-covered, API-equivalent");
   });
 
-  test("shows exhausted utilization without a run-out forecast", () => {
+  test("marks an exhausted window as ran out", () => {
     const accounts = normalizeCodexLimits({
       provider: "claude",
       account: "claude@example.com",
@@ -444,8 +474,8 @@ describe("Codex limits", () => {
     const card = html.slice(html.indexOf('data-account-key="claude:claude@example.com"'));
     const claudeCard = card.slice(0, card.indexOf("</article>"));
     expect(claudeCard).toContain("0% left");
-    expect(claudeCard).not.toContain("Ran out");
-    expect(claudeCard).not.toContain("Runs out");
+    expect(claudeCard).toContain(">Ran out</strong>");
+    expect(claudeCard).not.toContain("data-exhaust=");
   });
 
   test("never renders an unrefreshed sample as live capacity", () => {

@@ -532,6 +532,29 @@ function paceLabel(window: LimitWindow, nowMs: number): string | undefined {
       : `${roundedDelta}% under pace`;
 }
 
+// One run-out verdict per window. The recent burn rate is the more current
+// signal, so it wins when it has a reading; otherwise the cycle-average pace
+// supplies the forecast. The client hydrates data-exhaust into "Runs out in …".
+function runOutForecast(window: LimitWindow, nowMs: number): string | undefined {
+  if (window.usedPercent >= 100) return `<strong title="This window is used up">Ran out</strong>`;
+  const burn = window.burn;
+  if (burn) {
+    const basis = `From the last ${burn.lookbackMinutes} minutes of use`;
+    if (burn.ratePerHour <= 0 || burn.lastsToReset) return `<strong title="${esc(basis)}">Lasts until reset</strong>`;
+    if (burn.runsOutAt) {
+      return `<strong title="${esc(basis)}"><span class="exhaust" data-exhaust="${esc(burn.runsOutAt)}">Run-out forecast loading</span></strong>`;
+    }
+  }
+  const prediction = predictWindow(window, nowMs);
+  if (!prediction) return undefined;
+  const basis = "From the average pace this cycle";
+  if (prediction.willLastToReset) return `<strong title="${esc(basis)}">Lasts until reset</strong>`;
+  if (prediction.runsOutAt) {
+    return `<strong title="${esc(basis)}"><span class="exhaust" data-exhaust="${esc(prediction.runsOutAt)}">Run-out forecast loading</span></strong>`;
+  }
+  return undefined;
+}
+
 export function formatBurnRate(ratePerHour: number): string {
   const rounded = ratePerHour >= 10 ? Math.round(ratePerHour) : Math.round(ratePerHour * 10) / 10;
   // A slow but non-zero rate reading "0%/h" would look like nothing is moving.
@@ -687,11 +710,12 @@ function limitBlock(
   const marker = paceMarker(window, nowMs);
   const fill = Math.min(100, Math.max(0, left));
   const pace = paceLabel(window, nowMs);
+  const forecast = runOutForecast(window, nowMs);
   return `<section class="limit ${tone}">
     <div class="limit-head"><span>${esc(label)}</span><strong>${fill}% left</strong></div>
     <div class="track" role="progressbar" aria-label="${esc(label)} remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${fill}"><i style="width:${fill}%"></i>${marker}</div>
     <div class="limit-meta"><span class="reset" data-reset="${esc(window.resetsAt ?? "")}">${window.resetsAt ? "Reset time loading" : "Reset time unavailable"}</span></div>
-    ${pace ? `<div class="pace"><span>${esc(pace)}</span></div>` : ""}
+    ${pace || forecast ? `<div class="pace"><span>${esc(pace ?? "")}</span>${forecast ?? ""}</div>` : ""}
   </section>`;
 }
 
