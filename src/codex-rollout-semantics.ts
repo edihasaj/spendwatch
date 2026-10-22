@@ -47,6 +47,12 @@ interface Manifest {
   responses: Map<string, number>;
   /** Full canonical response-item records, in source order, hashed and immediately discarded. */
   rawResponses: string[];
+  /** Billing segment (API events emitted before the row) of each raw response, by index. */
+  rawSegments: number[];
+  /** 1 when a raw response is a user or developer message, which cannot change billing. */
+  rawExtraAllowed: number[];
+  /** 1 when an observed event re-emits the immediately preceding token_count's usage. */
+  observedReemission: number[];
   /** Multiset of prompt and non-response-item tool events, hashed with a content digest. */
   nonbilling: Map<string, number>;
 }
@@ -113,11 +119,34 @@ function canonicalResponseItem(row: Record<string, unknown>): string | undefined
   // (including []) remains distinct, as do all fields of every other response type.
   const { ordinal: _ordinal, ...response } = row;
   const payload = response.payload;
-  if (payload && typeof payload === "object" && !Array.isArray(payload) && (payload as Record<string, unknown>).type === "reasoning") {
-    const content = (payload as Record<string, unknown>).content;
-    if (content === undefined || content === null) response.payload = { ...payload as Record<string, unknown>, content: null };
+  if (payload && typeof payload === "object" && !Array.isArray(payload) && isTurnLabelOnly((payload as Record<string, unknown>).metadata)) {
+    // Native migration drops a bare `{turn_id}` label. It names the turn and carries no content
+    // or billing; any other metadata shape remains significant.
+    const { metadata: _metadata, ...rest } = payload as Record<string, unknown>;
+    response.payload = rest;
+  }
+  const normalized = response.payload;
+  if (normalized && typeof normalized === "object" && !Array.isArray(normalized) && (normalized as Record<string, unknown>).type === "reasoning") {
+    const content = (normalized as Record<string, unknown>).content;
+    if (content === undefined || content === null) response.payload = { ...normalized as Record<string, unknown>, content: null };
   }
   return stableJson(response);
+}
+
+function isTurnLabelOnly(metadata: unknown): boolean {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
+  const keys = Object.keys(metadata);
+  const turn = (metadata as Record<string, unknown>).turn_id;
+  return keys.length === 1 && keys[0] === "turn_id" && typeof turn === "string" && turn.length > 0;
+}
+
+/** Numeric last+total usage of one token_count, independent of key order. */
+function tokenCountSignature(info: any): string | undefined {
+  if (!info || typeof info !== "object") return undefined;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const usage = (u: any) => [n(u?.input_tokens), n(u?.cached_input_tokens), n(u?.cache_write_input_tokens),
+    n(u?.output_tokens), n(u?.reasoning_output_tokens), n(u?.total_tokens)];
+  return JSON.stringify([usage(info.last_token_usage), usage(info.total_token_usage)]);
 }
 
 function addKey(multiset: Map<string, number>, key: string): void {
@@ -166,12 +195,14 @@ function buildManifest(
     return undefined;
   }
   const manifest: Manifest = {
-    facts: 0, format: "none", api: [], observed: [], responses: new Map(), rawResponses: [], nonbilling: new Map(),
+    facts: 0, format: "none", api: [], observed: [], responses: new Map(), rawResponses: [],
+    rawSegments: [], rawExtraAllowed: [], observedReemission: [], nonbilling: new Map(),
   };
   let total = 0;
   let sawRecordLine = false;
   let sawCountApi = false;
   let project = source.project;
+  let lastCountSignature: string | undefined;
 
   const ingest = (line: string): boolean | undefined => {
     if (!line.trim()) return true;
@@ -194,6 +225,16 @@ function buildManifest(
       if (canonical === undefined) return false;
       if (++total > MAX_EVENTS) return undefined;
       manifest.rawResponses.push(hashKey(["raw-response-item", canonical]));
+      manifest.rawSegments.push(manifest.api.length);
+      const payload = d.payload;
+      manifest.rawExtraAllowed.push(payload?.type === "message"
+        && (payload.role === "user" || payload.role === "developer") ? 1 : 0);
+    }
+    let reemission = false;
+    if (sub === "token_count") {
+      const signature = tokenCountSignature(d.payload?.info);
+      reemission = signature !== undefined && signature === lastCountSignature;
+      lastCountSignature = signature;
     }
     let countApi = false;
     let emitted: Iterable<Event>;
@@ -213,6 +254,7 @@ function buildManifest(
           return true;
         case "observed":
           manifest.observed.push(hashKey(["observed", e.sessionId, project, e.ts]));
+          manifest.observedReemission.push(reemission ? 1 : 0);
           return true;
         case "prompt":
           // Event identity plus a content digest; the text itself is never retained.
@@ -251,8 +293,10 @@ function buildManifest(
         if (!validEvent(e)) return undefined;
         if (++total > MAX_EVENTS) return undefined;
         if (e.t === "api") manifest.api.push(apiKey(e, project));
-        else if (e.t === "observed") manifest.observed.push(hashKey(["observed", e.sessionId, project, e.ts]));
-        else return undefined; // settling a nonbilling/routed fact has no safe one-sided interpretation.
+        else if (e.t === "observed") {
+          manifest.observed.push(hashKey(["observed", e.sessionId, project, e.ts]));
+          manifest.observedReemission.push(0);
+        } else return undefined; // settling a nonbilling/routed fact has no safe one-sided interpretation.
       }
     } catch {
       return undefined;
@@ -393,12 +437,31 @@ function superset(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, number>
   return true;
 }
 
-/** True when `a`'s parsed model contains `b`'s: equal billing and response items, a nonbilling superset. */
+/**
+ * `b`'s ordered rows are a multiplicity-preserving subsequence of `a`'s, where every row only `a`
+ * holds is allowed and (for raw responses) stays in the same billing segment. Greedy matching is
+ * optimal because equal hashes imply equal allowance.
+ */
+function losslessSubsequence(a: readonly string[], aAllowed: readonly number[], b: readonly string[],
+  aSegment?: readonly number[], bSegment?: readonly number[]): boolean {
+  let j = 0;
+  for (let i = 0; i < a.length; i++) {
+    if (j < b.length && a[i] === b[j] && (!aSegment || aSegment[i] === bSegment![j])) j++;
+    else if (!aAllowed[i]) return false;
+  }
+  return j === b.length;
+}
+
+/**
+ * True when `a`'s parsed model contains `b`'s: equal API billing and response-derived tools, a
+ * nonbilling superset, and raw responses and observed calls that differ only by `a`'s extra user
+ * or developer messages and token_count re-emissions.
+ */
 function dominates(a: Manifest, b: Manifest): boolean {
   return a.format === b.format
     && sameSeq(a.api, b.api)
-    && sameSeq(a.observed, b.observed)
-    && sameSeq(a.rawResponses, b.rawResponses)
+    && losslessSubsequence(a.observed, a.observedReemission, b.observed)
+    && losslessSubsequence(a.rawResponses, a.rawExtraAllowed, b.rawResponses, a.rawSegments, b.rawSegments)
     && sameMultiset(a.responses, b.responses)
     && superset(a.nonbilling, b.nonbilling);
 }

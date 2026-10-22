@@ -31,6 +31,7 @@ import {
 } from "./local-qwen-sources";
 import { loadCodexAccountAttributor, UNKNOWN_CODEX_ACCOUNT, type AccountAttributionBasis, type CodexAccountAttributor } from "./codex-account-attribution";
 import { selectCodexRolloutCopies } from "./codex-rollout-copies";
+import { prepareLegacyForks } from "./codex-legacy-forks";
 import { createCodexRolloutSemanticDominance } from "./codex-rollout-semantics";
 import { claudeModelAliases, claudeProofRootDiscovery } from "./claude-proof-roots";
 
@@ -479,19 +480,24 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
       const freeDifference = Number(isFreeCodexHome(a.path)) - Number(isFreeCodexHome(b.path));
       return freeDifference || Number(isPlayground(a)) - Number(isPlayground(b));
     });
-    const files = selectCodexRolloutCopies(ordered.flatMap((r, priority) => collectCodex(
+    const legacy = prepareLegacyForks(ordered.flatMap((r, priority) => collectCodex(
       r.path,
       r.account ?? "",
       opts.sinceMs,
       gateway,
       isFreeCodexHome(r.path) || isLocalQwenWorkerRoot(r.path),
       codexAttributor,
-    ).map((file) => ({ path: file.path, priority, value: file }))), { semanticDominance: codexSemanticDominance });
+    ).map((file) => ({ path: file.path, priority, value: file }))));
+    const files = selectCodexRolloutCopies(legacy.copies, { semanticDominance: codexSemanticDominance });
+    const forkNote = legacy.summary.unlinked
+      ? `${legacy.summary.unlinked} older subagent rollouts have no readable parent rollout, so copied parent turns in them may be counted twice`
+      : undefined;
     const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger, ...(claimOnly ? { claimOnly } : {}), files,
+      ...(forkNote ? { warning: forkNote } : {}),
       ...(gateway ? { carry: (kept: CodexCtx) => carryLedger(kept, gateway) } : {}) };
     // Asked after the rollouts have been read, because only the parser knows what a rollout recorded.
     if (gateway && !claimOnly) Object.defineProperty(codex, "warning", {
-      get: () => gatewayWarning(files.map((f) => f.ctx as CodexCtx)),
+      get: () => [forkNote, gatewayWarning(files.map((f) => f.ctx as CodexCtx))].filter(Boolean).join("; ") || undefined,
       enumerable: true,
       configurable: true,
     });
