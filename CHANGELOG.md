@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Stopped double counting older forked Codex subagent rollouts. Turns whose id
+  the actual parent rollout also opened are skipped; child-only turns still
+  count, and a fork without a readable parent is counted whole with a warning.
+  A context-only paginated rewrite yields to its complete legacy original, and
+  duplicate copies that differ only by a turn label, extra user or developer
+  messages, or repeated usage readings no longer block selection. Thanks to
+  @edihasaj for the Studio history investigation.
 - Fixed missing Codex history from compressed native archives and reconciled
   plain and compressed rollout copies before counting usage. Trusted captures
   remain available when a replacement has unresolved coverage, with separate

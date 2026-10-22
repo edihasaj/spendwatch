@@ -6,6 +6,7 @@ import { projectFromCwd } from "./projects";
 import { CLAIM_WINDOW_MS, isMarked, markedId, nextDecisionSeq, type GatewayIndex, type LedgerDecision } from "./gateway";
 // The label of a routed call no ledger here vouches for; the Claude Code parser (claude-routed.ts) shares it.
 import { UNCONFIRMED } from "./gateway-decisions";
+import { legacyTurnAdmission } from "./codex-legacy-forks";
 
 export { UNCONFIRMED };
 
@@ -53,6 +54,9 @@ export interface CodexCtx {
   history?: CodexHistoryState;
   /** The first session_meta decides whether this file has an ownership gate. */
   historyHeaderSeen?: boolean;
+  /** Turn ids a legacy fork's parent opened; rows in those turns are the parent's (codex-legacy-forks.ts). */
+  inheritedTurns?: ReadonlySet<string>;
+  activeTurn?: string;
 }
 
 /** A routed call that waits for its ledger row; see `CodexCtx.pending`. */
@@ -212,7 +216,7 @@ export function admitCodexHistoryLine(line: string, ctx: CodexCtx): CodexHistory
   }
 
   const history = ctx.history;
-  if (!history) return { record, inherited: false, seedMetadata: false };
+  if (!history) return legacyTurnAdmission(record, ctx);
 
   const ordinal = safeOrdinal(record.ordinal);
   if (ordinal === undefined) historyError("row is missing a safe ordinal");
