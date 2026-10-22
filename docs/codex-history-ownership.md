@@ -49,3 +49,20 @@ owned subagent rollout.
 models. This validates ordinals in filtered rows while keeping cloud calls out
 of the Local Qwen source and preserving a model-less child header until its
 first Qwen turn.
+
+## Older forked subagent rollouts
+
+Before native pagination, Codex wrote a forked subagent's rollout by copying the
+parent's whole history into the child file. Those copied turns are already
+billed by the parent's own rollout. Spendwatch links such a child (first header
+with a parent reference and no ownership boundary) to the actual parent rollout
+it discovered, and skips every row inside a turn whose `turn_id` the parent also
+opened. Turn ids are unique per turn, so this uses identity rather than
+timestamps or token vectors. Child-only turns and rows outside any turn still
+count; nothing is subtracted on a guess. A child whose parent rollout is missing
+or unreadable is counted whole and the Codex source reports a warning.
+
+Codex later rewrote some of these files into paginated form. When every row of
+the rewrite lies below its ownership boundary, it holds only copied context and
+has lost the child's own turns. If it shares the child id and parent with a
+legacy original, the rewrite is dropped and the original is read instead.
