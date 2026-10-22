@@ -168,7 +168,7 @@ describe("grok pricing", () => {
 describe("grok discovery", () => {
   test("finds updates.jsonl per session and reads the project from the encoded cwd", () => {
     const home = tempDir("spendwatch-grok-home-");
-    const encoded = encodeURIComponent("/Users/dev/Projects/spendwatch").replace(/%2F/g, "%2F");
+    const encoded = encodeURIComponent("/Users/dev/Projects/spendwatch");
     const session = join(home, ".grok", "sessions", encoded, SESS);
     mkdirSync(session, { recursive: true });
     writeFileSync(join(session, "updates.jsonl"), entries().join("\n") + "\n");
