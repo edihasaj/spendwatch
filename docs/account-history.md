@@ -111,3 +111,9 @@ A guard may explicitly use `timeZone: null` to pin an older report that recorded
 no timezone. Null matches only a missing stored timezone. Its exact report hash,
 source, installation and month remain required; the UI says that the timezone
 is unavailable rather than assigning one retrospectively.
+
+Duplicate copies may also differ only by nonbilling detail. A bare
+`payload.metadata` of `{turn_id}` on a response item is ignored. The fuller copy
+may hold extra user or developer messages inside the same billing segment, and
+extra observed calls that repeat the preceding `token_count` exactly. API calls
+must still match in order, and every other response must appear unchanged.
