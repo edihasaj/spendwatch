@@ -7,32 +7,32 @@ import { capacityResultFromAppServer, codexBinary, paceFor } from "../src/capaci
 const HOUR = 3_600_000;
 
 test("prefers the Homebrew Codex CLI over the home-local shim", () => {
-  expect(codexBinary("", "/Users/edi", (path) => ["/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/Users/edi/.local/bin/codex"].includes(path)))
+  expect(codexBinary("", "/Users/dev", (path) => ["/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/Users/dev/.local/bin/codex"].includes(path)))
     .toBe("/opt/homebrew/bin/codex");
 });
 
 test("prefers the Intel macOS Codex CLI over the home-local shim", () => {
-  expect(codexBinary("", "/Users/edi", (path) => path === "/usr/local/bin/codex" || path === "/Users/edi/.local/bin/codex"))
+  expect(codexBinary("", "/Users/dev", (path) => path === "/usr/local/bin/codex" || path === "/Users/dev/.local/bin/codex"))
     .toBe("/usr/local/bin/codex");
 });
 
 test("uses the home-local Codex CLI when no native installation exists", () => {
-  expect(codexBinary("", "/Users/edi", (path) => path === "/Users/edi/.local/bin/codex"))
-    .toBe("/Users/edi/.local/bin/codex");
+  expect(codexBinary("", "/Users/dev", (path) => path === "/Users/dev/.local/bin/codex"))
+    .toBe("/Users/dev/.local/bin/codex");
 });
 
 test("falls back to Codex on PATH when no candidate exists", () => {
-  expect(codexBinary("", "/Users/edi", () => false)).toBe("codex");
+  expect(codexBinary("", "/Users/dev", () => false)).toBe("codex");
 });
 
 test("uses an explicit Codex binary override", () => {
-  expect(codexBinary("/custom/codex", "/Users/edi", () => false)).toBe("/custom/codex");
+  expect(codexBinary("/custom/codex", "/Users/dev", () => false)).toBe("/custom/codex");
 });
 
 test("uses the generic Codex pool without stitching in model-specific windows", () => {
   const now = Date.parse("2026-08-16T10:00:00Z");
   const result = capacityResultFromAppServer(
-    { type: "chatgpt", email: "edihasaj@gmail.com", planType: "pro" },
+    { type: "chatgpt", email: "alex@example.com", planType: "pro" },
     {
       rateLimits: { primary: { usedPercent: 12, windowDurationMins: 10080 } },
       rateLimitsByLimitId: {
@@ -45,7 +45,7 @@ test("uses the generic Codex pool without stitching in model-specific windows", 
     },
     now,
   );
-  expect(result?.account).toBe("edihasaj@gmail.com");
+  expect(result?.account).toBe("alex@example.com");
   expect(result?.usage.primary?.usedPercent).toBe(12);
   expect(result?.usage.primary?.windowMinutes).toBe(10080);
   expect(result?.usage.secondary).toBeNull();
@@ -56,7 +56,7 @@ test("uses the generic Codex pool without stitching in model-specific windows", 
 test("chooses one deterministic model-specific Codex pool only when generic and legacy pools are absent", () => {
   const now = Date.parse("2026-08-16T10:00:00Z");
   const result = capacityResultFromAppServer(
-    { type: "chatgpt", email: "edi@example.com", planType: "pro" },
+    { type: "chatgpt", email: "dev@example.com", planType: "pro" },
     {
       rateLimitsByLimitId: {
         codex_zebra: { primary: { usedPercent: 90, windowDurationMins: 300 } },
@@ -75,7 +75,7 @@ test("chooses one deterministic model-specific Codex pool only when generic and 
 
 test("uses legacy windows as one coherent pool before any model-specific pool", () => {
   const result = capacityResultFromAppServer(
-    { type: "chatgpt", email: "edi@example.com", planType: "pro" },
+    { type: "chatgpt", email: "dev@example.com", planType: "pro" },
     {
       rateLimits: { primary: { usedPercent: 33, windowDurationMins: 10080 } },
       rateLimitsByLimitId: { codex_bengalfox: { primary: { usedPercent: 99, windowDurationMins: 10080 } } },
@@ -89,7 +89,7 @@ test("uses legacy windows as one coherent pool before any model-specific pool", 
 test("keeps a returned five-hour Codex window alongside the weekly window", () => {
   const now = Date.parse("2026-08-16T10:00:00Z");
   const result = capacityResultFromAppServer(
-    { type: "chatgpt", email: "edi@example.com", planType: "pro" },
+    { type: "chatgpt", email: "dev@example.com", planType: "pro" },
     {
       rateLimitsByLimitId: {
         codex: {
@@ -110,7 +110,7 @@ test("keeps a returned five-hour Codex window alongside the weekly window", () =
 test("does not treat API-key auth or missing windows as subscription capacity", () => {
   expect(capacityResultFromAppServer({ type: "apiKey" }, { rateLimits: {} })).toBeUndefined();
   expect(capacityResultFromAppServer(
-    { type: "chatgpt", email: "edi@example.com", planType: "pro" },
+    { type: "chatgpt", email: "dev@example.com", planType: "pro" },
     { rateLimits: {} },
   )).toBeUndefined();
 });
@@ -134,7 +134,7 @@ test("a reset further away than the window itself is rejected as inconsistent", 
 test("purchased credits ride along with the rate-limit snapshot", () => {
   const now = Date.parse("2026-08-16T10:00:00Z");
   const read = (credits: unknown) => capacityResultFromAppServer(
-    { type: "chatgpt", email: "edihasaj@gmail.com", planType: "pro" },
+    { type: "chatgpt", email: "alex@example.com", planType: "pro" },
     { rateLimitsByLimitId: { codex: { primary: { usedPercent: 12, windowDurationMins: 10080 }, credits } } },
     now,
   )?.usage.credits;

@@ -8,7 +8,7 @@ function report(account: string, tokens: number, source = "studio:codex"): Repor
     tools: [], bash: [], deep: [], targets: [], prompts: [], models: [], projects: [],
     accounts: [{ account, tokens, cost: 0, calls: 1, sessions: 1 }],
     tokenDays: {
-      timeZone: "Europe/Belgrade", measuredAt: 100,
+      timeZone: "Europe/Berlin", measuredAt: 100,
       rows: [{ day: "2026-10-19", model: "gpt-test", tokens }],
       accountRows: [{ day: "2026-10-19", model: "gpt-test", account, tokens }],
     },

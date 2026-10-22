@@ -51,7 +51,7 @@ function read(source: string, calls: number, extra: Partial<Report> = {}): Repor
     tools: [], bash: [], deep: [], targets: [], prompts: [], projects: [], accounts: [],
     models: [{ model, calls, inTok: calls * 100, outTok: 0,
       cacheReadTok: 0, cacheWriteTok: 0, cost: calls / 100 }],
-    tokenDays: { timeZone: "Europe/Belgrade", measuredAt: now,
+    tokenDays: { timeZone: "Europe/Berlin", measuredAt: now,
       rows: [{ day: "2026-10-13", model, tokens: calls * 100 }] },
     ...extra,
   };
@@ -246,7 +246,7 @@ suite("managed gateway archive behavior", () => {
       const client: Report = {
         ...read("client:claude", 2), totalTokens: 500, totalCost: 1, gatewayUnconfirmed: [call],
         models: [{ model: "claude-model", calls: 2, inTok: 400, outTok: 100, cacheReadTok: 0, cacheWriteTok: 0, cost: 1 }],
-        tokenDays: { timeZone: "Europe/Belgrade", measuredAt: now,
+        tokenDays: { timeZone: "Europe/Berlin", measuredAt: now,
           rows: [{ day: "2026-10-13", model: "claude-model", tokens: 500 }] },
       };
       const serving = read("studio:copilot", 1, { gatewayBilled: ["abc"] });

@@ -63,7 +63,7 @@ test("an account filter keeps Codex roots for per-call gateway attribution", () 
   const status: SourceStatus = { id: "codex", present: true, parseable: true, files: [] };
   const file: SourceFile = { path: "/tmp/rollout.jsonl", key: "codex:rollout.jsonl", project: "?", source: "codex",
     account: "Unknown Codex account", parse: () => [], ctx: null };
-  expect(readerFor(status, file, { top: 5, account: "edihasaj@gmail.com" })).toBe("report");
+  expect(readerFor(status, file, { top: 5, account: "alex@example.com" })).toBe("report");
 });
 
 describe("a run limited to some agents", () => {

@@ -9,17 +9,17 @@ import {tokenSummary} from "../src/token-summary";
 import { tempDir } from "./tmp";
 
 const now = Date.parse("2026-10-13T20:00:00Z");
-const options = {now, timeZone: "Europe/Belgrade", localModels: ["qwen3.8-flash-next"]};
+const options = {now, timeZone: "Europe/Berlin", localModels: ["qwen3.8-flash-next"]};
 const path = () => join(tempDir("token-summary-"), "data.db");
 function report(source: string, tokens = 100, model = "gpt-6.1-sol", month = "2026-10"): Report {
   return {source, period: monthPeriod(month), totalTokens: tokens, totalCost: 0, apiCalls: 1, sessions: 1,
     tools: [], bash: [], deep: [], targets: [], prompts: [], projects: [], accounts: [], sinceTs: now,
     models: [{model, calls: 1, inTok: tokens, outTok: 0, cacheReadTok: 0, cacheWriteTok: 0, cost: 0}],
-    tokenDays: {timeZone: "Europe/Belgrade", measuredAt: now, rows: [{day: "2026-10-13", model, tokens}]}};
+    tokenDays: {timeZone: "Europe/Berlin", measuredAt: now, rows: [{day: "2026-10-13", model, tokens}]}};
 }
 
 test("calendar days use the declared timezone across midnight and DST", () => {
-  const days = new TokenDayAccumulator("Europe/Belgrade");
+  const days = new TokenDayAccumulator("Europe/Berlin");
   days.add(Date.parse("2026-10-13T22:30:00Z"), "gpt", 10);
   days.add(Date.parse("2026-10-25T23:30:00Z"), "gpt", 20);
   expect(days.snapshot(now).rows.map(r => r.day)).toEqual(["2026-10-14", "2026-10-26"]);

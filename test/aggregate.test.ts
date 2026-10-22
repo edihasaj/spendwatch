@@ -141,7 +141,7 @@ describe("codex aggregate from fixture", () => {
     writeFileSync(file, codexEntries().join("\n") + "\n");
     const agg = new Aggregator();
     const reader = new IncrementalReader(agg);
-    reader.poll({ path: file, project: "?", source: "codex", account: "edi@x.com", parse: parseCodexLine, ctx: newCodexCtx() });
+    reader.poll({ path: file, project: "?", source: "codex", account: "dev@x.com", parse: parseCodexLine, ctx: newCodexCtx() });
     const r = agg.report();
 
     expect(r.source).toBe("codex");

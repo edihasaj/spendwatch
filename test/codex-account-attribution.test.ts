@@ -17,13 +17,13 @@ const ts = Date.parse("2026-10-19T10:00:00.000Z");
 const usage = { input: 50, cacheRead: 900, cache5m: 50, cache1h: 0, output: 20 };
 
 function row(overrides: Partial<CodexLedgerCall> = {}): CodexLedgerCall {
-  return { at: ts + 1_000, provider: "personal", model: "gpt-5.5", input: 1_000, cached: 900, cacheWrite: 50, output: 20, account: "edihasaj@gmail.com", ...overrides };
+  return { at: ts + 1_000, provider: "personal", model: "gpt-5.5", input: 1_000, cached: 900, cacheWrite: 50, output: 20, account: "alex@example.com", ...overrides };
 }
 
 function routes(): CodexAccountRoute[] {
   return [
-    { provider: "personal", alias: "personal/gpt-5.5", upstream: "gpt-5.5", account: "edihasaj@gmail.com" },
-    { provider: "work", alias: "work/gpt-5.5", upstream: "gpt-5.5", account: "edi.hasaj@applifyer.com" },
+    { provider: "personal", alias: "personal/gpt-5.5", upstream: "gpt-5.5", account: "alex@example.com" },
+    { provider: "work", alias: "work/gpt-5.5", upstream: "gpt-5.5", account: "alex.work@example.com" },
   ];
 }
 
@@ -42,11 +42,11 @@ describe("Codex gateway account attribution", () => {
   test("uses the matched configured route instead of the current default auth", () => {
     const agg = report([row()], [event()]);
     const first = agg.report();
-    expect(first.accounts).toMatchObject([{ account: "edihasaj@gmail.com", calls: 1 }]);
-    expect(first.tokenDays?.accountRows).toMatchObject([{ account: "edihasaj@gmail.com", tokens: 1_020 }]);
+    expect(first.accounts).toMatchObject([{ account: "alex@example.com", calls: 1 }]);
+    expect(first.tokenDays?.accountRows).toMatchObject([{ account: "alex@example.com", tokens: 1_020 }]);
     expect(first.accountAttribution).toEqual({ version: 1, configuredRoute: 1, profile: 0, unknown: 0 });
     // Re-rendering a report keeps its already reserved row and attribution.
-    expect(agg.report().accounts).toMatchObject([{ account: "edihasaj@gmail.com", calls: 1 }]);
+    expect(agg.report().accounts).toMatchObject([{ account: "alex@example.com", calls: 1 }]);
   });
 
   test("does not consume another ledger row for repeated rollout records", () => {
@@ -62,7 +62,7 @@ describe("Codex gateway account attribution", () => {
   });
 
   test("does not guess when the same complete vector could belong to two accounts", () => {
-    const r = report([row(), row({ provider: "work", account: "edi.hasaj@applifyer.com" })], [event("r1", "gpt-5.5", usage, "subscription_gateway")]).report();
+    const r = report([row(), row({ provider: "work", account: "alex.work@example.com" })], [event("r1", "gpt-5.5", usage, "subscription_gateway")]).report();
     expect(r.accounts).toMatchObject([{ account: UNKNOWN_CODEX_ACCOUNT, calls: 1 }]);
     expect(r.accountAttribution).toEqual({ version: 1, configuredRoute: 0, profile: 0, unknown: 1 });
   });
@@ -70,9 +70,9 @@ describe("Codex gateway account attribution", () => {
   test("prefers an exact future ledger response id over an otherwise ambiguous vector", () => {
     const r = report([
       row({ responseId: "r1" }),
-      row({ provider: "work", account: "edi.hasaj@applifyer.com", responseId: "r2" }),
+      row({ provider: "work", account: "alex.work@example.com", responseId: "r2" }),
     ], [event("r1", "gpt-5.5", usage, "subscription_gateway")]).report();
-    expect(r.accounts).toMatchObject([{ account: "edihasaj@gmail.com", calls: 1 }]);
+    expect(r.accounts).toMatchObject([{ account: "alex@example.com", calls: 1 }]);
   });
 
   test("never treats a native openai upstream model as gateway proof", () => {
@@ -85,10 +85,10 @@ describe("Codex gateway account attribution", () => {
     const agg = new Aggregator();
     let fold = agg.stream("rollout", "project", "codex", UNKNOWN_CODEX_ACCOUNT, "unknown", initial);
     fold(event("r1"));
-    expect(agg.report().accounts).toMatchObject([{ account: "edihasaj@gmail.com", calls: 1 }]);
-    expect(agg.report().accounts).toMatchObject([{ account: "edihasaj@gmail.com", calls: 1 }]);
+    expect(agg.report().accounts).toMatchObject([{ account: "alex@example.com", calls: 1 }]);
+    expect(agg.report().accounts).toMatchObject([{ account: "alex@example.com", calls: 1 }]);
     fold(event("r1", "personal/gpt-5.5", { ...usage, output: 21 }));
-    expect(agg.report().accounts).toMatchObject([{ account: "edihasaj@gmail.com", calls: 1 }]);
+    expect(agg.report().accounts).toMatchObject([{ account: "alex@example.com", calls: 1 }]);
   });
 
   test("a refreshed ledger matcher can resolve a previously unknown stable request", () => {
@@ -100,17 +100,17 @@ describe("Codex gateway account attribution", () => {
     // `stream` receives each discovery during watch. The existing stream must
     // adopt the fresh index rather than keep the initial empty one.
     agg.stream("rollout", "project", "codex", UNKNOWN_CODEX_ACCOUNT, "unknown", new CodexAccountAttributor(routes(), [row()]));
-    expect(agg.report().accounts).toMatchObject([{ account: "edihasaj@gmail.com", calls: 1 }]);
+    expect(agg.report().accounts).toMatchObject([{ account: "alex@example.com", calls: 1 }]);
   });
 
   test("does not overwrite an already proven request when a later matcher has another account", () => {
     const agg = new Aggregator();
     const first = agg.stream("rollout", "project", "codex", UNKNOWN_CODEX_ACCOUNT, "unknown", new CodexAccountAttributor(routes(), [row()]));
     first(event("r1"));
-    expect(agg.report().accounts).toMatchObject([{ account: "edihasaj@gmail.com", calls: 1 }]);
+    expect(agg.report().accounts).toMatchObject([{ account: "alex@example.com", calls: 1 }]);
     const changedRoute = [{ ...routes()[0]!, account: "different@example.com" }, routes()[1]!];
     agg.stream("rollout", "project", "codex", UNKNOWN_CODEX_ACCOUNT, "unknown", new CodexAccountAttributor(changedRoute, [row({ account: "different@example.com" })]));
-    expect(agg.report().accounts).toMatchObject([{ account: "edihasaj@gmail.com", calls: 1 }]);
+    expect(agg.report().accounts).toMatchObject([{ account: "alex@example.com", calls: 1 }]);
   });
 
   test("carries an immutable ledger reservation into a refreshed matcher", () => {
@@ -129,7 +129,7 @@ describe("Codex gateway account attribution", () => {
     const agg = new Aggregator();
     const attributor = new CodexAccountAttributor(routes(), [
       row(),
-      row({ provider: "work", account: "edi.hasaj@applifyer.com" }),
+      row({ provider: "work", account: "alex.work@example.com" }),
     ]);
     const fold = agg.stream("rollout", "project", "codex", UNKNOWN_CODEX_ACCOUNT, "unknown", attributor);
     fold({ t: "prompt", sessionId: "s1", promptId: "p1", text: "personal", sidechain: false, ts });
@@ -145,13 +145,13 @@ describe("Codex gateway account attribution", () => {
       periods: [period],
       readers: new Map([["codex", { sink: agg, status: { id: "codex", present: true, parseable: true, files: [] } }]]),
     };
-    const [filtered] = reportsByPeriod(built, { top: 15, account: "edihasaj@gmail.com" }).get(period.key)!;
+    const [filtered] = reportsByPeriod(built, { top: 15, account: "alex@example.com" }).get(period.key)!;
     expect(filtered).toMatchObject({ totalTokens: 1_020, apiCalls: 1, observedCalls: 1, sessions: 1 });
-    expect(filtered.accounts).toMatchObject([{ account: "edihasaj@gmail.com", tokens: 1_020, calls: 1 }]);
+    expect(filtered.accounts).toMatchObject([{ account: "alex@example.com", tokens: 1_020, calls: 1 }]);
     expect(filtered.models).toMatchObject([{ model: "personal/gpt-5.5", calls: 1 }]);
     expect(filtered.projects).toEqual([{ project: "project", tokens: 1_020, cost: expect.any(Number) }]);
     expect(filtered.tokenDays?.rows).toEqual([{ day: "2026-10-19", model: "personal/gpt-5.5", tokens: 1_020 }]);
-    expect(filtered.tokenDays?.accountRows).toEqual([{ day: "2026-10-19", model: "personal/gpt-5.5", account: "edihasaj@gmail.com", tokens: 1_020 }]);
+    expect(filtered.tokenDays?.accountRows).toEqual([{ day: "2026-10-19", model: "personal/gpt-5.5", account: "alex@example.com", tokens: 1_020 }]);
     expect(filtered.prompts.map((prompt) => prompt.text)).toEqual(["personal"]);
     expect(filtered.tools.map((tool) => tool.name)).toEqual(["Bash"]);
   });
@@ -177,7 +177,7 @@ describe("Codex gateway account attribution", () => {
     }) + "\n");
     writeFileSync(bindings, JSON.stringify({
       version: 1,
-      bindings: [{ config, provider: "personal", account: "edihasaj@gmail.com", from: "2026-10-01T00:00:00.000Z", basis: "configured-route" }],
+      bindings: [{ config, provider: "personal", account: "alex@example.com", from: "2026-10-01T00:00:00.000Z", basis: "configured-route" }],
     }));
     const prior = process.env.SPENDWATCH_GATEWAY_CONFIG;
     const priorBindings = process.env.SPENDWATCH_GATEWAY_ACCOUNT_BINDINGS;
@@ -186,7 +186,7 @@ describe("Codex gateway account attribution", () => {
     try {
       const attributor = loadCodexAccountAttributor(ts - 10_000, selectedState)!;
       const resolved = attributor.resolve("rollout\u0000r1", "codex/gpt-6.1-sol", usage, ts, undefined, false);
-      expect(resolved).toMatchObject({ account: "edihasaj@gmail.com", provider: "personal", ledgerKey: "studio:gateway-1" });
+      expect(resolved).toMatchObject({ account: "alex@example.com", provider: "personal", ledgerKey: "studio:gateway-1" });
     } finally {
       if (prior === undefined) delete process.env.SPENDWATCH_GATEWAY_CONFIG;
       else process.env.SPENDWATCH_GATEWAY_CONFIG = prior;

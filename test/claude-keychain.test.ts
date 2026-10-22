@@ -12,7 +12,7 @@ import {
 import { tempDir } from "./tmp";
 
 const service = "Claude Code-credentials";
-const locator = { service, account: "edi", path: "/tmp/claude-test.keychain-db" };
+const locator = { service, account: "dev", path: "/tmp/claude-test.keychain-db" };
 const wrapper = {
   claudeAiOauth: {
     accessToken: "old-access",
@@ -38,18 +38,18 @@ function credential(value = wrapper): ClaudeKeychainCredential {
 describe("Claude Keychain locators", () => {
   test("keeps the exact account and keychain path from the attribute-only dump", () => {
     const dump = [
-      'keychain: "/Users/edi/Library/Keychains/login.keychain-db"',
+      'keychain: "/Users/dev/Library/Keychains/login.keychain-db"',
       '    "acct"<blob>="old"',
       '    "svce"<blob>="Claude Code-credentials"',
       'keychain: "/Volumes/work/keychains/Claude.keychain-db"',
       '    "acct"<blob>="live"',
       '    "svce"<blob>="Claude Code-credentials"',
-      'keychain: "/Users/edi/Library/Keychains/login.keychain-db"',
+      'keychain: "/Users/dev/Library/Keychains/login.keychain-db"',
       '    "acct"<blob>="other"',
       '    "svce"<blob>="Other service"',
     ].join("\n");
     expect(keychainLocatorsFrom(dump, service)).toEqual([
-      { service, account: "old", path: "/Users/edi/Library/Keychains/login.keychain-db" },
+      { service, account: "old", path: "/Users/dev/Library/Keychains/login.keychain-db" },
       { service, account: "live", path: "/Volumes/work/keychains/Claude.keychain-db" },
     ]);
   });
@@ -103,7 +103,7 @@ describe("Claude Keychain token rotation", () => {
     };
     expect(persistClaudeKeychainCredentials(credential(), "old-refresh", next, runner)).toBeUndefined();
     expect(calls).toEqual([[
-      "find-generic-password", "-s", service, "-a", "edi", "-w", locator.path,
+      "find-generic-password", "-s", service, "-a", "dev", "-w", locator.path,
     ]]);
   });
 
@@ -140,7 +140,7 @@ describe("Claude Keychain token rotation", () => {
   test("quotes an unusual locator as one security -i command", () => {
     const unusual = {
       service,
-      account: 'edi "primary" \\',
+      account: 'dev "primary" \\',
       path: '/tmp/a "quoted" \\ keychain',
     };
     const source = { ...wrapper, claudeAiOauth: { ...wrapper.claudeAiOauth } };
@@ -160,7 +160,7 @@ describe("Claude Keychain token rotation", () => {
       runner,
     );
     expect(result?.locator).toEqual(unusual);
-    expect(command).toContain('-a "edi \\"primary\\" \\\\"');
+    expect(command).toContain('-a "dev \\"primary\\" \\\\"');
     expect(command).toContain('"/tmp/a \\"quoted\\" \\\\ keychain"');
   });
 });

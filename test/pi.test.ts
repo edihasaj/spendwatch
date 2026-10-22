@@ -8,7 +8,7 @@ import { defaultOmpRoots, defaultPiRoots, discover, type SourceFile } from "../s
 import { priceFor, usageCost } from "../src/pricing";
 import { tempDir } from "./tmp";
 
-const CWD = "/Users/edi/Projects/spendwatch";
+const CWD = "/Users/dev/Projects/spendwatch";
 
 function piFile(path: string, source: "pi" | "omp" = "pi"): SourceFile {
   return { path, project: "?", source, account: "default", parse: parsePiLine, ctx: newPiCtx() };

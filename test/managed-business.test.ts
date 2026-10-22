@@ -277,13 +277,13 @@ suite("managed business behavior", () => {
         deep: [], targets: [], prompts: [], projects: [], accounts: [], sinceTs: now,
         models: [{ model: "gpt-6.1-sol", calls: 1, inTok: tokens, outTok: 0,
           cacheReadTok: 0, cacheWriteTok: 0, cost: 0 }],
-        tokenDays: { timeZone: "Europe/Belgrade", measuredAt: now,
+        tokenDays: { timeZone: "Europe/Berlin", measuredAt: now,
           rows: [{ day: "2026-10-13", model: "gpt-6.1-sol", tokens }] },
       });
       writeMonthlySpend(path, [report(100, "one"), report(30, "two")], { generatedAt: now });
       writeMonthlySpend(path, [report(10, "one")], { generatedAt: now + 1 });
       return { months: loadMonthlySpend(path), tokens: tokenSummary(path,
-        { now, timeZone: "Europe/Belgrade" }) };
+        { now, timeZone: "Europe/Berlin" }) };
     });
     expect(result.postgres).toEqual(result.sqlite);
   });

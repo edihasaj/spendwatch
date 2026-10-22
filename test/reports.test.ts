@@ -39,7 +39,7 @@ describe("portable reports", () => {
       ...report("codex"),
       totalTokens: undefined,
       models: [{ model: "gpt-5", calls: 1, inTok: 100, outTok: 20, cacheReadTok: 300, cacheWriteTok: 10, cost: 1 }],
-      accounts: [{ account: "edi@example.com", cost: 1, calls: 1, sessions: 1 }],
+      accounts: [{ account: "dev@example.com", cost: 1, calls: 1, sessions: 1 }],
       prompts: [{ key: "p", text: "hello", project: "demo", cost: 1, toolCalls: 0, outTok: 20, ts: 1 }],
       projects: [{ project: "demo", cost: 1 }],
     };
@@ -69,26 +69,26 @@ describe("portable reports", () => {
   test("merges machines into one report and preserves useful dimensions", () => {
     const studio = {
       ...report("studio:codex"),
-      accounts: [{ account: "edi@example.com", tokens: 100, cost: 1, calls: 2, sessions: 1 }],
+      accounts: [{ account: "dev@example.com", tokens: 100, cost: 1, calls: 2, sessions: 1 }],
     };
     const macbook = {
       ...report("macbook:codex"),
       totalCost: 2,
       totalTokens: 200,
       apiCalls: 3,
-      accounts: [{ account: "edi@example.com", tokens: 200, cost: 2, calls: 3, sessions: 1 }],
+      accounts: [{ account: "dev@example.com", tokens: 200, cost: 2, calls: 3, sessions: 1 }],
     };
     const merged = mergeReports([studio, macbook]);
     expect(merged.source).toBe("all");
     expect(merged.totalCost).toBe(3);
     expect(merged.totalTokens).toBe(300);
     expect(merged.apiCalls).toBe(5);
-    expect(merged.accounts).toEqual([{ account: "Codex · edi@example.com", tokens: 300, cost: 3, calls: 5, sessions: 2 }]);
+    expect(merged.accounts).toEqual([{ account: "Codex · dev@example.com", tokens: 300, cost: 3, calls: 5, sessions: 2 }]);
 
     const dimensions = reportBreakdowns([studio, macbook]);
     expect(dimensions.machines.map((row) => row.label)).toEqual(["macbook", "studio"]);
     expect(dimensions.agents).toEqual([{ label: "Codex", tokens: 300, cost: 3, calls: 5, sessions: 2 }]);
-    expect(dimensions.accounts).toEqual([{ label: "Codex · edi@example.com", tokens: 300, cost: 3, calls: 5, sessions: 2 }]);
+    expect(dimensions.accounts).toEqual([{ label: "Codex · dev@example.com", tokens: 300, cost: 3, calls: 5, sessions: 2 }]);
   });
 
   test("sums observed calls across machines, falling back to billed calls where a report has none", () => {
@@ -110,27 +110,27 @@ describe("portable reports", () => {
   test("keeps the same email separate by service unless email grouping is requested", () => {
     const codex = {
       ...report("studio:codex"),
-      accounts: [{ account: "edi@example.com", tokens: 100, cost: 1, calls: 2, sessions: 1 }],
+      accounts: [{ account: "dev@example.com", tokens: 100, cost: 1, calls: 2, sessions: 1 }],
     };
     const claude = {
       ...report("macbook:claude"),
       totalCost: 2,
       totalTokens: 200,
-      accounts: [{ account: "edi@example.com", tokens: 200, cost: 2, calls: 3, sessions: 1 }],
+      accounts: [{ account: "dev@example.com", tokens: 200, cost: 2, calls: 3, sessions: 1 }],
     };
 
     expect(reportBreakdowns([codex, claude]).accounts.map((row) => row.label)).toEqual([
-      "Claude Code · edi@example.com",
-      "Codex · edi@example.com",
+      "Claude Code · dev@example.com",
+      "Codex · dev@example.com",
     ]);
     expect(reportBreakdowns([codex, claude], "email").accounts).toEqual([
-      { label: "edi@example.com", tokens: 300, cost: 3, calls: 5, sessions: 2 },
+      { label: "dev@example.com", tokens: 300, cost: 3, calls: 5, sessions: 2 },
     ]);
 
     const serviceHtml = renderHtml([codex, claude], { generatedAt: 1, days: 30 });
     expect(serviceHtml).toContain("By service &amp; account");
-    expect(serviceHtml).toContain("Claude Code · edi@example.com");
-    expect(serviceHtml).toContain("Codex · edi@example.com");
+    expect(serviceHtml).toContain("Claude Code · dev@example.com");
+    expect(serviceHtml).toContain("Codex · dev@example.com");
 
     const emailHtml = renderHtml([codex, claude], {
       generatedAt: 1,

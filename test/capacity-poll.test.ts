@@ -10,8 +10,8 @@ import {
 import type { CapacityResult } from "../src/capacity-current";
 
 const snapshot: CapacityResult = {
-  provider: "codex", account: "edi@example.com", pace: null,
-  usage: { accountEmail: "edi@example.com", primary: { usedPercent: 12, windowMinutes: 300 },
+  provider: "codex", account: "dev@example.com", pace: null,
+  usage: { accountEmail: "dev@example.com", primary: { usedPercent: 12, windowMinutes: 300 },
     secondary: null, tertiary: null, updatedAt: "2026-10-14T10:00:00Z" },
 };
 
@@ -25,12 +25,12 @@ test("three machines and duplicate profiles share one reserved attempt per accou
   const path = join(mkdtempSync(join(tmpdir(), "capacity-poll-")), "poll.db");
   const machines = Array.from({ length: 3 }, () => new CapacityPollStore(path));
   try {
-    const claims = machines.map((store) => store.claim("codex", "EDI@example.com", 1000));
+    const claims = machines.map((store) => store.claim("codex", "DEV@example.com", 1000));
     expect(claims.filter((claim) => claim.lease)).toHaveLength(1);
-    expect(machines[0].claim("claude", "edi@example.com", 1000).lease).toBeDefined();
+    expect(machines[0].claim("claude", "dev@example.com", 1000).lease).toBeDefined();
     expect(machines[1].claim("codex", "other@example.com", 1000).lease).toBeDefined();
-    expect(machines[2].claim("codex", "edi@example.com", 1000 + CODEX_POLL_INTERVAL_MS - 1).lease).toBeUndefined();
-    expect(machines[2].claim("codex", "edi@example.com", 1000 + CODEX_POLL_INTERVAL_MS).lease).toBeDefined();
+    expect(machines[2].claim("codex", "dev@example.com", 1000 + CODEX_POLL_INTERVAL_MS - 1).lease).toBeUndefined();
+    expect(machines[2].claim("codex", "dev@example.com", 1000 + CODEX_POLL_INTERVAL_MS).lease).toBeDefined();
   } finally { machines.forEach((store) => store.close()); }
 });
 
@@ -234,12 +234,12 @@ test("rejects materially future snapshots while allowing bounded clock skew", ()
     ...snapshot,
     usage: { ...snapshot.usage, updatedAt: new Date(now + MAX_FUTURE_SNAPSHOT_SKEW_MS).toISOString(), quotaPool: "codex_bengalfox" },
   };
-  expect(sanitizePollSnapshot(nearFuture, "codex:edi@example.com", now).usage.quotaPool).toBe("codex_bengalfox");
+  expect(sanitizePollSnapshot(nearFuture, "codex:dev@example.com", now).usage.quotaPool).toBe("codex_bengalfox");
   const future = {
     ...nearFuture,
     usage: { ...nearFuture.usage, updatedAt: new Date(now + MAX_FUTURE_SNAPSHOT_SKEW_MS + 1).toISOString() },
   };
-  expect(() => sanitizePollSnapshot(future, "codex:edi@example.com", now)).toThrow("invalid capacity snapshot");
+  expect(() => sanitizePollSnapshot(future, "codex:dev@example.com", now)).toThrow("invalid capacity snapshot");
 });
 
 test("keeps valid Claude credit blocks and drops malformed ones without losing windows", () => {

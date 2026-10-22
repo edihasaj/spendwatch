@@ -200,7 +200,7 @@ function isFreeCodexHome(sessionsDir: string): boolean {
 }
 
 // Codex account: email tagged with the profile home it was read from, e.g.
-// "edihasaj@gmail.com (secondary)".
+// "alex@example.com (secondary)".
 function codexAccount(sessionsDir: string): { account: string; basis: AccountAttributionBasis } {
   const profile = codexProfile(sessionsDir);
   const { email } = codexClaims(sessionsDir);

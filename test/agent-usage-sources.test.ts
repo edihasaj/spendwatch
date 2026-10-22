@@ -22,7 +22,7 @@ function world(): { config: string } {
   db.exec('CREATE TABLE mission_run_outputs(run_id TEXT, output_key TEXT, output_json TEXT, updated_at TEXT);');
   db.prepare('INSERT INTO mission_run_outputs VALUES (?,?,?,?)').run(RUN, `usage:${ATTEMPT}`, JSON.stringify(usageRecord()), at);
   db.close();
-  writeFileSync(join(dir, 'jobs.jsonl'), JSON.stringify(usageRecord({ attempt_id: 'attempt_auto', updated_at: at, project: 'edihasaj/autoreview' })) + '\n');
+  writeFileSync(join(dir, 'jobs.jsonl'), JSON.stringify(usageRecord({ attempt_id: 'attempt_auto', updated_at: at, project: 'example-owner/autoreview' })) + '\n');
   const config = join(dir, 'config.json');
   writeFileSync(config, JSON.stringify([
     { agent: 'mission', path: join(dir, 'authority.sqlite') },

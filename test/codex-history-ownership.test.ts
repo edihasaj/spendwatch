@@ -14,7 +14,7 @@ function explicitMeta(boundary: number, extra: Record<string, unknown> = {}): Ro
     type: "session_meta",
     payload: {
       id: "child-thread",
-      cwd: "/Users/edi/Projects/child-project",
+      cwd: "/Users/dev/Projects/child-project",
       model: "gpt-6.1-sol",
       model_provider: "openai",
       history_mode: "paginated",
@@ -98,7 +98,7 @@ describe("Codex paginated subagent history ownership", () => {
       {
         ordinal: 1,
         type: "turn_context",
-        payload: { cwd: "/Users/edi/Projects/parent-project", model: "claude-opus-4-6" },
+        payload: { cwd: "/Users/dev/Projects/parent-project", model: "claude-opus-4-6" },
       },
       record(2, "parent-call"),
       record(3, "child-call"),
@@ -316,13 +316,13 @@ describe("free local-Qwen ownership filtering", () => {
       {
         ordinal: 1,
         type: "turn_context",
-        payload: { cwd: "/Users/edi/Projects/parent-project", model: "gpt-6.1-sol" },
+        payload: { cwd: "/Users/dev/Projects/parent-project", model: "gpt-6.1-sol" },
       },
       record(2, "parent-cloud-call"),
       {
         ordinal: 3,
         type: "turn_context",
-        payload: { cwd: "/Users/edi/Projects/child-project", model: "qwen/qwen3.8-flash-next" },
+        payload: { cwd: "/Users/dev/Projects/child-project", model: "qwen/qwen3.8-flash-next" },
       },
       record(4, "child-qwen-call"),
     ], ctx, parseFreeCodexLocalQwen);

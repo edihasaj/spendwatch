@@ -216,7 +216,7 @@ describe("the guarded archive write", () => {
     expect(storedReport(path, MONTH, "studio:codex")).toBe(before);
     for (const bad of [
       guard({ baselineSha256: sha256Hex("someone overwrote the stored month") }),
-      guard({ timeZone: "Europe/Belgrade" }),
+      guard({ timeZone: "Europe/Berlin" }),
       guard({ installationId: "a-different-installation" }),
     ]) {
       expect(() => writeMonthlySpend(path, [{ ...newer, installationId: "install-1" }], { generatedAt: 3, guards: [bad] })).toThrow();

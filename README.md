@@ -946,14 +946,14 @@ The **AUTOMATE — top targets** list (top of the report, and `--brief`) ranks s
 
 ### Count-only token export
 
-`spendwatch tokens --sqlite spendwatch.db --time-zone Europe/Belgrade` emits only
+`spendwatch tokens --sqlite spendwatch.db --time-zone Europe/Berlin` emits only
 today, calendar-month and calendar-year token totals, source coverage and
 measurement timestamps. It reads the archive without connecting to any device
 or provider. It exports no accounts, prompts, commands or transcript content.
 Totals include input, output and cache usage, not token estimates from cost.
 
 New reports include deduplicated daily model buckets. Set
-`SPENDWATCH_TOKEN_TIME_ZONE=Europe/Belgrade` on exporters to align their days.
+`SPENDWATCH_TOKEN_TIME_ZONE=Europe/Berlin` on exporters to align their days.
 Older reports still contribute preserved monthly/yearly totals but cannot
 fabricate today's count. Daily counts are unavailable or partial until those
 sources are collected with the new exporter. These are recorded snapshots, not

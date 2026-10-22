@@ -23,7 +23,7 @@ export function newGrokCtx(): GrokCtx {
   return { sid: `grok-${grokFallback++}`, turnN: 0, toolN: 0 };
 }
 
-// "%2FUsers%2Fedi%2FProjects%2Fspendwatch" -> "spendwatch"
+// "%2FUsers%2Fdev%2FProjects%2Fspendwatch" -> "spendwatch"
 export function grokProjectFromDir(dirName: string): string {
   let cwd = dirName;
   try {
