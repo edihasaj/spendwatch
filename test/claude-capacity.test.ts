@@ -289,12 +289,12 @@ describe("Keychain items for one service", () => {
     'keychain: "/Users/x/Library/Keychains/login.keychain-db"',
     'class: "genp"',
     'attributes:',
-    '    "acct"<blob>="edihasaj"',
+    '    "acct"<blob>="dev"',
     '    "svce"<blob>="Claude Code-credentials"',
   ].join("\n");
 
   test("lists every account holding credentials for the service", () => {
-    expect(keychainAccountsFrom(dump, "Claude Code-credentials")).toEqual(["unknown", "edihasaj"]);
+    expect(keychainAccountsFrom(dump, "Claude Code-credentials")).toEqual(["unknown", "dev"]);
   });
 
   test("ignores other services and an empty dump", () => {

@@ -12,7 +12,7 @@ const ledger = (lines: unknown[]): string => {
   writeFileSync(path, lines.map((line) => typeof line === 'string' ? line : JSON.stringify(line)).join('\n') + '\n');
   return path;
 };
-const rec = (attempt: string, at: string, scale = 1, project: unknown = 'edihasaj/spendwatch') =>
+const rec = (attempt: string, at: string, scale = 1, project: unknown = 'example-owner/spendwatch') =>
   usageRecord({ attempt_id: attempt, updated_at: at, project }, scale);
 
 describe('AutoReview job ledger', () => {
