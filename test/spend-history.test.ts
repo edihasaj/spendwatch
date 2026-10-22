@@ -54,12 +54,12 @@ describe("monthly spend archive", () => {
     const path = dbPath();
     const old = { ...report("2026-10", "macbook:codex", 20_000, 900,
       [{ project: "manager", tokens: 20_000, cost: 20 }]), installationId: "before-reset",
-      accounts: [{ account: "edi@example.com (work)", tokens: 20_000, cost: 20, calls: 900, sessions: 3 }],
+      accounts: [{ account: "dev@example.com (work)", tokens: 20_000, cost: 20, calls: 900, sessions: 3 }],
       prompts: [{ key: "old", text: "old chat", project: "manager", tokens: 20_000, cost: 20, toolCalls: 0, outTok: 100, ts: 1 }],
     };
     const fresh = { ...report("2026-10", "macbook:codex", 500, 2,
       [{ project: "manager", tokens: 500, cost: 0.5 }]), installationId: "after-reset",
-      accounts: [{ account: "edi@example.com (work)", tokens: 500, cost: 0.5, calls: 2, sessions: 3 }],
+      accounts: [{ account: "dev@example.com (work)", tokens: 500, cost: 0.5, calls: 2, sessions: 3 }],
       prompts: [{ key: "new", text: "new chat", project: "manager", tokens: 500, cost: 0.5, toolCalls: 0, outTok: 5, ts: 2 }],
     };
     writeMonthlySpend(path, [old], { generatedAt: 1 });
@@ -75,7 +75,7 @@ describe("monthly spend archive", () => {
     expect(month!.projects).toEqual([{ project: "manager", tokens: 20_500, cost: 20.5 }]);
     const [detail] = loadArchivedReports(path);
     expect(detail!.totalTokens).toBe(20_500);
-    expect(detail!.accounts).toEqual([{ account: "edi@example.com (work)", tokens: 20_500, cost: 20.5, calls: 902, sessions: 6 }]);
+    expect(detail!.accounts).toEqual([{ account: "dev@example.com (work)", tokens: 20_500, cost: 20.5, calls: 902, sessions: 6 }]);
     expect(detail!.prompts.map((row) => row.text)).toEqual(["old chat", "new chat"]);
   });
 

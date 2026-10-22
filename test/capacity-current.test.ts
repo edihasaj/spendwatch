@@ -56,7 +56,7 @@ test("uses the generic Codex pool without stitching in model-specific windows", 
 test("chooses one deterministic model-specific Codex pool only when generic and legacy pools are absent", () => {
   const now = Date.parse("2026-08-16T10:00:00Z");
   const result = capacityResultFromAppServer(
-    { type: "chatgpt", email: "edi@example.com", planType: "pro" },
+    { type: "chatgpt", email: "dev@example.com", planType: "pro" },
     {
       rateLimitsByLimitId: {
         codex_zebra: { primary: { usedPercent: 90, windowDurationMins: 300 } },
@@ -75,7 +75,7 @@ test("chooses one deterministic model-specific Codex pool only when generic and 
 
 test("uses legacy windows as one coherent pool before any model-specific pool", () => {
   const result = capacityResultFromAppServer(
-    { type: "chatgpt", email: "edi@example.com", planType: "pro" },
+    { type: "chatgpt", email: "dev@example.com", planType: "pro" },
     {
       rateLimits: { primary: { usedPercent: 33, windowDurationMins: 10080 } },
       rateLimitsByLimitId: { codex_bengalfox: { primary: { usedPercent: 99, windowDurationMins: 10080 } } },
@@ -89,7 +89,7 @@ test("uses legacy windows as one coherent pool before any model-specific pool", 
 test("keeps a returned five-hour Codex window alongside the weekly window", () => {
   const now = Date.parse("2026-08-16T10:00:00Z");
   const result = capacityResultFromAppServer(
-    { type: "chatgpt", email: "edi@example.com", planType: "pro" },
+    { type: "chatgpt", email: "dev@example.com", planType: "pro" },
     {
       rateLimitsByLimitId: {
         codex: {
@@ -110,7 +110,7 @@ test("keeps a returned five-hour Codex window alongside the weekly window", () =
 test("does not treat API-key auth or missing windows as subscription capacity", () => {
   expect(capacityResultFromAppServer({ type: "apiKey" }, { rateLimits: {} })).toBeUndefined();
   expect(capacityResultFromAppServer(
-    { type: "chatgpt", email: "edi@example.com", planType: "pro" },
+    { type: "chatgpt", email: "dev@example.com", planType: "pro" },
     { rateLimits: {} },
   )).toBeUndefined();
 });

@@ -20,7 +20,7 @@ function fixture(runs = true, createdAt: string | null = AT): { path: string; db
   db.exec('CREATE TABLE mission_run_outputs(run_id TEXT, output_key TEXT, output_json TEXT, updated_at TEXT, PRIMARY KEY(run_id, output_key));');
   if (runs) {
     db.exec('CREATE TABLE mission_runs(run_id TEXT PRIMARY KEY, spec_json TEXT, created_at TEXT);');
-    db.prepare('INSERT INTO mission_runs VALUES (?,?,?)').run(RUN, JSON.stringify({ executor: { repository_key: 'edihasaj/mission-runtime' } }), createdAt);
+    db.prepare('INSERT INTO mission_runs VALUES (?,?,?)').run(RUN, JSON.stringify({ executor: { repository_key: 'example-owner/mission-runtime' } }), createdAt);
   }
   return { path, db };
 }

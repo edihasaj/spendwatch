@@ -12,7 +12,7 @@ import {
 import { tempDir } from "./tmp";
 
 const service = "Claude Code-credentials";
-const locator = { service, account: "edi", path: "/tmp/claude-test.keychain-db" };
+const locator = { service, account: "dev", path: "/tmp/claude-test.keychain-db" };
 const wrapper = {
   claudeAiOauth: {
     accessToken: "old-access",
@@ -103,7 +103,7 @@ describe("Claude Keychain token rotation", () => {
     };
     expect(persistClaudeKeychainCredentials(credential(), "old-refresh", next, runner)).toBeUndefined();
     expect(calls).toEqual([[
-      "find-generic-password", "-s", service, "-a", "edi", "-w", locator.path,
+      "find-generic-password", "-s", service, "-a", "dev", "-w", locator.path,
     ]]);
   });
 
@@ -140,7 +140,7 @@ describe("Claude Keychain token rotation", () => {
   test("quotes an unusual locator as one security -i command", () => {
     const unusual = {
       service,
-      account: 'edi "primary" \\',
+      account: 'dev "primary" \\',
       path: '/tmp/a "quoted" \\ keychain',
     };
     const source = { ...wrapper, claudeAiOauth: { ...wrapper.claudeAiOauth } };
@@ -160,7 +160,7 @@ describe("Claude Keychain token rotation", () => {
       runner,
     );
     expect(result?.locator).toEqual(unusual);
-    expect(command).toContain('-a "edi \\"primary\\" \\\\"');
+    expect(command).toContain('-a "dev \\"primary\\" \\\\"');
     expect(command).toContain('"/tmp/a \\"quoted\\" \\\\ keychain"');
   });
 });
