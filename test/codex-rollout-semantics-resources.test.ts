@@ -45,6 +45,10 @@ function selectPair(
   );
 }
 
+// These build multi-hundred-MB fixtures; under full-suite load they exceed
+// Bun's default 5 s per-test limit even though each passes in a few seconds alone.
+const HEAVY_TIMEOUT_MS = 60_000;
+
 describe("Codex semantic duplicate resources", () => {
   test("streams a valid candidate above the former 128 MiB file ceiling", () => {
     const root = tempDir("spendwatch-sem-large-file-");
@@ -63,7 +67,7 @@ describe("Codex semantic duplicate resources", () => {
       [{ path: retained, priority: 1, value: retainedValue }, { path: primary, priority: 0, value: primaryValue }],
       { semanticDominance: createCodexRolloutSemanticDominance() },
     )).toEqual([primaryValue]);
-  });
+  }, HEAVY_TIMEOUT_MS);
 
   test("evicts old manifests by fact budget and still re-proves the same dominant copy", () => {
     const root = tempDir("spendwatch-sem-cache-facts-");
@@ -77,7 +81,7 @@ describe("Codex semantic duplicate resources", () => {
     // Four 550k manifests exceed the 2m aggregate cache budget. The first
     // pair must be safely rebuilt after LRU eviction, with the same result.
     expect(selectPair(dominance, first)).toEqual([first.primaryValue]);
-  });
+  }, HEAVY_TIMEOUT_MS);
 
   test("keeps the 1m per-manifest fact ceiling fail-closed", () => {
     const root = tempDir("spendwatch-sem-fact-cap-");
@@ -87,5 +91,5 @@ describe("Codex semantic duplicate resources", () => {
       [{ path: retained, value: { ...source, name: "retained" } }, { path: overLimit, value: { ...source, name: "over" } }],
       { semanticDominance: createCodexRolloutSemanticDominance() },
     )).toThrow(CodexRolloutCopyError);
-  });
+  }, HEAVY_TIMEOUT_MS);
 });
