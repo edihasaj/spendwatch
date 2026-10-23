@@ -142,15 +142,15 @@ describe("Codex limits", () => {
     expect(html).not.toContain("Comfortable");
     expect(html).not.toContain("Know what you can");
     expect(html).not.toContain("account-number");
-    expect(html).toContain("Current capacity");
-    expect(html).toContain("2 accounts · 1 service");
+    expect(html).not.toContain("Current capacity");
+    expect(html).not.toContain("2 accounts · 1 service");
     expect(html).toContain("<span class=\"provider-label\">Codex</span><h2>Codex Primary</h2><span class=\"account-email\">personal@example.com</span>");
     expect(html).toContain("<span class=\"provider-label\">Codex</span><h2>Codex Secondary</h2><span class=\"account-email\">work@example.com</span>");
     expect(html.indexOf("Codex Primary")).toBeLessThan(html.indexOf("Codex Secondary"));
     expect(html).toContain(".limits{display:grid;grid-template-columns:1fr");
     expect(html).toContain("data-account-key=");
     expect(html).toContain("patchNode(card,nextCard)");
-    expect(html).toContain("['.summary','.planning','.utilization']");
+    expect(html).toContain("for(const selector of ['.utilization'])");
     expect(html).toContain("90% utilization plan");
     expect(html).toContain("Target 90% · buffer 10%");
     expect(html.indexOf('<section class="accounts">')).toBeLessThan(html.indexOf('<section class="utilization">'));
@@ -192,9 +192,8 @@ describe("Codex limits", () => {
     const html = renderLimitsHtml(accounts, { generatedAt: now, sources });
     expect(html).not.toContain("Best now");
     expect(html).not.toContain("No fresh recommendation");
-    expect(html).toContain('class="source live"');
-    expect(html).toContain('class="source offline"');
-    expect(html).toContain("data-source-status");
+    expect(html).not.toContain('class="sources"');
+    expect(html).not.toContain('<section class="planning">');
   });
 
   test("renders old manual snapshots neutrally and never uses them for recommendations", () => {
@@ -211,8 +210,7 @@ describe("Codex limits", () => {
 
     expect(recommendAccount(accounts, sources, now)).toBeUndefined();
     const html = renderLimitsHtml(accounts, { generatedAt: now, sources });
-    expect(html).toContain('class="source snapshot"');
-    expect(html).toContain("snapshot · on demand");
+    expect(html).not.toContain('class="source snapshot"');
     expect(html).toContain("raw==='snapshot'?'snapshot'");
     expect(html).toContain(".source.snapshot i{background:#6f7a83}");
   });
@@ -234,8 +232,7 @@ describe("Codex limits", () => {
 
     expect(recommendAccount(accounts, sources, now)).toBeUndefined();
     const html = renderLimitsHtml(accounts, { generatedAt: now, sources });
-    expect(html).toContain('class="source offline"');
-    expect(html).toContain('data-source-status="live"');
+    expect(html).not.toContain('data-source-status="live"');
     expect(html).toContain("elapsed<=240000?'live'");
     expect(html).toContain("elapsed<=300000?'stale'");
   });
