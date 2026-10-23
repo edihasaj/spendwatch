@@ -231,7 +231,10 @@ planning page with one compact account card per identity. Wide screens use
 three columns. Cards show provider, account, plan, capture time, the percent
 left, a capacity bar, pace, and reset times. The label and the bar both show
 what is left: the bar is full at the start of a window and drains as the window
-is used, so a full bar means there is room to work. Unreported windows are omitted instead of shown as
+is used, so a full bar means there is room to work. Below the bar, each window shows its pace and a
+run-out forecast: `Runs out in 2h 10m`, `Lasts until reset`, or `Ran out`. The
+forecast uses the recent burn rate when one is available and the average pace
+of the current cycle otherwise; hovering it shows which. Unreported windows are omitted instead of shown as
 empty limits. Claude shows
 rolling 5-hour and weekly capacity; Codex shows whichever windows its live
 account response currently reports (including the five-hour window when
