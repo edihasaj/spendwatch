@@ -121,7 +121,9 @@ describe("Codex limits", () => {
     expect(html).toContain("@media(max-width:1120px){.accounts{grid-template-columns:repeat(2,minmax(0,1fr))}");
     expect(html).toContain("@media(max-width:720px){.shell");
     expect(html).toContain(".accounts,.pace-policy{grid-template-columns:1fr}");
-    expect(html).toContain("@media(max-width:480px){.topbar{grid-template-columns:1fr}");
+    expect(html).toContain("@media(max-width:480px){.topbar{grid-template-columns:1fr auto}");
+    expect(html).toContain('<details class="menu">');
+    expect(html).toContain('id="refresh" title="Refresh" aria-label="Refresh"');
     expect(html).toContain("min-height:44px");
     expect(html).toContain('.limit-meta{justify-content:flex-end;color:var(--muted);font:11px/1.35 "Fragment Mono",monospace}');
     expect(html).toContain('.pace{margin-top:5px;color:#aab3ba;font:11px/1.35 "Fragment Mono",monospace}');
