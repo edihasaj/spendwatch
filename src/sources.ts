@@ -131,7 +131,9 @@ function loadConfig(): RootCfg[] | null {
 }
 
 // ---- account detection ------------------------------------------------------
-function shortEmail(email?: string): string | undefined {
+// How an account email is displayed everywhere it is read, so a configured mapping and a login file
+// never disagree about the same address.
+export function shortEmail(email?: string): string | undefined {
   if (!email) return undefined;
   return email; // keep full email — it's the user's own, and disambiguates orgs
 }
@@ -290,6 +292,41 @@ function realpathKey(path: string): string | undefined {
   }
 }
 
+// A Claude Code profile directory that holds its own login: `CLAUDE_CONFIG_DIR=~/.claude-<name>`.
+// The same shape `discoverClaudeProfiles` in claude-capacity.ts accepts, so the two never disagree
+// about which directories are profiles and which are just files that start with `.claude`.
+const CLAUDE_PROFILE = /^\.claude-[A-Za-z0-9][A-Za-z0-9-]*$/;
+
+/**
+ * The default Claude home plus every `~/.claude-<name>` profile, as Claude Code lays them out.
+ *
+ * A profile writes its transcripts under its own `projects` directory and keeps its sign-in at
+ * `<profile>/.claude.json`, so each named root carries that profile's own account. It must: the
+ * `claudeAccount(root)` fallback looks at `~/.claude.json` first, and would credit every profile's
+ * turns to the default login. Symlinked profiles collapse to one root, as a Codex profile's does.
+ */
+export function defaultClaudeRoots(home = homedir()): RootCfg[] {
+  const roots: RootCfg[] = [{ agent: "claude", path: join(home, ".claude", "projects") }];
+  const seen = new Set<string>();
+  const canonical = realpathKey(roots[0]!.path);
+  if (canonical !== undefined) seen.add(canonical);
+  for (const name of safeReaddir(home).filter((entry) => CLAUDE_PROFILE.test(entry)).sort()) {
+    const profileHome = join(home, name);
+    if (!statSafe(profileHome)?.isDirectory()) continue;
+    const projects = join(profileHome, "projects");
+    if (!existsSync(projects)) continue;
+    const real = realpathKey(projects);
+    // A profile whose `projects` is a link at the default home, or at a sibling profile, is the
+    // same transcripts twice: read them once. A path that resolves to nothing is not scannable.
+    if (real === undefined || seen.has(real)) continue;
+    seen.add(real);
+    // The login is read where the transcripts really live, which is `profileHome` unless its
+    // `projects` is a link into another home: a borrowed directory is still billed to whoever owns it.
+    roots.push({ agent: "claude", path: projects, account: claudeAccountIn(dirname(real)) });
+  }
+  return roots;
+}
+
 export function defaultCodexRoots(home = homedir()): RootCfg[] {
   // Codex moves a rollout to `archived_sessions` instead of deleting it. Keep
   // every profile's live and archive roots, including homes retained only as an
@@ -416,7 +453,7 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
   // Resolve roots per agent: config overrides defaults.
   const proofRoots = cfg ? undefined : claudeProofRootDiscovery();
   const claudeRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "claude") : [
-    { agent: "claude", path: join(homedir(), ".claude", "projects") },
+    ...defaultClaudeRoots(),
     ...proofRoots!.roots.map((root) => ({ agent: "claude", ...root, isolatedProof: true })),
   ];
   const codexRoots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "codex") : defaultCodexRoots();

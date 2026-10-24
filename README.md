@@ -549,6 +549,11 @@ JWT email, Grok `auth.json` email). Reports **tag by account but sum per agent**
 Codex and Grok automatically load `~/.codex/sessions` and `~/.grok/sessions`
 plus every `~/.codex-*` / `~/.grok-*` profile, so separate desktop or CLI
 accounts such as `~/.codex-secondary` require no configuration.
+Claude likewise loads `~/.claude/projects` plus every `~/.claude-<name>/projects`
+profile (as created by `CLAUDE_CONFIG_DIR=~/.claude-<name>`). Each named
+profile's transcripts are credited to the email in that profile's own
+`.claude.json`, never to the default `~/.claude.json` login. A profile whose
+`projects` directory links to another home is read once.
 
 Because the same email can be signed in to several homes, Codex and Grok
 accounts carry the profile home in brackets: `~/.codex` shows as `(main)` and
@@ -568,6 +573,20 @@ Copilot account outright, for every transcript and gateway row that has no
 account of its own, instead of reading the signed-in login from
 `~/.claude.json` or the `gh` user from `~/.config/gh/hosts.yml`. The test suite
 sets both, so it never reads a real login.
+
+Gateway Claude rows are credited in this order: the provider's `authDirectory`
+login, then an owner mapping in `~/.config/spendwatch/claude-provider-accounts.json`
+(or the file named by `SPENDWATCH_CLAUDE_PROVIDER_ACCOUNTS`), then
+`SPENDWATCH_CLAUDE_ACCOUNT`, then the current `~/.claude.json` login. Use the
+mapping to pin a retired provider that had no `authDirectory`, so a later login
+change cannot move its history:
+
+```json
+{ "claude": "edi.hasaj@applifyer.com" }
+```
+
+The file must be a regular, non-symlink file of at most 8 KiB. A missing or
+invalid file is ignored as a whole.
 
 For custom locations or explicit labels, create
 `~/.config/spendwatch/config.json` (or `$SPENDWATCH_CONFIG`). Explicit config
@@ -592,7 +611,7 @@ service account across machines. Filter with `--account <substr>`.
 
 | agent   | logs | token usage |
 |---------|------|-------------|
-| Claude Code | `~/.claude/projects/**/*.jsonl` | ✓ |
+| Claude Code | `~/.claude/projects/**/*.jsonl`, plus `~/.claude-*/projects` | ✓ |
 | Codex CLI   | `~/.codex/sessions/**/rollout-*.jsonl`, plus `~/.codex*/archived_sessions` | ✓ |
 | Grok CLI    | `~/.grok/sessions/**/updates.jsonl` | ✓ |
 | Copilot CLI | `~/.copilot/session-store.db` | ✓ per-request token usage and reported AI-credit value |
