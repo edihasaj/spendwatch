@@ -91,7 +91,7 @@ describe("the declared account of a gateway Claude provider", () => {
       '{"claude":"two@@example.com"}', '{"claude":" a@b.co "}', '{"":"c@d.com"}',
       JSON.stringify({ claude: "x@y.com", pad: "z".repeat(9 * 1024) }),
     ]) {
-      expect(byAccount(ledger(oneRow, broken))).toEqual({ [SIGNED_IN]: ["studio:oct"] });
+      expect(byAccount(ledger(oneRow, mapping(broken)))).toEqual({ [SIGNED_IN]: ["studio:oct"] });
     }
     // A link is not the operator's own file, however well-formed what it points at is.
     const dir = realpathSync(tempDir("spendwatch-provider-link-"));
