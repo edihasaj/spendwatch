@@ -5,10 +5,11 @@
 // silently stale instead of failing. This reads the same authenticated endpoint
 // the Claude Code /usage view uses, with the credentials Claude Code already
 // stores locally, so the dashboard has a first-party source.
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { paceFor, type CapacityCloudCredits, type CapacityExtraUsage, type CapacityPaceWindow, type CapacityWindow } from "./capacity-current";
 import { coordinatedCapacity, retryAfterMs } from "./capacity-poll";
 import {
@@ -328,6 +329,19 @@ function stringField(source: unknown, key: string): string | undefined {
 export const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
 
 /**
+ * Claude Code scopes every non-default `CLAUDE_CONFIG_DIR` to a distinct
+ * Keychain service. The service is deliberately derived from the absolute
+ * directory, so one named profile can never borrow the default login.
+ */
+export function claudeKeychainService(configDir?: string): string {
+  if (configDir === undefined) return CLAUDE_KEYCHAIN_SERVICE;
+  const absoluteConfigDir = resolve(configDir);
+  if (absoluteConfigDir === resolve(homedir(), ".claude")) return CLAUDE_KEYCHAIN_SERVICE;
+  const hash = createHash("sha256").update(absoluteConfigDir).digest("hex").slice(0, 8);
+  return `${CLAUDE_KEYCHAIN_SERVICE}-${hash}`;
+}
+
+/**
  * Every account name holding credentials for `service`, read from the
  * attribute-only Keychain dump. Claude Code leaves the previous item behind
  * when it re-creates one under a different account name, so the service alone
@@ -372,19 +386,25 @@ function keychainSecret(args: string[]): unknown {
   }
 }
 
-interface KeychainCredentials {
+export interface KeychainCredentials {
   oauth: unknown;
   credential?: ClaudeKeychainCredential;
 }
 
+type KeychainReader = (service: string, nowMs?: number, allowPlainLookup?: boolean) => KeychainCredentials | undefined;
+
 // Claude Code keeps the default profile's credentials in the login Keychain on
 // macOS. It can also leave the on-disk file behind as a husk with blank tokens
 // after that migration, so presence of the file says nothing about usability.
-function keychainCredentials(nowMs = Date.now()): KeychainCredentials | undefined {
+function keychainCredentials(
+  service: string,
+  nowMs = Date.now(),
+  allowPlainLookup = false,
+): KeychainCredentials | undefined {
   if (platform() !== "darwin") return undefined;
   const dump = spawnSync("/usr/bin/security", ["dump-keychain"], { encoding: "utf8", timeout: 10_000 });
   const locators = dump.status === 0 && dump.stdout
-    ? keychainLocatorsFrom(dump.stdout, CLAUDE_KEYCHAIN_SERVICE)
+    ? keychainLocatorsFrom(dump.stdout, service)
     : [];
   const credential = freshestClaudeKeychainCredential(
     locators.flatMap((locator) => {
@@ -395,8 +415,11 @@ function keychainCredentials(nowMs = Date.now()): KeychainCredentials | undefine
   );
   if (credential) return { oauth: credential.oauth, credential };
   // The dump is attribute-only and needs no unlock, but a locked or unreadable
-  // Keychain still has to fall back to the plain lookup rather than go blind.
-  const oauth = keychainSecret(["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-w"]);
+  // default-profile Keychain still has to fall back to the plain lookup rather
+  // than go blind. A named profile must only use its exact hashed service:
+  // falling back would silently attribute the default account to that profile.
+  if (!allowPlainLookup) return undefined;
+  const oauth = keychainSecret(["find-generic-password", "-s", service, "-w"]);
   return oauth === undefined ? undefined : { oauth };
 }
 
@@ -410,7 +433,15 @@ export function preferUsableCredentials(fileCredentials: unknown, fromKeychain: 
   return fromKeychain() ?? fileCredentials;
 }
 
-export function claudeProfileFrom(home: string, metadataPath: string, allowKeychain = false): ClaudeProfile | undefined {
+export function claudeProfileFrom(
+  home: string,
+  metadataPath: string,
+  keychainService?: string,
+  readKeychain: KeychainReader = keychainCredentials,
+): ClaudeProfile | undefined {
+  const oauthAccount = readJson(metadataPath)?.oauthAccount;
+  const email = stringField(oauthAccount, "emailAddress");
+  if (!email) return undefined;
   const fileCredentials = readJson(join(home, ".credentials.json"))?.claudeAiOauth;
   let fromKeychain: KeychainCredentials | undefined;
   let triedKeychain = false;
@@ -419,16 +450,15 @@ export function claudeProfileFrom(home: string, metadataPath: string, allowKeych
     () => {
       if (!triedKeychain) {
         triedKeychain = true;
-        fromKeychain = allowKeychain ? keychainCredentials() : undefined;
+        fromKeychain = keychainService
+          ? readKeychain(keychainService, undefined, keychainService === CLAUDE_KEYCHAIN_SERVICE)
+          : undefined;
       }
       return fromKeychain?.oauth;
     },
   );
   const token = stringField(credentials, "accessToken");
   if (!token) return undefined;
-  const oauthAccount = readJson(metadataPath)?.oauthAccount;
-  const email = stringField(oauthAccount, "emailAddress");
-  if (!email) return undefined;
   const organizationType = stringField(oauthAccount, "organizationType");
   const expiresAtValue = Number((credentials as Record<string, unknown> | undefined)?.expiresAt);
   return {
@@ -449,9 +479,14 @@ export function claudeProfileFrom(home: string, metadataPath: string, allowKeych
 }
 
 /** Default profile plus every `~/.claude-<name>` profile, as Claude Code lays them out. */
-export function discoverClaudeProfiles(base = homedir()): ClaudeProfile[] {
-  const homes: { home: string; metadata: string; keychain: boolean }[] = [
-    { home: join(base, ".claude"), metadata: join(base, ".claude.json"), keychain: base === homedir() },
+export function discoverClaudeProfiles(base = homedir(), readKeychain: KeychainReader = keychainCredentials): ClaudeProfile[] {
+  const useKeychain = base === homedir() || readKeychain !== keychainCredentials;
+  const homes: { home: string; metadata: string; keychainService?: string }[] = [
+    {
+      home: join(base, ".claude"),
+      metadata: join(base, ".claude.json"),
+      keychainService: useKeychain ? CLAUDE_KEYCHAIN_SERVICE : undefined,
+    },
   ];
   let entries: string[] = [];
   try {
@@ -461,10 +496,14 @@ export function discoverClaudeProfiles(base = homedir()): ClaudeProfile[] {
     if (!/^\.claude-[A-Za-z0-9][A-Za-z0-9-]*$/.test(entry)) continue;
     const home = join(base, entry);
     const sibling = `${home}.json`;
-    homes.push({ home, metadata: existsSync(sibling) ? sibling : join(home, ".claude.json"), keychain: false });
+    homes.push({
+      home,
+      metadata: existsSync(sibling) ? sibling : join(home, ".claude.json"),
+      keychainService: useKeychain ? claudeKeychainService(home) : undefined,
+    });
   }
   return homes.flatMap((entry) => {
-    const profile = claudeProfileFrom(entry.home, entry.metadata, entry.keychain);
+    const profile = claudeProfileFrom(entry.home, entry.metadata, entry.keychainService, readKeychain);
     return profile ? [profile] : [];
   });
 }
