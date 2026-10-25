@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { coordinatorAccessHeaders } from "../src/capacity-coordinator-client";
 import {
-  CapacityPollStore, CODEX_POLL_INTERVAL_MS, coordinatedCapacity, coordinatorRequest, handleCapacityPoll,
+  CapacityPollStore, CLAUDE_POLL_INTERVAL_MS, CODEX_POLL_INTERVAL_MS, coordinatedCapacity, coordinatorRequest, handleCapacityPoll,
   MAX_FUTURE_SNAPSHOT_SKEW_MS, POLL_INTERVAL_MS, pollIntervalMs, retryAfterMs, sanitizePollSnapshot,
 } from "../src/capacity-poll";
 import type { CapacityResult } from "../src/capacity-current";
@@ -38,12 +38,57 @@ test("Codex and Claude retain account-specific collection cadences", () => {
   const store = new CapacityPollStore(":memory:");
   try {
     expect(pollIntervalMs("codex")).toBe(CODEX_POLL_INTERVAL_MS);
-    expect(pollIntervalMs("claude")).toBe(POLL_INTERVAL_MS);
+    expect(pollIntervalMs("claude")).toBe(CLAUDE_POLL_INTERVAL_MS);
     store.claim("codex", "codex@example.com", 0);
     store.claim("claude", "claude@example.com", 0);
     expect(store.claim("codex", "codex@example.com", CODEX_POLL_INTERVAL_MS).lease).toBeDefined();
     expect(store.claim("claude", "claude@example.com", CODEX_POLL_INTERVAL_MS).lease).toBeUndefined();
   } finally { store.close(); }
+});
+
+test("several collectors share one Claude attempt every two minutes", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "capacity-claude-cadence-")), "poll.db");
+  const stores = [new CapacityPollStore(path), new CapacityPollStore(path), new CapacityPollStore(path)];
+  const value = { ...snapshot, provider: "claude" as const };
+  let reads = 0;
+  const options = (store: CapacityPollStore, now: number) => ({ store, coordinator: "", now: () => now });
+  const read = async () => { reads++; return value; };
+  try {
+    await Promise.all(stores.map(store => coordinatedCapacity("claude", value.account, read, options(store, 0))));
+    expect(reads).toBe(1);
+    const cached = await coordinatedCapacity("claude", value.account, read, options(stores[1], 119_999));
+    expect(reads).toBe(1);
+    expect(cached?.usage.updatedAt).toBe(value.usage.updatedAt);
+    await coordinatedCapacity("claude", value.account, read, options(stores[2], 120_000));
+    expect(reads).toBe(2);
+  } finally { stores.forEach(store => store.close()); }
+});
+
+test("faster Claude cadence retains existing reservations, failure backoff and 429 cooldown", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "capacity-claude-backoff-")), "poll.db");
+  const first = new CapacityPollStore(path);
+  const account = "dev@example.com";
+  const key = "claude:" + account;
+  const value = { ...snapshot, provider: "claude" as const };
+  const old = first.claim("claude", account, 0);
+  first.complete("claude", account, old.lease!, { snapshot: value }, 0);
+  // Simulate a reservation from the previous five-minute deployment.
+  first.db.query("UPDATE capacity_poll SET next_at=? WHERE account_key=?").run(300_000, key);
+  first.close();
+  const restarted = new CapacityPollStore(path);
+  try {
+    expect(restarted.claim("claude", account, 120_000).lease).toBeUndefined();
+    const attempt = restarted.claim("claude", account, 300_000);
+    restarted.complete("claude", account, attempt.lease!, { status: 503 }, 300_000);
+    const failed = restarted.claim("claude", account, 420_000);
+    expect(failed.lease).toBeUndefined();
+    expect(failed.nextAt).toBe(600_000);
+    expect(failed.snapshot?.usage.updatedAt).toBe(value.usage.updatedAt);
+    const limited = restarted.claim("claude", account, 600_000);
+    restarted.complete("claude", account, limited.lease!, { status: 429, retryAfterMs: 3 * 60 * 60_000 }, 600_000);
+    expect(restarted.claim("claude", account, 720_000).lease).toBeUndefined();
+    expect(restarted.claim("claude", account, 720_000).nextAt).toBe(600_000 + 3 * 60 * 60_000);
+  } finally { restarted.close(); }
 });
 
 test("a shared 429 cooldown survives restarts and retains the original sample time", () => {

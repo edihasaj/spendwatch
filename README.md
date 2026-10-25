@@ -365,7 +365,9 @@ acquisition outside Spendwatch so an exported dashboard never needs account
 tokens.
 
 `capacity-current` deduplicates local profiles before contacting a provider and
-reserves at most one attempt per provider and account every five minutes. Its
+reserves at most one attempt per account every minute for Codex and every two
+minutes for Claude. Non-rate-limit failures retain a five-minute minimum
+Claude backoff (one minute for Codex). Its
 SQLite cache retains the original sample time. Failures back off; an HTTP 429
 starts a one-hour cooldown, doubles on repeated rate limits up to four hours,
 and honors a longer `Retry-After`. A crashed read still consumes its reservation.
