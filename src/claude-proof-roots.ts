@@ -5,6 +5,7 @@ import { join } from "node:path";
 const LIMIT = 64;
 const ALIAS = /^claude-hg-route-\d+$/;
 const MODEL = /^[A-Za-z0-9._:/-]{1,128}$/;
+const MAX_CONFIG_BYTES = 8 * 1024;
 
 export interface ClaudeProofRoot {
   path: string;
@@ -106,38 +107,53 @@ export function defaultClaudeProofRoots(home = homedir()): ClaudeProofRoot[] {
   return claudeProofRootDiscovery(home).roots;
 }
 
+/** The operator's private spendwatch config directory, refusing a symlink at any step on the way to it. */
+export function spendwatchConfigDir(home: string): string | undefined {
+  return underHome(home, [".config", "spendwatch"]);
+}
+
+/**
+ * A private config file the operator controls: a regular file, never a link, at most 8 KiB, and
+ * unchanged while it is read. `undefined` says there is nothing here to trust; the caller keeps its
+ * default behaviour rather than guessing from a file it cannot vouch for.
+ */
+export function readPrivateConfigText(path: string): string | undefined {
+  let descriptor: number | undefined;
+  try {
+    const link = lstatSync(path);
+    if (!link.isFile() || link.isSymbolicLink()) return undefined;
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > MAX_CONFIG_BYTES) return undefined;
+    const body = Buffer.alloc(stat.size);
+    let offset = 0;
+    while (offset < body.length) {
+      const count = readSync(descriptor, body, offset, body.length - offset, offset);
+      if (count <= 0) return undefined;
+      offset += count;
+    }
+    const after = fstatSync(descriptor);
+    if (after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size
+        || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) return undefined;
+    return body.toString("utf8");
+  } catch {
+    return undefined;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
 export function claudeModelAliases(home = homedir()): ReadonlyMap<string, string> {
   const configured = process.env.SPENDWATCH_CLAUDE_MODEL_ALIASES;
   let text = configured;
   if (text === undefined) {
-    const parent = underHome(home, [".config", "spendwatch"]);
+    const parent = spendwatchConfigDir(home);
     if (!parent) return new Map();
-    const path = join(parent, "claude-model-aliases.json");
-    let descriptor: number | undefined;
-    try {
-      const link = lstatSync(path);
-      if (!link.isFile() || link.isSymbolicLink()) return new Map();
-      descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-      const stat = fstatSync(descriptor);
-      if (!stat.isFile() || stat.size > 8 * 1024) return new Map();
-      const body = Buffer.alloc(stat.size);
-      let offset = 0;
-      while (offset < body.length) {
-        const count = readSync(descriptor, body, offset, body.length - offset, offset);
-        if (count <= 0) return new Map();
-        offset += count;
-      }
-      const after = fstatSync(descriptor);
-      if (after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size
-          || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) return new Map();
-      text = body.toString("utf8");
-    } catch {
-      return new Map();
-    } finally {
-      if (descriptor !== undefined) closeSync(descriptor);
-    }
+    const read = readPrivateConfigText(join(parent, "claude-model-aliases.json"));
+    if (read === undefined) return new Map();
+    text = read;
   }
-  if (Buffer.byteLength(text) > 8 * 1024) return new Map();
+  if (Buffer.byteLength(text) > MAX_CONFIG_BYTES) return new Map();
   try {
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.keys(parsed).length > 32) return new Map();

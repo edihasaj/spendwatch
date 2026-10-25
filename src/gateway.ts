@@ -24,6 +24,7 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 import { accountLabel, copilotAccountIn } from "./copilot";
 import { claudeAccount, claudeAccountIn, type SourceFile } from "./sources";
+import { claudeProviderAccounts } from "./claude-provider-accounts";
 import type { Event } from "./parse";
 import { providerMap, readGatewayConfig, resolveStateDirectory, type AuthDirectory, type GatewayVendor } from "./gateway-config";
 import { callKey, dedupe, GATEWAY_ORIGIN, ledgerFiles, markerOf, MESSAGES_MARKER, readRows, RESPONSES_MARKER, TELEMETRY_ORIGIN, type LedgerRow, type RowHolder } from "./gateway-ledger-files";
@@ -129,6 +130,11 @@ export class GatewayLedger implements GatewayIndex {
   private readonly byResponse = new Map<string, LedgerRow>();
   /** Account labels, resolved once per load: each one reads a credential file. */
   private readonly labels = new Map<string, string>();
+  /**
+   * The operator's account for a Claude provider that names no login directory, read once, on the
+   * first row that needs it. Empty until then, so a ledger with no such row never opens the file.
+   */
+  private declaredAccounts?: ReadonlyMap<string, string>;
   /**
    * The streams of this read, one per vendor and account the rows held when it was loaded, whichever agents were
    * asked for: a row that lands later joins one of them or, with none for its account, is left out (see `refresh`).
@@ -430,12 +436,23 @@ export class GatewayLedger implements GatewayIndex {
   }
 
   /**
-   * Who paid for a row. A provider can keep its login in its own `authDirectory` — a `CLAUDE_CONFIG_DIR` or a
-   * `COPILOT_HOME` — and its turns are billed to that account; every other row goes to the signed-in default.
+   * Who paid for a row, best-evidenced first. A provider that keeps its login in its own `authDirectory`
+   * — a `CLAUDE_CONFIG_DIR` or a `COPILOT_HOME` — bills its turns to that account. Next, a Claude provider
+   * the operator declared an account for (claude-provider-accounts.ts) keeps the rows it billed even after
+   * the signed-in login changes. Every other row goes to the account signed in now, as it always has;
+   * Copilot has no second step.
    */
   private accountFor(row: LedgerRow): string {
     const auth = this.authDirectories.get(row.provider);
-    return this.label(row.vendor, auth?.vendor === row.vendor ? auth.directory : undefined);
+    if (auth?.vendor === row.vendor) return this.label(row.vendor, auth.directory);
+    // No login directory of its own: for Claude, an operator's declaration of that provider id pins
+    // the account, so a retired provider's rows do not follow a later change of the signed-in login.
+    // It is more specific than `SPENDWATCH_CLAUDE_ACCOUNT`, which names whatever the fallback reads.
+    if (row.vendor === "claude") {
+      const declared = (this.declaredAccounts ??= claudeProviderAccounts()).get(row.provider);
+      if (declared) return declared;
+    }
+    return this.label(row.vendor);
   }
 
   private label(vendor: GatewayVendor, directory?: string): string {
