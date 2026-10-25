@@ -10,6 +10,11 @@ import { removeTempDirs, tempDir } from "./tmp";
 export const NO_GATEWAY_CONFIG = join(tempDir("spendwatch-no-gateway-"), "gateway.json");
 
 process.env.SPENDWATCH_GATEWAY_CONFIG = NO_GATEWAY_CONFIG;
+// Likewise the declared accounts for gateway Claude providers with no login directory of their own: a
+// machine that pins one must not move an account a test is asserting, and a test that exercises the
+// mapping names its own file.
+export const NO_CLAUDE_PROVIDER_ACCOUNTS = join(tempDir("spendwatch-no-provider-accounts-"), "claude-provider-accounts.json");
+process.env.SPENDWATCH_CLAUDE_PROVIDER_ACCOUNTS = NO_CLAUDE_PROVIDER_ACCOUNTS;
 // Account labels come from the signed-in logins in the home directory (~/.claude.json, ~/.config/gh/hosts.yml), which
 // bun resolves once at start, so a test cannot move them. Naming the accounts here keeps every test off those files.
 process.env.SPENDWATCH_CLAUDE_ACCOUNT = "test-claude@example.com";

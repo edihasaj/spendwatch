@@ -105,6 +105,21 @@ labels only. Counts, timestamps and gateway IDs retain their original semantics,
 including settlement of messages already billed by the gateway. Missing or
 invalid mappings leave models unclassified rather than guessing a provider.
 
+## Named Claude profiles
+
+Default discovery also reads every `~/.claude-<name>/projects` profile. Each
+profile's transcripts are credited to the email in its own `.claude.json`, read
+from the real directory that owns `projects`, so they never fall back to the
+default `~/.claude.json` login. Linked duplicates are read once. All roots share
+the same gateway ledger, so claim and settlement rules are unchanged.
+
+Gateway Claude rows are credited to the provider's `authDirectory` login first,
+then to an owner mapping in `~/.config/spendwatch/claude-provider-accounts.json`
+(or `SPENDWATCH_CLAUDE_PROVIDER_ACCOUNTS`), then to the existing fallback. The
+mapping pins retired providers that never named a login directory, so a later
+change to the default login cannot move their history. An invalid mapping file
+is ignored as a whole.
+
 ## Legacy archive guards
 
 A guard may explicitly use `timeZone: null` to pin an older report that recorded
