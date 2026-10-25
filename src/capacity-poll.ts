@@ -11,9 +11,10 @@ import {
 
 export type PollProvider = "claude" | "codex";
 export type PollSnapshot = CapacityResult | ClaudeCapacityResult;
-// Retained as the established five-minute Claude/default interval.
+// Keep the established Claude failure-backoff floor and exported timing base.
 export const POLL_INTERVAL_MS = 5 * 60_000;
 export const CODEX_POLL_INTERVAL_MS = 60_000;
+export const CLAUDE_POLL_INTERVAL_MS = 2 * 60_000;
 export const MAX_FUTURE_SNAPSHOT_SKEW_MS = 5 * 60_000;
 const RATE_LIMIT_COOLDOWN_MS = 60 * 60_000;
 
@@ -31,7 +32,7 @@ export interface PollClaim {
 }
 
 export function pollIntervalMs(provider: PollProvider): number {
-  return provider === "codex" ? CODEX_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
+  return provider === "codex" ? CODEX_POLL_INTERVAL_MS : CLAUDE_POLL_INTERVAL_MS;
 }
 
 export function retryAfterMs(value: string | null, now = Date.now()): number | undefined {
@@ -189,7 +190,7 @@ export class CapacityPollStore {
       const failures = snapshot ? 0 : Math.min(row.failures + 1, 8);
       const backoff = snapshot ? 0 : result.status === 429
         ? RATE_LIMIT_COOLDOWN_MS * 2 ** Math.min(failures - 1, 2)
-        : pollIntervalMs(provider) * 2 ** Math.min(failures - 1, 3);
+        : (provider === "claude" ? POLL_INTERVAL_MS : CODEX_POLL_INTERVAL_MS) * 2 ** Math.min(failures - 1, 3);
       const retry = Number.isFinite(result.retryAfterMs) && result.retryAfterMs! > 0 ? result.retryAfterMs! : 0;
       this.db.query("UPDATE capacity_poll SET next_at=?,lease='',failures=?,snapshot=? WHERE account_key=?")
         .run(Math.max(row.next_at, now + backoff, now + retry), failures,

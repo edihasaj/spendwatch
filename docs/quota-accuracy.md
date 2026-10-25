@@ -19,7 +19,7 @@ pools. The selected pool identifier is retained with the sanitized snapshot for
 diagnosis.
 
 The shared coordinator owns quota attempt timing: Codex may read once a minute,
-Claude once every five minutes, and a rate limit has at least a one-hour
+Claude once every two minutes, and a rate limit has at least a one-hour
 cooldown. When the coordinator is unavailable, a source can display only its
 validated locally cached shared result; it does not issue a provider fallback
 read or alter the remote lease or cooldown.
@@ -30,7 +30,7 @@ stale until local time reaches its sample timestamp.
 
 A provider percentage is live for at most seven minutes. The five-minute floor
 still applies to short quota windows; the seven-minute cap covers the healthy
-one-minute Codex and five-minute Claude collectors plus import delivery, and
+one-minute collector cadence, two-minute Claude polling and bounded import delivery, and
 matches the recommendation freshness budget. A passed reset remains expired
 regardless of sample age.
 
