@@ -56,3 +56,10 @@ windows are kept. An unparsable promotional expiry is omitted, so the valid
 balance remains visible. A malformed Claude credit reading is a reporting gap,
 not a reason to discard an accurate window. Codex purchased-credit fields remain
 part of strict snapshot validation.
+
+Named Claude profiles can keep their login in macOS Keychain rather than in
+`.credentials.json`. Discovery uses only the profile's exact service,
+`Claude Code-credentials-` followed by the first eight SHA-256 hex characters
+of its absolute configuration directory. It never borrows the default profile's
+credential. A usable file credential still takes precedence, and Keychain
+refreshes retain the exact original service, account and Keychain path.

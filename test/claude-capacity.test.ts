@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   classifyReadFailure,
   claudeCapacityFromUsage,
+  claudeKeychainService,
   discoverClaudeProfiles,
   freshestCredentials,
   keychainAccountsFrom,
@@ -154,6 +155,41 @@ describe("Claude capacity", () => {
     expect(profiles.map((profile) => profile.identity.email)).toEqual(["default@example.com", "work@example.com"]);
     expect(profiles[1].token).toBe("token-work@example.com");
     expect(profiles[1].identity.plan).toBe("pro");
+  });
+});
+
+describe("named Claude Keychain discovery", () => {
+  test("matches Claude Code's profile service names", () => {
+    expect(claudeKeychainService()).toBe("Claude Code-credentials");
+    expect(claudeKeychainService("/Users/edi/.claude-secondary")).toBe("Claude Code-credentials-f9e9397a");
+    expect(claudeKeychainService("/Users/edi/.claude-primary")).toBe("Claude Code-credentials-5c1b72f1");
+  });
+
+  test("discovers a named Keychain login and retains its exact refresh locator", () => {
+    const base = tempDir("spendwatch-named-keychain-");
+    const home = join(base, ".claude-secondary");
+    mkdirSync(home);
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "secondary@example.com" } }));
+    const service = claudeKeychainService(home);
+    const oauth = { accessToken: "secondary-token", refreshToken: "secondary-refresh", subscriptionType: "max" };
+    const credential = { locator: { service, account: "operator", path: "/test/login.keychain-db" }, wrapper: { claudeAiOauth: oauth }, oauth };
+    const consulted: string[] = [];
+    const read = (requested: string) => { consulted.push(requested); return requested === service ? { oauth, credential } : undefined; };
+    const profiles = discoverClaudeProfiles(base, read);
+    expect(consulted).toEqual([service]);
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0].identity.email).toBe("secondary@example.com");
+    expect(profiles[0].token).toBe("secondary-token");
+    expect(profiles[0].keychainCredential).toBe(credential);
+    expect(profiles[0].credentialsPath).toBeUndefined();
+
+    const unrelated = discoverClaudeProfiles(base, requested => requested === "Claude Code-credentials" ? { oauth } : undefined);
+    expect(unrelated).toEqual([]);
+    writeFileSync(join(home, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "file-token" } }));
+    const fileProfiles = discoverClaudeProfiles(base, () => { throw new Error("File token must take precedence"); });
+    expect(fileProfiles[0].token).toBe("file-token");
+    expect(fileProfiles[0].credentialsPath).toBe(join(home, ".credentials.json"));
+    expect(fileProfiles[0].keychainCredential).toBeUndefined();
   });
 });
 
