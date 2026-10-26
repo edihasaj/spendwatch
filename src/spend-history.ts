@@ -9,6 +9,7 @@ import { installationRowKey, restoredMonthlySuppression, type ArchivedInstallati
 import { addArchiveColumns, archivedSourceLabels, archiveReport, archiveSource, fullerRead, initReportArchive, storedArchiveSource } from "./spend-report-archive";
 import { guardForReport, verifiedGuardBaseline, type CaptureGuard } from "./report-coverage";
 import {archiveTokenDays} from "./token-days";
+import { validateProviderUsage } from "./provider-usage-report";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS spend_month (
@@ -67,6 +68,18 @@ export interface MonthlySpendAccountDay extends MonthlySpendAccount {
   day: string;
 }
 
+/** Exact OpenRouter-route call evidence from a machine transcript, not account Activity API data. */
+export interface MonthlySpendProviderUsage {
+  provider: "openrouter";
+  source: string;
+  day: string;
+  model: string;
+  tokens: number;
+  cost: number;
+  calls: number;
+  unpricedCalls: number;
+}
+
 export interface MonthlySpend {
   month: string;
   label: string;
@@ -80,6 +93,7 @@ export interface MonthlySpend {
   projects: MonthlySpendProject[];
   accounts?: MonthlySpendAccount[];
   accountDays?: MonthlySpendAccountDay[];
+  providerUsage?: MonthlySpendProviderUsage[];
   lineageNotes?: string[];
 }
 
@@ -299,6 +313,7 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
         sessions: row.sessions,
       });
       addAccountEvidence(month, row, source, covered);
+      addProviderUsageEvidence(month, row, source, covered);
     }
     for (const row of projectRows) {
       const month = months.get(row.month);
@@ -308,6 +323,27 @@ export function loadMonthlySpend(path: string, limit = 120, projectsPerMonth = 1
     return [...months.values()];
   } finally {
     db.close();
+  }
+}
+
+function addProviderUsageEvidence(
+  month: MonthlySpend,
+  row: Row,
+  source: string,
+  covered: ReturnType<typeof byMonthSource>,
+): void {
+  const settled = covered.length ? settledReportJson(row.reportJson, covered) : row.reportJson;
+  if (!settled) return;
+  let report: Report;
+  try { report = JSON.parse(settled) as Report; } catch { return; }
+  const usage = validateProviderUsage(report.providerUsage, report);
+  if (!usage) return;
+  const output = month.providerUsage ?? (month.providerUsage = []);
+  for (const provider of usage) for (const detail of provider.rows) {
+    const existing = output.find((item) => item.source === source && item.day === detail.day && item.model === detail.model);
+    if (existing) {
+      existing.tokens += detail.tokens; existing.cost += detail.cost; existing.calls += detail.calls; existing.unpricedCalls += detail.unpricedCalls;
+    } else output.push({ provider: "openrouter", source, ...detail });
   }
 }
 

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { AccountRow, ModelRow, PromptRow, Report, SampleRow, TargetRow, ToolRow } from "./aggregate";
 import { mergeProjectRows } from "./projects";
 import type { TokenDays } from "./token-days";
+import { mergeProviderUsage, validateProviderUsage } from "./provider-usage-report";
 
 function isReport(value: unknown): value is Report {
   if (!value || typeof value !== "object") return false;
@@ -28,13 +29,19 @@ function normalizeTokenTotals(report: Report): Report {
     (sum, model) => sum + model.inTok + model.outTok + model.cacheReadTok + model.cacheWriteTok,
     0,
   );
-  return {
+  const normalized = {
     ...report,
     totalTokens: typeof report.totalTokens === "number" ? report.totalTokens : modelsTotal,
     accounts: report.accounts.map((row) => ({ ...row, tokens: typeof row.tokens === "number" ? row.tokens : 0 })),
     prompts: report.prompts.map((row) => ({ ...row, tokens: typeof row.tokens === "number" ? row.tokens : row.outTok })),
     projects: report.projects.map((row) => ({ ...row, tokens: typeof row.tokens === "number" ? row.tokens : 0 })),
   };
+  const providerUsage = validateProviderUsage(report.providerUsage, normalized);
+  // Provider dimensions are optional archived metadata. Ignore malformed input
+  // rather than letting it change trusted report totals or reach HTML.
+  if (providerUsage) normalized.providerUsage = providerUsage;
+  else delete normalized.providerUsage;
+  return normalized;
 }
 
 export function loadReports(paths: string[]): Report[] {
@@ -277,9 +284,12 @@ export function mergeReports(
     (row) => row.tokens,
   );
   const tokenDays = mergedTokenDays(reports, accountGrouping, preserveAccountLabels);
+  const providerUsage = mergeProviderUsage(reports.map((report) =>
+    validateProviderUsage(report.providerUsage, report)));
   const attributed = reports.filter((report) => report.accountAttribution);
   return {
     ...(tokenDays ? { tokenDays } : {}),
+    ...(providerUsage ? { providerUsage } : {}),
     ...(reports.some((report) => report.lineageWarning)
       ? { lineageWarning: [...new Set(reports.flatMap((report) => report.lineageWarning ? [report.lineageWarning] : []))].join(" ") }
       : {}),

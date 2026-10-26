@@ -526,15 +526,16 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
       codexAttributor,
     ).map((file) => ({ path: file.path, priority, value: file }))));
     const files = selectCodexRolloutCopies(legacy.copies, { semanticDominance: codexSemanticDominance });
+    const routerRows = claimOnly ? [] : gateway?.files("openrouter") ?? [];
     const forkNote = legacy.summary.unlinked
       ? `${legacy.summary.unlinked} older subagent rollouts have no readable parent rollout, so copied parent turns in them may be counted twice`
       : undefined;
-    const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)), parseable: true, ledger, ...(claimOnly ? { claimOnly } : {}), files,
+    const codex: SourceStatus = { id: "codex", present: codexRoots.some((r) => existsSync(r.path)) || routerRows.length > 0, parseable: true, ledger, ...(claimOnly ? { claimOnly } : {}), files: [...files, ...routerRows],
       ...(forkNote ? { warning: forkNote } : {}),
       ...(gateway ? { carry: (kept: CodexCtx) => carryLedger(kept, gateway) } : {}) };
     // Asked after the rollouts have been read, because only the parser knows what a rollout recorded.
     if (gateway && !claimOnly) Object.defineProperty(codex, "warning", {
-      get: () => [forkNote, gatewayWarning(files.map((f) => f.ctx as CodexCtx))].filter(Boolean).join("; ") || undefined,
+      get: () => [forkNote, gatewayWarning(files.map((f) => f.ctx as CodexCtx)), gateway.openRouterWarning()].filter(Boolean).join("; ") || undefined,
       enumerable: true,
       configurable: true,
     });

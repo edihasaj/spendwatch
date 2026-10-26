@@ -2,7 +2,7 @@
 // so a field the gateway adds later stays out of every report.
 import { closeSync, fstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { join } from "node:path";
-import { PROVIDER_TYPES, vendorIn, type GatewayVendor } from "./gateway-config";
+import { PROVIDER_TYPES, vendorIn, type GatewayVendor, type OpenRouterRoutes } from "./gateway-config";
 
 /** The marker on a Responses id: Codex keeps it in its rollout. */
 export const RESPONSES_MARKER = "resp_gl_";
@@ -23,6 +23,8 @@ export interface LedgerRow {
   requestId: string;
   responseId: string;
   model: string;
+  /** Exact upstream model proven by a verified OpenRouter route. Claims keep the original alias. */
+  upstreamModel?: string;
   origin: string;
   vendor: GatewayVendor;
   /** The route id the gateway served the call through; it names the account the call was billed to. */
@@ -120,7 +122,7 @@ function safeReaddir(dir: string): string[] {
  * `mtime` is the file's modification time at that read (undefined when it could not be opened): a row the gateway
  * rewrites in place keeps the file's length, and this is what shows it.
  */
-export function readRows(path: string, map: Record<string, GatewayVendor>, from = 0): { rows: LedgerRow[]; end: number; mtime?: number } {
+export function readRows(path: string, map: Record<string, GatewayVendor>, from = 0, openrouter?: OpenRouterRoutes): { rows: LedgerRow[]; end: number; mtime?: number } {
   let body: Buffer;
   let mtime: number | undefined;
   try {
@@ -153,7 +155,7 @@ export function readRows(path: string, map: Record<string, GatewayVendor>, from 
     } catch {
       continue; // a torn write at the tail; every later line is intact
     }
-    const row = toRow(raw, map);
+    const row = toRow(raw, map, openrouter);
     if (row) rows.push(row);
   }
   const lastLine = body.lastIndexOf(10);
@@ -161,7 +163,7 @@ export function readRows(path: string, map: Record<string, GatewayVendor>, from 
 }
 
 /** Only these fields are read: a new ledger field stays out of reports. */
-function toRow(raw: unknown, map: Record<string, GatewayVendor>): LedgerRow | undefined {
+function toRow(raw: unknown, map: Record<string, GatewayVendor>, openrouter?: OpenRouterRoutes): LedgerRow | undefined {
   const d = raw as Record<string, unknown> | null;
   if (!d || typeof d !== "object") return undefined;
   const origin = str(d.origin);
@@ -180,7 +182,8 @@ function toRow(raw: unknown, map: Record<string, GatewayVendor>): LedgerRow | un
   const providerType = str(d.providerType);
   // A row only matters when it names a subscription this ledger can bill. Its type says so; only an imported
   // telemetry row may lack one, and then the provider name it carries decides.
-  const vendor = providerType ? vendorIn(PROVIDER_TYPES, providerType) : origin === TELEMETRY_ORIGIN ? vendorIn(map, str(d.provider)) : undefined;
+  const route = providerType === "responses-api" && origin === GATEWAY_ORIGIN ? openrouter?.get(str(d.provider)) : undefined;
+  const vendor = route ? "openrouter" : providerType ? vendorIn(PROVIDER_TYPES, providerType) : origin === TELEMETRY_ORIGIN ? vendorIn(map, str(d.provider)) : undefined;
   if (!vendor) return undefined;
   return {
     at,
@@ -188,6 +191,7 @@ function toRow(raw: unknown, map: Record<string, GatewayVendor>): LedgerRow | un
     requestId,
     responseId: str(d.responseId),
     model: str(d.model) || "unknown",
+    ...(route ? { upstreamModel: route.get(str(d.model)) ?? ([...route.values()].includes(str(d.model)) ? str(d.model) : "unknown") } : {}),
     origin,
     vendor,
     provider: str(d.provider),

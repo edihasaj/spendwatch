@@ -193,7 +193,7 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--provider") {
       const provider = rest.shift();
       if (provider !== "codex" && provider !== "claude" && provider !== "copilot" && provider !== "lokai"
-        && provider !== "grok") throw new Error("--provider must be codex, claude, copilot, lokai, or grok");
+        && provider !== "openrouter" && provider !== "grok") throw new Error("--provider must be codex, claude, copilot, openrouter, lokai, or grok");
       a.provider = provider;
     }
     else if (x === "--fail-open") a.failOpen = true;
@@ -215,7 +215,7 @@ usage: spendwatch [report|watch|limits|guard|route|run|eval|capacity|capacity-cu
   run TASK          execute, verify, record, and escalate a routed task
   eval [JSONL]      replay tasks through the routing policy without model calls
   capacity          archive or restore old capacity history safely
-  capacity-current  read live Codex or Claude capacity from the official account API
+  capacity-current  read live Codex, Claude, or OpenRouter capacity from the official account API
   server            serve the dashboard and deliver background Web Push alerts
   push-test         send a background test to every enrolled browser
   capacity-history-export
@@ -488,7 +488,12 @@ async function currentCapacity(provider: CapacityProvider | undefined): Promise<
       process.stderr.write(`claude capacity ${failure.reason}${who}: ${failure.message}\n`);
     });
   }
-  if (provider && provider !== "codex") throw new Error("capacity-current supports codex or claude");
+  if (provider === "openrouter") {
+    const { collectOpenRouterCapacity } = await import("./openrouter");
+    const result = await collectOpenRouterCapacity();
+    return result ? [result] : [];
+  }
+  if (provider && provider !== "codex") throw new Error("capacity-current supports codex, claude, or openrouter");
   return currentCodexCapacity(Date.now(), (failure) => {
     const who = failure.email ? ` for ${failure.email}` : "";
     process.stderr.write(`codex capacity ${failure.reason}${who}: ${failure.message}\n`);
@@ -530,6 +535,12 @@ function watch(a: Args) {
 }
 
 async function runCli(argv: string[]): Promise<void> {
+if (argv.length === 1 && argv[0] === "openrouter-prices-refresh") {
+  const { refreshOpenRouterPrices } = await import("./openrouter-prices");
+  const prices = await refreshOpenRouterPrices();
+  process.stdout.write(JSON.stringify({ updatedAt: prices.updatedAt, models: prices.models.length }) + "\n");
+  return;
+}
 if (runTokenCommand(argv)) return;
 if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-V")) {
   process.stdout.write(`${packageMetadata.version}\n`);

@@ -94,6 +94,13 @@ describe("90% capacity utilization planning", () => {
           balances: [{ currency: "USD", total: 7.81, granted: 2.81, toppedUp: 5 }],
         },
       },
+      {
+        provider: "openrouter",
+        email: "OpenRouter account",
+        plan: "Pay as you go",
+        devices: [],
+        openrouter: { balanceUsd: 4, totalCreditsUsd: 5, totalUsageUsd: 1 },
+      },
     ];
     const plans = buildUtilizationPlans(accounts, Date.parse("2026-08-15T00:00:00Z"));
     expect(plans).toHaveLength(2);
@@ -103,5 +110,6 @@ describe("90% capacity utilization planning", () => {
     expect(plans[1]?.window?.currentUsedPercent).toBeCloseTo(10.5, 1);
     expect(plans[1]?.action).toBe("rebalance");
     expect(plans.some((plan) => plan.provider === "lokai")).toBe(false);
+    expect(plans.some((plan) => plan.provider === "openrouter")).toBe(false);
   });
 });

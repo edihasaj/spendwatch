@@ -9,6 +9,11 @@ import { copilotBudgetStatus, copilotCreditWindow, formatCopilotMoney } from "./
 import { compactDuration } from "./duration";
 import { normalizeLocalQwenCapacity } from "./local-capacity";
 import type { CapacityCloudCredits, CapacityExtraUsage } from "./capacity-current";
+import type {
+  OpenRouterCapacity,
+  OpenRouterHistory,
+  OpenRouterUsageTotals,
+} from "./openrouter-types";
 
 export { predictWindow } from "./capacity-prediction";
 
@@ -28,11 +33,11 @@ export interface CapacityPrediction {
   source: "reported" | "linear";
 }
 
-export type CapacityProvider = "codex" | "claude" | "copilot" | "lokai" | "grok" | "qwen";
+export type CapacityProvider = "codex" | "claude" | "copilot" | "openrouter" | "lokai" | "grok" | "qwen";
 
 // Cards render in this order, so a provider without an allowance sits after
 // the metered ones instead of interleaving by name.
-const PROVIDER_ORDER: CapacityProvider[] = ["claude", "codex", "copilot", "lokai", "qwen", "grok"];
+const PROVIDER_ORDER: CapacityProvider[] = ["claude", "codex", "copilot", "openrouter", "lokai", "qwen", "grok"];
 
 export interface CopilotCapacity {
   chatUnlimited: boolean;
@@ -94,6 +99,8 @@ export interface CodexLimitAccount {
   cloudCredits?: CapacityCloudCredits;
   /** Metered pay-as-you-go usage beyond the plan. */
   extraUsage?: CapacityExtraUsage;
+  /** Account balance and retained completed-day usage for OpenRouter. */
+  openrouter?: OpenRouterCapacity;
   /** Spend for a plan-covered agent with no quota to report. */
   spend?: AgentSpendSummary;
   /** Self-hosted local capacity, distinct from subscription quotas and API balances. */
@@ -176,6 +183,7 @@ interface RawCodexResult {
     monthTokens?: unknown;
     monthDays?: unknown;
   };
+  openrouter?: unknown;
   pace?: RawProviderPace | null;
   devices?: unknown;
   sourceDevice?: unknown;
@@ -300,6 +308,125 @@ function normalizeExtraUsage(value: unknown): CapacityExtraUsage | undefined {
   return { usedAmount, limitAmount, currency };
 }
 
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function validIso(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return undefined;
+  const year = new Date(parsed).getUTCFullYear();
+  return year >= 2000 && year <= 2100 ? value : undefined;
+}
+
+function normalizeUsageTotals(value: unknown): OpenRouterUsageTotals | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const costUsd = nonNegativeNumber(raw.costUsd);
+  const requests = nonNegativeNumber(raw.requests);
+  const promptTokens = nonNegativeNumber(raw.promptTokens);
+  const completionTokens = nonNegativeNumber(raw.completionTokens);
+  const reasoningTokens = nonNegativeNumber(raw.reasoningTokens);
+  const cachedTokens = nonNegativeNumber(raw.cachedTokens);
+  if ([costUsd, requests, promptTokens, completionTokens, reasoningTokens, cachedTokens]
+    .some((item) => item === undefined)) return undefined;
+  return { costUsd, requests, promptTokens, completionTokens, reasoningTokens, cachedTokens } as OpenRouterUsageTotals;
+}
+
+function normalizeOpenRouterHistory(value: unknown): OpenRouterHistory | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const updatedAt = validIso(raw.updatedAt);
+  const availableFrom = validIso(raw.availableFrom);
+  const availableThrough = validIso(raw.availableThrough);
+  const retainedFrom = raw.retainedFrom === undefined ? undefined : validIso(raw.retainedFrom);
+  const totals = normalizeUsageTotals(raw.totals);
+  if (!updatedAt || !availableFrom || !availableThrough || !totals
+    || Date.parse(availableFrom) > Date.parse(availableThrough)
+    || (raw.retainedFrom !== undefined && !retainedFrom)) return undefined;
+
+  const normalizeDated = (items: unknown, key: "date" | "month") => {
+    if (!Array.isArray(items)) return [];
+    return items.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const entry = item as Record<string, unknown>;
+      const label = typeof entry[key] === "string" ? entry[key] : "";
+      const values = normalizeUsageTotals(entry);
+      const pattern = key === "date" ? /^\d{4}-\d{2}-\d{2}$/ : /^\d{4}-\d{2}$/;
+      if (!pattern.test(label) || !values) return [];
+      const parsed = Date.parse(key === "date" ? `${label}T00:00:00Z` : `${label}-01T00:00:00Z`);
+      return Number.isFinite(parsed) ? [{ [key]: label, ...values }] : [];
+    });
+  };
+  const models = Array.isArray(raw.models) ? raw.models.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const entry = item as Record<string, unknown>;
+    const model = typeof entry.model === "string" ? entry.model.trim() : "";
+    const values = normalizeUsageTotals(entry);
+    return model && values ? [{ model, ...values }] : [];
+  }) : [];
+  return {
+    updatedAt,
+    availableFrom,
+    availableThrough,
+    ...(retainedFrom ? { retainedFrom } : {}),
+    totals,
+    days: normalizeDated(raw.days, "date") as OpenRouterHistory["days"],
+    months: normalizeDated(raw.months, "month") as OpenRouterHistory["months"],
+    models: models as OpenRouterHistory["models"],
+    machineAttribution: "unattributed",
+  };
+}
+
+function normalizeOpenRouter(value: unknown): OpenRouterCapacity | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const balanceUsd = nonNegativeNumber(raw.balanceUsd);
+  const totalCreditsUsd = nonNegativeNumber(raw.totalCreditsUsd);
+  const totalUsageUsd = nonNegativeNumber(raw.totalUsageUsd);
+  if (balanceUsd === undefined || totalCreditsUsd === undefined || totalUsageUsd === undefined) return undefined;
+  let keyUsage: OpenRouterCapacity["keyUsage"];
+  if (raw.keyUsage && typeof raw.keyUsage === "object") {
+    const key = raw.keyUsage as Record<string, unknown>;
+    const label = typeof key.label === "string" ? key.label.trim() : "";
+    const dailyUsd = nonNegativeNumber(key.dailyUsd);
+    const weeklyUsd = nonNegativeNumber(key.weeklyUsd);
+    const monthlyUsd = nonNegativeNumber(key.monthlyUsd);
+    const allTimeUsd = nonNegativeNumber(key.allTimeUsd);
+    if (label && [dailyUsd, weeklyUsd, monthlyUsd, allTimeUsd].every((item) => item !== undefined)) {
+      const limitUsd = key.limitUsd === undefined ? undefined : nonNegativeNumber(key.limitUsd);
+      const remainingUsd = key.remainingUsd === undefined ? undefined : nonNegativeNumber(key.remainingUsd);
+      const byokUsd = key.byokUsd === undefined ? undefined : nonNegativeNumber(key.byokUsd);
+      const reset = key.reset === undefined ? undefined : validIso(key.reset);
+      const expiresAt = key.expiresAt === undefined ? undefined : validIso(key.expiresAt);
+      if ((key.limitUsd === undefined || limitUsd !== undefined)
+        && (key.remainingUsd === undefined || remainingUsd !== undefined)
+        && (key.byokUsd === undefined || byokUsd !== undefined)
+        && (key.reset === undefined || reset !== undefined)
+        && (key.expiresAt === undefined || expiresAt !== undefined)
+        && !(limitUsd !== undefined && remainingUsd !== undefined && remainingUsd > limitUsd)) {
+        keyUsage = {
+          label, dailyUsd, weeklyUsd, monthlyUsd, allTimeUsd,
+          ...(limitUsd !== undefined ? { limitUsd } : {}),
+          ...(remainingUsd !== undefined ? { remainingUsd } : {}),
+          ...(reset ? { reset } : {}),
+          ...(expiresAt ? { expiresAt } : {}),
+          ...(byokUsd !== undefined ? { byokUsd } : {}),
+        };
+      }
+    }
+  }
+  const history = normalizeOpenRouterHistory(raw.history);
+  return {
+    balanceUsd,
+    totalCreditsUsd,
+    totalUsageUsd,
+    ...(keyUsage ? { keyUsage } : {}),
+    ...(history ? { history } : {}),
+  };
+}
+
 // Shared by both renderers: a credit block earns a line only when the provider
 // actually reported a positive amount. Visibility rules match across HTML and
 // text so neither surface can show a credit the other hides. The text surface
@@ -353,7 +480,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
     const result = item as RawCodexResult;
     const provider = result.provider;
     if (provider !== "codex" && provider !== "claude" && provider !== "copilot" && provider !== "lokai"
-      && provider !== "grok") continue;
+      && provider !== "openrouter" && provider !== "grok") continue;
     const usage = result.usage;
     if (!usage || typeof usage !== "object") continue;
     // A free Codex plan carries no capacity worth planning against. Filtering at
@@ -407,6 +534,12 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
     if (cloudCredits) account.cloudCredits = cloudCredits;
     const extraUsage = normalizeExtraUsage(usage.extraUsage);
     if (extraUsage) account.extraUsage = extraUsage;
+    if (provider === "openrouter") {
+      const openrouter = normalizeOpenRouter(result.openrouter);
+      if (!openrouter) continue;
+      account.openrouter = openrouter;
+      account.plan = "Pay as you go";
+    }
     if (provider === "copilot" && result.copilot) {
       account.copilot = {
         chatUnlimited: Boolean(result.copilot.chatUnlimited),
@@ -456,7 +589,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
   }
 
   const normalized = [...accounts.values()];
-  for (const provider of ["codex", "claude", "copilot", "grok"] as const) {
+  for (const provider of ["codex", "claude", "copilot", "openrouter", "grok"] as const) {
     const group = normalized
       .filter((account) => account.provider === provider)
       .sort((a, b) => a.email.localeCompare(b.email));
@@ -491,11 +624,11 @@ function leftPercent(window?: LimitWindow): number | undefined {
 }
 
 function providerLabel(provider: CapacityProvider): string {
-  return ({ codex: "Codex", claude: "Claude", copilot: "Copilot", lokai: "Lokai", grok: "Grok", qwen: "Qwen" })[provider];
+  return ({ codex: "Codex", claude: "Claude", copilot: "Copilot", openrouter: "OpenRouter", lokai: "Lokai", grok: "Grok", qwen: "Qwen" })[provider];
 }
 
 function providerAccent(provider: CapacityProvider): string {
-  return ({ codex: "#68d5dc", claude: "#e69a73", copilot: "#8ea9ff", lokai: "#b8d96b", grok: "#c58af9", qwen: "#e6bf66" })[provider];
+  return ({ codex: "#68d5dc", claude: "#e69a73", copilot: "#8ea9ff", openrouter: "#f5a623", lokai: "#b8d96b", grok: "#c58af9", qwen: "#e6bf66" })[provider];
 }
 
 function formatBalance(balance: ApiCreditBalance): string {
@@ -673,7 +806,57 @@ function localQwenLimits(account: CodexLimitAccount): string {
     : `<section class="limit local-usage unreadable"><div class="limit-head"><span>Measured usage</span><strong>Unavailable</strong></div></section>`}`;
 }
 
+function openRouterHistoryBlock(history: OpenRouterHistory): string {
+  const latestDays = [...history.days]
+    .sort((a, b) => b.date.localeCompare(a.date));
+  const days = latestDays.map((day) => `<div class="or-row"><span>${esc(day.date)}</span><strong>${esc(formatUsd(day.costUsd, 4))}</strong><span>${esc(formatTokens(day.requests))} calls</span></div>`).join("");
+  const months = history.months.length
+    ? `<div class="or-models"><span>Retained months</span>${history.months.map((month) => `<div class="or-row"><span>${esc(month.month)}</span><strong>${esc(formatUsd(month.costUsd, 4))}</strong><span>${esc(formatTokens(month.requests))} calls</span></div>`).join("")}</div>`
+    : "";
+  const models = [...history.models]
+    .sort((a, b) => b.costUsd - a.costUsd)
+    .map((model) => `<div class="or-row"><span title="${esc(model.model)}">${esc(model.model)}</span><strong>${esc(formatUsd(model.costUsd, 4))}</strong><span>${esc(formatTokens(model.requests))} calls</span></div>`)
+    .join("");
+  const retained = history.retainedFrom
+    ? `Retained from ${esc(history.retainedFrom.slice(0, 10))}`
+    : `API window from ${esc(history.availableFrom.slice(0, 10))}`;
+  return `<details class="openrouter-history"><summary><span>Completed-day history</span><strong>${esc(formatUsd(history.totals.costUsd, 4))}</strong></summary>
+    <div class="or-coverage"><span>${retained} · through ${esc(history.availableThrough.slice(0, 10))}</span><span>Unattributed across machines</span></div>
+    <div class="or-coverage"><span>${esc(formatTokens(history.totals.requests))} calls · ${esc(formatTokens(history.totals.promptTokens + history.totals.completionTokens))} tokens</span><span>Account-wide</span></div>
+    <div class="or-days">${days || '<div class="or-empty">No completed-day rows retained</div>'}</div>
+    ${months}
+    ${models ? `<div class="or-models"><span>Models</span>${models}</div>` : ""}
+  </details>`;
+}
+
+function openRouterLimits(account: CodexLimitAccount): string {
+  const capacity = account.openrouter!;
+  const balanceTone = capacity.balanceUsd <= 0 ? "danger" : capacity.balanceUsd < 5 ? "warn" : "good";
+  const key = capacity.keyUsage;
+  const cap = key?.limitUsd === undefined
+    ? "No key spending cap"
+    : `${formatUsd(key.remainingUsd ?? Math.max(0, key.limitUsd - key.allTimeUsd), 4)} of ${formatUsd(key.limitUsd, 4)} left`;
+  const expiry = key?.expiresAt
+    ? `<span>Key expires ${esc(key.expiresAt.slice(0, 10))}</span>`
+    : "<span>Shared inference key</span>";
+  const devices = account.devices.length
+    ? `<span>Collected on ${esc(account.devices.join(", "))}</span>`
+    : "<span>Machine attribution unavailable</span>";
+  return `<section class="limit openrouter-balance ${balanceTone}">
+    <div class="limit-head"><span>Prepaid balance</span><strong>${esc(formatUsd(capacity.balanceUsd, 4))}</strong></div>
+    <div class="limit-meta split"><span>${esc(formatUsd(capacity.totalCreditsUsd))} purchased</span><span>${esc(formatUsd(capacity.totalUsageUsd, 4))} account billed</span></div>
+  </section>${key ? `<section class="limit openrouter-key good">
+    <div class="limit-head"><span>Shared inference key</span><strong>${esc(formatUsd(key.allTimeUsd, 4))} all time</strong></div>
+    <div class="or-key-grid"><span><b>Today</b>${esc(formatUsd(key.dailyUsd, 4))}</span><span><b>Week</b>${esc(formatUsd(key.weeklyUsd, 4))}</span><span><b>Month</b>${esc(formatUsd(key.monthlyUsd, 4))}</span></div>
+    <div class="limit-meta split"><span>${esc(cap)}</span>${expiry}</div>
+    <div class="limit-meta">${devices}</div>
+  </section>` : `<section class="limit unreadable"><div class="limit-head"><span>Key usage</span><strong>Unavailable</strong></div></section>`}${capacity.history ? openRouterHistoryBlock(capacity.history) : ""}`;
+}
+
 function providerLimits(account: CodexLimitAccount, nowMs: number): string {
+  if (account.provider === "openrouter" && account.openrouter) {
+    return openRouterLimits(account);
+  }
   if (account.provider === "lokai" && account.route) {
     return routeBalanceBlock(account.route);
   }
@@ -792,6 +975,17 @@ function utilizationPlanCard(plan: AccountUtilizationPlan, index: number): strin
 
 export function renderLimitsText(accounts: CodexLimitAccount[], nowMs = Date.now()): string {
   return accounts.map((account) => {
+    if (account.provider === "openrouter" && account.openrouter) {
+      const capacity = account.openrouter;
+      const key = capacity.keyUsage;
+      const usage = key
+        ? `${formatUsd(key.dailyUsd, 4)} today · ${formatUsd(key.monthlyUsd, 4)} 30d · ${formatUsd(key.allTimeUsd, 4)} key all time`
+        : "shared-key usage unavailable";
+      const history = capacity.history
+        ? ` · ${formatUsd(capacity.history.totals.costUsd, 4)} completed-day history (${capacity.history.availableFrom.slice(0, 10)} to ${capacity.history.availableThrough.slice(0, 10)}, unattributed)`
+        : "";
+      return `OpenRouter · ${account.email}\t${formatUsd(capacity.balanceUsd, 4)} left\t${formatUsd(capacity.totalUsageUsd, 4)} account billed\t${usage}${history}`;
+    }
     if (account.copilot) {
       const status = copilotBudgetStatus(account);
       const standing = status.over
@@ -871,12 +1065,14 @@ ${BRAND_HEAD_HTML}
 .limits{display:grid;grid-template-columns:1fr;gap:10px;margin-top:11px;padding-top:11px;border-top:1px solid rgba(41,49,58,.75)}.limit-head,.limit-meta,.pace{display:flex;justify-content:space-between;gap:8px;align-items:baseline}.limit-head span{color:#b9c1c8;font-size:11px;font-weight:600}.limit-head strong{font:14px "Fragment Mono",monospace;white-space:nowrap}.track{position:relative;height:6px;margin:7px 0 6px;background:#080a0d;border:1px solid #1b2229;border-radius:99px;overflow:visible}.track>i{display:block;max-width:100%;height:100%;background:var(--accent,var(--cyan));border-radius:99px;box-shadow:0 0 18px color-mix(in srgb,var(--accent,var(--cyan)) 30%,transparent);animation:fill .8s cubic-bezier(.2,.8,.2,1) both}.limit.warn .track>i{background:var(--warn)}.limit.danger .track>i{background:var(--danger)}.pace-marker{--marker-color:#a8ffb9;position:absolute;z-index:2;top:50%;left:var(--pace-position);display:flex;height:12px;gap:3px;transform:translate(-50%,-50%);pointer-events:none}.pace-marker b{display:block;width:2px;height:100%;border-radius:2px;background:var(--marker-color);box-shadow:0 0 0 1px #020304,0 0 7px var(--marker-color)}.pace-marker.deficit{--marker-color:#ff776d}.limit-meta{justify-content:flex-end;color:var(--muted);font:11px/1.35 "Fragment Mono",monospace}.limit-meta.split{justify-content:space-between}.pace{margin-top:5px;color:#aab3ba;font:11px/1.35 "Fragment Mono",monospace}.pace strong{color:var(--accent);font-weight:400;white-space:nowrap}.limit.balance{justify-content:center;min-height:45px}.limit.unreadable .limit-head strong{color:var(--warn)}.limit.unreadable .limit-meta,.limit.unreadable .pace{color:#7d868e}.track.stale>i{background:#3a444d;box-shadow:none;opacity:.65}.limit.balance .limit-meta{margin-top:7px}.copilot-usage,.copilot-pool,.limit.spend{display:flex;flex-direction:column;justify-content:center;min-height:50px}.copilot-usage .limit-meta,.copilot-pool .limit-meta,.limit.spend .limit-meta{margin-top:7px}.local-unlimited,.local-usage{min-height:0}
 .setup{display:none;margin-top:14px;padding:20px;background:#0d1115;border:1px solid #34414c;border-radius:12px}.setup.open{display:block;animation:enter .25s both}.setup-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:15px}.setup h2{font-size:18px;margin:0 0 5px}.setup-head p{color:var(--muted);font-size:12px;margin:0}.profile-field{display:flex;flex-direction:column;gap:5px;flex:0 0 210px}.profile-field span{color:#aab3ba;font:10px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.08em}.profile-field input{width:100%;padding:9px 10px;color:var(--ink);background:#07090b;border:1px solid #34414c;border-radius:7px;font:12px "Fragment Mono",monospace;outline:none}.profile-field input:focus{border-color:var(--cyan)}.provider-setup{display:grid;grid-template-columns:1fr 1fr;gap:10px;min-width:0}.setup-item{min-width:0;padding:13px;border:1px solid #242c34;border-radius:9px}.setup-label{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}.setup-label b{color:var(--item-accent);font:11px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.1em}.auth-kind{padding:3px 6px;border:1px solid color-mix(in srgb,var(--item-accent) 45%,#242c34);border-radius:99px;color:#cbd3d8;font:9px "Fragment Mono",monospace;text-transform:uppercase}.setup-item p{font-size:12px;line-height:1.45;color:#aab3ba;margin:0 0 10px}.command{display:flex;align-items:center;gap:10px;min-width:0;padding:10px 11px;background:#07090b;border:1px solid #202830;border-radius:8px}.command+.command{margin-top:7px}.command code{flex:1;min-width:0;font:11px "Fragment Mono",monospace;color:#d5dce0;overflow:auto;white-space:nowrap}.copy{margin-left:auto;flex:none;background:none;border:0;color:var(--item-accent,var(--cyan));font:10px "Fragment Mono",monospace;cursor:pointer}.alternatives{margin-top:8px;color:var(--muted);font-size:11px}.alternatives summary{cursor:pointer}.alternatives .command{margin-top:7px}.page-meta{text-align:right;margin-top:14px;color:#6e7881;font:11px "Fragment Mono",monospace}
 @keyframes enter{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes fill{from{width:0}}@keyframes spin{to{transform:rotate(360deg)}}
+.openrouter-balance,.openrouter-key{display:flex;flex-direction:column;justify-content:center;min-height:50px}.openrouter-balance .limit-meta,.openrouter-key .limit-meta{margin-top:7px}.or-key-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin-top:7px}.or-key-grid span{color:#cbd3d8;font:11px "Fragment Mono",monospace}.or-key-grid b{display:block;margin-bottom:2px;color:#77828b;font-size:8px;font-weight:400;text-transform:uppercase;letter-spacing:.07em}.openrouter-history{grid-column:1/-1;border-top:1px solid #29313a;padding-top:10px}.openrouter-history summary{display:flex;justify-content:space-between;cursor:pointer;color:#b9c1c8;font-size:11px;font-weight:600}.openrouter-history summary strong{color:var(--accent);font:12px "Fragment Mono",monospace}.or-coverage,.or-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:baseline}.or-coverage{margin-top:8px;color:#7f8a93;font:9px/1.4 "Fragment Mono",monospace}.or-coverage span:last-child{text-align:right}.or-days,.or-models{margin-top:7px}.or-models>span{color:#77828b;font:8px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.07em}.or-row{padding:4px 0;border-bottom:1px solid rgba(41,49,58,.55);font:10px "Fragment Mono",monospace}.or-row>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8e99a2}.or-row strong{color:#dce2e6;font-weight:400}.or-empty{padding:8px 0;color:#7f8a93;font-size:10px}
 @media(max-width:1120px){.accounts{grid-template-columns:repeat(2,minmax(0,1fr))}.util-grid{grid-template-columns:1fr}.pace-policy{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:720px){.shell{width:min(100% - 24px,1460px);padding-top:max(16px,env(safe-area-inset-top));padding-bottom:max(64px,env(safe-area-inset-bottom))}.topbar{display:grid;grid-template-columns:1fr auto;gap:12px 8px}.nav{grid-column:1/-1;grid-row:2;width:100%;margin:0;display:grid;grid-template-columns:repeat(3,1fr)}.nav a{display:grid;place-items:center;min-height:44px;padding:7px 5px;text-align:center}.top-actions{margin:0}.button{min-height:44px}.summary{padding-top:18px}.planning,.util-head{align-items:flex-start;flex-direction:column}.sources{justify-content:flex-start}.accounts,.pace-policy{grid-template-columns:1fr}.limits,.provider-setup{grid-template-columns:1fr}.updated{white-space:normal}.setup-head{align-items:stretch;flex-direction:column}.profile-field{flex-basis:auto}}
 @media(max-width:480px){.topbar{grid-template-columns:1fr auto}.brand{padding-top:2px}.top-actions{grid-row:1;grid-column:2}.nav{grid-row:2}.summary{align-items:flex-start;flex-direction:column;gap:5px}.planning{padding:11px}.sources{flex-wrap:wrap}.account-card{padding:14px}.account-head{display:block;position:relative;padding-right:42px}.account-meta{max-width:none;text-align:left}.account-meta strong{position:absolute;right:0;top:0}.updated{margin-top:8px;font-size:10px}.auth-required{align-items:stretch;flex-direction:column}.auth-required a{text-align:center;min-height:44px;display:grid;place-items:center}.utilization{padding:14px}.util-metrics{gap:5px}.setup{padding:15px}.command{gap:6px;padding:9px}.copy{min-width:44px;min-height:44px}}
 @media(max-width:900px){.pace-policy span:last-child{grid-column:span 2}}
 @media(max-width:720px){.pace-policy span:last-child{grid-column:1/-1}}
 @media(max-width:480px){.sources{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;width:100%}.source{display:grid;grid-template-columns:6px minmax(0,1fr);column-gap:6px;row-gap:1px;min-width:0}.source i{align-self:start;margin-top:3px}.source b,.source em{grid-column:2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.source em{color:#6f7a83}.util-metrics{grid-template-columns:minmax(0,.8fr) minmax(0,1fr) minmax(0,1.3fr)}}
+.openrouter-history[open]{grid-column:1/-1}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 </style></head><body><main class="shell">
 <div class="topbar"><div class="brand"><b>spend</b>watch</div><nav class="nav"><a class="active" href="./">Capacity</a><a href="${esc(spendHref)}">Spend detail</a><a href="${esc(historyHref)}">History</a></nav><div class="top-actions"><button class="button icon" id="refresh" title="Refresh" aria-label="Refresh">&#8635;</button><details class="menu"><summary class="button icon" title="More" aria-label="More actions">&#8943;</summary><div class="menu-list"><button class="button" id="install" hidden>Install app</button><button class="button" id="alerts">Enable alerts</button><button class="button" id="add">Add account</button></div></details></div></div>

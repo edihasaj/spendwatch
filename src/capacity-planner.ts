@@ -24,7 +24,7 @@ export interface WindowUtilizationPlan {
 }
 
 export interface AccountUtilizationPlan {
-  provider: CapacityProvider;
+  provider: Exclude<CapacityProvider, "openrouter">;
   account: string;
   resource: string;
   action: UtilizationAction;
@@ -117,6 +117,7 @@ export function buildUtilizationPlans(
 ): AccountUtilizationPlan[] {
   const plans: AccountUtilizationPlan[] = [];
   for (const account of accounts) {
+    if (account.provider === "openrouter") continue;
     if ((account.provider === "codex" || account.provider === "claude") && account.weekly
       && isWindowLive(account.weekly, account.updatedAt, nowMs)) {
       const window = planWindowUtilization(account.weekly, nowMs, targetPercent);
