@@ -26,8 +26,8 @@ import { accountLabel, copilotAccountIn } from "./copilot";
 import { claudeAccount, claudeAccountIn, type SourceFile } from "./sources";
 import { claudeProviderAccounts } from "./claude-provider-accounts";
 import type { Event } from "./parse";
-import { providerMap, readGatewayConfig, resolveStateDirectory, type AuthDirectory, type GatewayVendor } from "./gateway-config";
-import { callKey, dedupe, GATEWAY_ORIGIN, ledgerFiles, markerOf, MESSAGES_MARKER, readRows, RESPONSES_MARKER, TELEMETRY_ORIGIN, type LedgerRow, type RowHolder } from "./gateway-ledger-files";
+import { providerMap, readGatewayConfig, resolveStateDirectory, type AuthDirectory, type GatewayVendor, type OpenRouterRoutes } from "./gateway-config";
+import { callKey, dedupe, GATEWAY_ORIGIN, isMarked, ledgerFiles, markerOf, MESSAGES_MARKER, readRows, RESPONSES_MARKER, TELEMETRY_ORIGIN, type LedgerRow, type RowHolder } from "./gateway-ledger-files";
 import { RowMatcher, stayOn } from "./gateway-match";
 import { billedRow, counts, eventsFor } from "./gateway-events";
 import { CLAIM_WINDOW_MS, type BilledCall, type ClaimOptions, type LedgerDecision } from "./gateway-decisions";
@@ -83,7 +83,9 @@ export interface GatewayIndex {
  * by that id alone. Leaving them out is what keeps a token_count (no id to compare) from being dropped onto a Messages
  * row that belongs to a Claude Code transcript.
  */
-const matchable = (row: LedgerRow): boolean => (billedRow(row) && markerOf(row.responseId) === RESPONSES_MARKER) || (row.origin === TELEMETRY_ORIGIN && row.session === true);
+const matchable = (row: LedgerRow): boolean => (billedRow(row) && markerOf(row.responseId) === RESPONSES_MARKER)
+  || (row.origin === TELEMETRY_ORIGIN && row.session === true)
+  || (row.vendor === "openrouter" && row.origin === GATEWAY_ORIGIN && !isMarked(row.responseId));
 const usageKey = (model: string, input: number, output: number): string => `${model}\u0000${input}\u0000${output}`;
 
 /** The first index in `rows` (sorted by `at`) whose time is at least `from`, or after `from` when `after`. */
@@ -103,6 +105,7 @@ interface LedgerSource {
   usage: string;
   sinceMs: number;
   map: ReturnType<typeof providerMap>;
+  openrouter?: OpenRouterRoutes;
   /** Bytes of each month file already read, up to its last complete line. */
   read: Map<string, number>;
   /** Each month file's modification time at its last read: a row rewritten in place keeps the length. */
@@ -203,7 +206,7 @@ export class GatewayLedger implements GatewayIndex {
     this.lastRead = Date.now();
     let added = false;
     for (const file of ledgerFiles(source.usage, source.sinceMs - CLAIM_WINDOW_MS)) {
-      const { rows, end, mtime } = readRows(file, source.map, source.read.get(file) ?? 0);
+      const { rows, end, mtime } = readRows(file, source.map, source.read.get(file) ?? 0, source.openrouter);
       source.read.set(file, end);
       if (mtime !== undefined) source.mtimes.set(file, mtime);
       for (const row of rows) if (this.admit(row)) added = true;
@@ -295,7 +298,7 @@ export class GatewayLedger implements GatewayIndex {
     const rows: LedgerRow[] = [];
     for (const row of this.near(holder.model, holder.input, holder.output, holder.ts)) {
       // A claim takes a telemetry row, and a billed row only when it may; a bill is only ever settled against a billed row.
-      if (holder.kind === "claim" ? row.origin === GATEWAY_ORIGIN && !holder.gatewayRows : !billedRow(row)) continue;
+      if (holder.kind === "claim" ? row.origin === GATEWAY_ORIGIN && !holder.gatewayRows && row.vendor !== "openrouter" : !billedRow(row)) continue;
       rows.push(row);
     }
     // A claim on a billed row adds no bill (the row bills either way); a claim on a telemetry row makes it bill. A
@@ -423,7 +426,7 @@ export class GatewayLedger implements GatewayIndex {
       // The usual account keeps the plain key; another account gets its own stream.
       key: account === primary ? `gateway:${vendor}` : `gateway:${vendor}:${account}`,
       project: "gateway",
-      source: vendor,
+      source: vendor === "openrouter" ? "codex" : vendor,
       account,
       parse: () => [],
       ctx: null,
@@ -456,6 +459,7 @@ export class GatewayLedger implements GatewayIndex {
   }
 
   private label(vendor: GatewayVendor, directory?: string): string {
+    if (vendor === "openrouter") return "Unknown OpenRouter account";
     const key = `${vendor}\u0000${directory ?? ""}`;
     let label = this.labels.get(key);
     if (label === undefined) {
@@ -477,9 +481,9 @@ export class GatewayLedger implements GatewayIndex {
     const usage = dir ? join(dir, "usage") : "";
     if (!dir || !isDirectory(usage)) return new GatewayLedger([], dir ?? config.directory, false, config.authDirectories);
     const map = providerMap();
-    const source: LedgerSource = { usage, sinceMs: opts.sinceMs, map, read: new Map(), mtimes: new Map() };
+    const source: LedgerSource = { usage, sinceMs: opts.sinceMs, map, openrouter: config.openrouter, read: new Map(), mtimes: new Map() };
     const rows = ledgerFiles(usage, opts.sinceMs - CLAIM_WINDOW_MS).flatMap((file) => {
-      const { rows, end, mtime } = readRows(file, map);
+      const { rows, end, mtime } = readRows(file, map, 0, config.openrouter);
       source.read.set(file, end);
       if (mtime !== undefined) source.mtimes.set(file, mtime);
       return rows;
@@ -489,12 +493,19 @@ export class GatewayLedger implements GatewayIndex {
 
   /** Whether any telemetry row is waiting for a rollout to claim it, so reading rollouts can change a report. */
   hasClaimable(): boolean {
-    return this.rows.some((row) => row.origin === TELEMETRY_ORIGIN && row.session === true);
+    return this.rows.some((row) => (row.origin === TELEMETRY_ORIGIN && row.session === true)
+      || (row.vendor === "openrouter" && row.origin === GATEWAY_ORIGIN && !isMarked(row.responseId)));
   }
 
   /** Whether this Mac's ledger bills any Claude Code call: a `msg_gl_*` row a transcript's message id can point at. */
   hasMessages(): boolean {
     return this.rows.some((row) => billedRow(row) && markerOf(row.responseId) === MESSAGES_MARKER);
+  }
+
+  openRouterWarning(): string | undefined {
+    return this.rows.some((row) => row.vendor === "openrouter" && !isMarked(row.responseId) && !row.claimed && !row.rolloutBilled)
+      ? "some OpenRouter gateway ledger rows have no response ID or matching local transcript; their machine route attribution is unavailable, and account billing remains separate"
+      : undefined;
   }
 }
 

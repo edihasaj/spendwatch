@@ -1,3 +1,5 @@
+import { loadOpenRouterPriceCache, type OpenRouterModelPrice, type OpenRouterPriceOverride } from "./openrouter-prices";
+
 // Per-MTok USD prices. Cache multipliers: write 5m 1.25x, write 1h 2x, read 0.1x input price.
 export interface ModelPrice {
   input: number;
@@ -7,6 +9,11 @@ export interface ModelPrice {
   cacheWrite1h?: number;
   longContext?: ModelPrice;
   longContextThreshold?: number;
+  /** OpenRouter's published cache for this exact slug was unavailable. */
+  unknown?: true;
+  /** Per-MTok estimate comes from a dated OpenRouter catalog snapshot. */
+  estimate?: true;
+  priceUpdatedAt?: string;
 }
 
 const PRICES: Array<[RegExp, ModelPrice]> = [
@@ -49,8 +56,86 @@ const PRICES: Array<[RegExp, ModelPrice]> = [
   [/gemini/, { input: 0.3, output: 2.5 }],
 ];
 
-export function priceFor(model: string | undefined): ModelPrice {
+const UTC_DAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
+
+type PriceTimestamp = number | string | Date;
+
+interface OpenRouterPriceSelection {
+  price?: ModelPrice;
+  timestamp?: Date;
+}
+
+function openRouterPrice(model: string | undefined, timestamp?: PriceTimestamp): OpenRouterPriceSelection {
+  if (!model) return { price: { input: 0, output: 0, unknown: true } };
+  const cache = loadOpenRouterPriceCache();
+  const slug = cache?.models.find((candidate) => candidate.id === model);
+  if (!cache || !slug) return { price: { input: 0, output: 0, unknown: true } };
+  const date = timestamp === undefined ? undefined : new Date(timestamp);
+  if (date && !Number.isFinite(date.getTime())) return { price: { input: 0, output: 0, unknown: true } };
+  const selected = openRouterOverride(slug, date);
+  if (date && (slug.overrides?.filter((override) => override.minPromptTokens === undefined && utcTime(override, date)).length ?? 0) > 1) {
+    return { price: { input: 0, output: 0, unknown: true } };
+  }
+  if (slug.overrides?.some((override) => override.utcStart !== undefined || override.utcDays?.length)
+    && date === undefined) return { price: { input: 0, output: 0, unknown: true } };
+  const merged = { ...slug, ...selected };
+  return { timestamp: date, price: {
+    input: merged.input,
+    output: merged.output,
+    cachedInput: merged.cachedInput ?? merged.input,
+    cacheWrite5m: merged.cacheWrite5m ?? merged.input,
+    cacheWrite1h: merged.cacheWrite1h ?? merged.input,
+    estimate: true,
+    priceUpdatedAt: cache.updatedAt,
+  } };
+}
+
+function utcTime(value: OpenRouterPriceOverride | OpenRouterModelPrice, timestamp: Date): boolean {
+  const override = value as OpenRouterPriceOverride;
+  const minutes = timestamp.getUTCHours() * 100 + timestamp.getUTCMinutes();
+  const start = override.utcStart;
+  const end = override.utcEnd;
+  const withinTime = start === undefined || end === undefined
+    ? start === undefined && end === undefined
+    : start === end
+      ? true
+      : start < end
+        ? minutes >= start && minutes < end
+        : minutes >= start || minutes < end;
+  return withinTime && (!override.utcDays?.length || override.utcDays.includes(UTC_DAYS[timestamp.getUTCDay()]!));
+}
+
+function openRouterOverride(price: OpenRouterModelPrice, timestamp?: Date): OpenRouterPriceOverride | undefined {
+  if (!price.overrides?.length || timestamp === undefined) return undefined;
+  const matching = price.overrides.filter((override) => {
+    if (override.minPromptTokens !== undefined) return false;
+    return utcTime(override, timestamp);
+  });
+  return matching.length === 1 ? matching[0] : undefined;
+}
+
+function openRouterUsagePrice(price: OpenRouterModelPrice, usage: Usage, timestamp?: PriceTimestamp): ModelPrice {
+  const selected = openRouterPrice(price.id, timestamp);
+  const base = selected.price!;
+  const matching = price.overrides?.filter((override) => override.minPromptTokens !== undefined
+    && usage.input + usage.cacheRead + usage.cache5m + usage.cache1h >= override.minPromptTokens
+    && (!(override.utcStart !== undefined || override.utcDays?.length)
+      || (selected.timestamp !== undefined && utcTime(override, selected.timestamp))));
+  if (!matching?.length) return base;
+  if (matching.length > 1) return { input: 0, output: 0, unknown: true };
+  const override = matching[0]!;
+  return { ...base,
+    ...(override.input !== undefined ? { input: override.input } : {}),
+    ...(override.output !== undefined ? { output: override.output } : {}),
+    ...(override.cachedInput !== undefined ? { cachedInput: override.cachedInput } : {}),
+    ...(override.cacheWrite5m !== undefined ? { cacheWrite5m: override.cacheWrite5m } : {}),
+    ...(override.cacheWrite1h !== undefined ? { cacheWrite1h: override.cacheWrite1h } : {}),
+  };
+}
+
+export function priceFor(model: string | undefined, provider?: string, timestamp?: PriceTimestamp): ModelPrice {
   if (!model) return { input: 0, output: 0 };
+  if (provider?.toLowerCase() === "openrouter") return openRouterPrice(model, timestamp).price!;
   const m = model.toLowerCase();
   for (const [re, p] of PRICES) if (re.test(m)) return p;
   return { input: 0, output: 0 }; // <synthetic>, unknown
@@ -64,12 +149,20 @@ export interface Usage {
   cache1h: number;
 }
 
-export function usageCost(model: string | undefined, u: Usage): number {
-  const base = priceFor(model);
+export function usagePriceFor(model: string | undefined, u: Usage, provider?: string, timestamp?: PriceTimestamp): ModelPrice {
+  let base = priceFor(model, provider, timestamp);
+  if (provider?.toLowerCase() === "openrouter" && model) {
+    const slug = loadOpenRouterPriceCache()?.models.find((candidate) => candidate.id === model);
+    if (slug) base = openRouterUsagePrice(slug, u, timestamp);
+  }
   const contextTokens = u.input + u.cacheRead + u.cache5m + u.cache1h;
-  const p = base.longContext && base.longContextThreshold && contextTokens > base.longContextThreshold
+  return base.longContext && base.longContextThreshold && contextTokens > base.longContextThreshold
     ? base.longContext
     : base;
+}
+
+export function usageCost(model: string | undefined, u: Usage, provider?: string, timestamp?: PriceTimestamp): number {
+  const p = usagePriceFor(model, u, provider, timestamp);
   return (
     (u.input * p.input +
       u.output * p.output +

@@ -10,7 +10,13 @@ export const billedRow = (row: LedgerRow): boolean => row.origin === GATEWAY_ORI
 /** Rows the ledger is responsible for billing; see the module header. */
 export function counts(row: LedgerRow): boolean {
   if (row.rolloutBilled) return false;
-  if (row.origin === GATEWAY_ORIGIN) return billedRow(row);
+  if (row.origin === GATEWAY_ORIGIN) {
+    // Responses API routes currently omit response IDs. Only a matched local
+    // rollout proves ownership; billing every ledger row could duplicate a
+    // remote client's unmarked copy, which cannot settle by ID later.
+    if (row.vendor === "openrouter" && !isMarked(row.responseId)) return row.claimed;
+    return billedRow(row);
+  }
   return row.claimed || row.session === false;
 }
 
@@ -30,6 +36,7 @@ export function* eventsFor(vendor: GatewayVendor, account: string, rows: LedgerR
       sessionId,
       requestId,
       model,
+      ...(vendor === "openrouter" ? { modelProvider: "openrouter" } : {}),
       usage: {
         input: Math.max(0, row.input - row.cached - row.cacheWrite),
         output: row.output,
@@ -52,6 +59,7 @@ export function* eventsFor(vendor: GatewayVendor, account: string, rows: LedgerR
 // copies them in its one-time import) and says it came from telemetry.
 // Claude rows carry no credit figure at all, so the alias is priced from tokens.
 function price(vendor: GatewayVendor, row: LedgerRow): { model: string; costUsd?: number } {
+  if (vendor === "openrouter") return { model: row.upstreamModel ?? "unknown" };
   const alias = row.model;
   const telemetry = row.origin === TELEMETRY_ORIGIN;
   if (vendor !== "copilot") return { model: telemetry ? `${alias} (telemetry backfill)` : alias };

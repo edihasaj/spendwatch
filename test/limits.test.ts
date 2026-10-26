@@ -59,6 +59,101 @@ const sample = [
 ];
 
 describe("Codex limits", () => {
+  test("renders OpenRouter balance, shared-key counters, and bounded history separately", () => {
+    const totals = (costUsd: number, requests: number) => ({
+      costUsd,
+      requests,
+      promptTokens: 1_000,
+      completionTokens: 250,
+      reasoningTokens: 100,
+      cachedTokens: 50,
+    });
+    const accounts = normalizeCodexLimits([{
+      provider: "openrouter",
+      account: "OpenRouter account",
+      usage: {
+        accountEmail: "OpenRouter account",
+        loginMethod: "Pay as you go",
+        updatedAt: "2026-10-26T18:00:00Z",
+      },
+      devices: ["Mac Studio", "MacBook"],
+      openrouter: {
+        balanceUsd: 4.24903122,
+        totalCreditsUsd: 5,
+        totalUsageUsd: 0.75096878,
+        keyUsage: {
+          label: "Shared inference key",
+          dailyUsd: 0.01,
+          weeklyUsd: 0.05,
+          monthlyUsd: 0.1,
+          allTimeUsd: 0.1,
+          limitUsd: 2,
+          remainingUsd: 1.9,
+          expiresAt: "2027-01-01T00:00:00Z",
+        },
+        history: {
+          updatedAt: "2026-10-26T18:00:00Z",
+          availableFrom: "2026-09-25T00:00:00Z",
+          availableThrough: "2026-10-25T00:00:00Z",
+          retainedFrom: "2026-09-25T00:00:00Z",
+          totals: totals(0.271415, 7_835),
+          days: [{ date: "2026-09-27", ...totals(0.149656, 4_625) }],
+          months: [{ month: "2026-09", ...totals(0.271415, 7_835) }],
+          models: [{ model: "typesafe/jev-1.13", ...totals(0.24954, 6_268) }],
+          machineAttribution: "unattributed",
+        },
+      },
+    }]);
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toMatchObject({ provider: "openrouter", plan: "Pay as you go", name: "OpenRouter" });
+    const now = Date.parse("2026-10-26T18:01:00Z");
+    const html = renderLimitsHtml(accounts, { generatedAt: now });
+    const card = html.slice(html.indexOf('data-account-key="openrouter:'), html.indexOf("</article>", html.indexOf('data-account-key="openrouter:')));
+    expect(card).toContain("Prepaid balance");
+    expect(card).toContain("$4.249");
+    expect(card).toContain("$5 purchased");
+    expect(card).toContain("$0.751 account billed");
+    expect(card).toContain("Shared inference key");
+    expect(card).toContain("Today");
+    expect(card).toContain("Week");
+    expect(card).toContain("Month");
+    expect(card).toContain("$0.10 all time");
+    expect(card).toContain("$1.90 of $2 left");
+    expect(card).toContain("Collected on mac studio, macbook");
+    expect(card).toContain("Completed-day history");
+    expect(card).toContain("2026-09-27");
+    expect(card).toContain("Unattributed across machines");
+    expect(card).not.toContain("progressbar");
+    expect(html).not.toContain('data-utilization-key="openrouter:');
+    expect(renderLimitsText(accounts, now)).toContain("OpenRouter · OpenRouter account\t$4.249 left");
+  });
+
+  test("drops malformed OpenRouter money, dates, key caps, and history", () => {
+    const base = {
+      provider: "openrouter",
+      account: "OpenRouter account",
+      usage: { accountEmail: "OpenRouter account", loginMethod: "Pay as you go", updatedAt: "2026-10-26T18:00:00Z" },
+    };
+    expect(normalizeCodexLimits([{ ...base, openrouter: { balanceUsd: -1, totalCreditsUsd: 5, totalUsageUsd: 1 } }])).toEqual([]);
+    const accounts = normalizeCodexLimits([{
+      ...base,
+      openrouter: {
+        balanceUsd: 4,
+        totalCreditsUsd: 5,
+        totalUsageUsd: 1,
+        keyUsage: { label: "shared", dailyUsd: 1, weeklyUsd: 1, monthlyUsd: 1, allTimeUsd: 1, limitUsd: 1, remainingUsd: 2 },
+        history: {
+          updatedAt: "invalid", availableFrom: "1900-01-01T00:00:00Z", availableThrough: "2026-10-25T00:00:00Z",
+          totals: { costUsd: 1, requests: 1, promptTokens: 1, completionTokens: 1, reasoningTokens: 0, cachedTokens: 0 },
+          days: [], months: [], models: [], machineAttribution: "unattributed",
+        },
+      },
+    }]);
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]?.openrouter?.keyUsage).toBeUndefined();
+    expect(accounts[0]?.openrouter?.history).toBeUndefined();
+  });
+
   test("names and sorts accounts alphabetically", () => {
     const accounts = normalizeCodexLimits(sample);
     expect(accounts.map((account) => account.email)).toEqual([

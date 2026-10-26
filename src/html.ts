@@ -15,6 +15,7 @@ import {
   type CaptureCoverage,
   type CaptureReference,
 } from "./report-coverage";
+import { validateProviderUsage } from "./provider-usage-report";
 
 function localDate(ts: number): string {
   const at = new Date(ts);
@@ -167,6 +168,35 @@ function promptTable(rows: PromptRow[]): string {
   );
 }
 
+/** Transcript-derived OpenRouter route detail. This deliberately excludes the account Activity API. */
+function openRouterUsageSections(report: Report): string[] {
+  const usage = validateProviderUsage(report.providerUsage, report)?.find((item) => item.provider === "openrouter");
+  if (!usage) return [];
+  const models = new Map<string, { tokens: number; cost: number; calls: number; unpricedCalls: number }>();
+  const days = new Map<string, { tokens: number; cost: number; calls: number; unpricedCalls: number }>();
+  const months = new Map<string, { tokens: number; cost: number; calls: number; unpricedCalls: number }>();
+  for (const row of usage.rows) {
+    for (const [key, map] of [[row.model, models], [row.day, days], [row.day.slice(0, 7), months]] as const) {
+      const item = map.get(key) ?? { tokens: 0, cost: 0, calls: 0, unpricedCalls: 0 };
+      item.tokens += row.tokens; item.cost += row.cost; item.calls += row.calls; item.unpricedCalls += row.unpricedCalls;
+      map.set(key, item);
+    }
+  }
+  const table = (label: string, rows: Map<string, { tokens: number; cost: number; calls: number; unpricedCalls: number }>) => {
+    const ordered = [...rows.entries()].sort((a, b) => b[1].tokens - a[1].tokens || a[0].localeCompare(b[0]));
+    return dataTable(
+      [{ head: label, bar: true }, { head: "tokens", num: true }, { head: "calls", num: true }, { head: "$ est.", num: true }],
+      ordered.map(([key, row]) => [key, fmtTok(row.tokens), row.unpricedCalls ? `${row.calls.toLocaleString()} · ${row.unpricedCalls} unpriced` : row.calls.toLocaleString(), row.unpricedCalls ? "unavailable" : fmtUsd(row.cost)]),
+      ordered.map(([, row]) => row.tokens),
+    );
+  };
+  return [section(
+    "OpenRouter route usage",
+    `${fmtTok(usage.tokens)} tokens · ${usage.calls.toLocaleString()} calls · ${usage.unpricedCalls ? `${usage.unpricedCalls} call${usage.unpricedCalls === 1 ? "" : "s"} lack a dated rate` : `${fmtUsd(usage.cost)} transcript estimate`}`,
+    `${table("model", models)}<details class="provider-history"><summary>By month</summary>${table("month (UTC)", months)}</details><details class="provider-history"><summary>By day</summary>${table("day (UTC)", days)}</details><p class="provider-note">This is machine-transcript route evidence. OpenRouter’s account billed total and its limited retained activity history are shown separately in Capacity, so neither is added here.</p>`,
+  )];
+}
+
 function section(title: string, sub: string, body: string): string {
   return `<section class="block"><h3>${esc(title)}<span class="sub">${esc(sub)}</span></h3><div class="section-body" tabindex="0" role="region" aria-label="${esc(title)}">${body}</div></section>`;
 }
@@ -232,6 +262,7 @@ function agentPanel(
   const stat = (label: string, val: string) => `<div class="stat"><span class="n">${val}</span><span class="l">${esc(label)}</span></div>`;
   const stats = `<div class="stats">${stat("tokens", fmtTok(r.totalTokens))}${stat("estimated spend", fmtUsd(r.totalCost))}${stat("API calls", r.apiCalls.toLocaleString())}${stat("sessions", String(r.sessions))}</div>`;
   const parts: string[] = [stats];
+  parts.push(...openRouterUsageSections(r));
   if (r.accounts.length > 1)
     parts.push(
       section(

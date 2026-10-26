@@ -1,10 +1,11 @@
 // Folds parse events into per-tool / per-prompt / per-model / per-project spend.
 import type { Event, GatewayMark } from "./parse";
 import type { Period } from "./periods";
-import { contextCost, estTokens, usageCost, type Usage } from "./pricing";
+import { contextCost, estTokens, usagePriceFor, usageCost, type Usage } from "./pricing";
 import { mergeProjectRows } from "./projects";
 import {TokenDayAccumulator, type TokenDays} from "./token-days";
 import { CODEX_ACCOUNT_ATTRIBUTION_VERSION, type AccountAttribution, type AccountAttributionBasis, type CodexAccountAttributor } from "./codex-account-attribution";
+import { ProviderUsageAccumulator, type ProviderUsage } from "./provider-usage-report";
 
 interface StreamState {
   fileKey: string;
@@ -94,6 +95,10 @@ export interface UnconfirmedCall {
   cacheReadTok: number;
   cacheWriteTok: number;
   cost: number;
+  /** Direct provider route carried by the exact call; absent on older archives. */
+  provider?: string;
+  /** False means this direct provider call had no dated catalog rate. */
+  priceKnown?: boolean;
 }
 export interface ReportPeriod {
   key: string;
@@ -105,6 +110,8 @@ export interface ReportPeriod {
 export interface Report {
   /** Count-only day/model buckets; older exports legitimately lack them. */
   tokenDays?: TokenDays;
+  /** Optional provider-route projection of these exact machine calls. */
+  providerUsage?: ProviderUsage[];
   /** Stable for one installation; changes when the machine starts with fresh history. */
   installationId?: string;
   /** Explicitly verified restored history; aliases one prior installation of this source. */
@@ -276,6 +283,7 @@ export class Aggregator {
     const accountNeedle = accountFilter?.trim().toLowerCase();
     const includesAccount = (account: string): boolean => !accountNeedle || account.toLowerCase().includes(accountNeedle);
     const tokenDays = new TokenDayAccumulator();
+    const providerUsage = new ProviderUsageAccumulator();
     const tools = new Map<string, ToolRow>();
     const bash = new Map<string, ToolRow>();
     const deep = new Map<string, ToolRow>();
@@ -346,7 +354,8 @@ export class Aggregator {
         if (callIndex !== undefined) includedCallIndices.add(callIndex);
         apiCalls++;
         const tokens = u.usage.input + u.usage.output + u.usage.cacheRead + u.usage.cache5m + u.usage.cache1h;
-        const cost = u.costUsd ?? usageCost(u.model, u.usage);
+        const priceKnown = u.costUsd !== undefined || !usagePriceFor(u.model, u.usage, u.modelProvider, u.lastTs).unknown;
+        const cost = u.costUsd ?? usageCost(u.model, u.usage, u.modelProvider, u.lastTs);
         totalTokens += tokens;
         totalCost += cost;
         acc.tokens += tokens;
@@ -359,6 +368,7 @@ export class Aggregator {
         projects.set(s.project, project);
         const mk = u.model ?? "unknown";
         tokenDays.add(u.lastTs, mk, tokens, account);
+        providerUsage.add(u.modelProvider, u.lastTs, mk, tokens, cost, priceKnown);
         let m = models.get(mk);
         if (!m) models.set(mk, (m = { model: mk, calls: 0, inTok: 0, outTok: 0, cacheReadTok: 0, cacheWriteTok: 0, cost: 0 }));
         m.calls++;
@@ -371,6 +381,7 @@ export class Aggregator {
         else if (u.gateway) gatewayUnconfirmed.push({
           id: u.gateway.id, ts: u.lastTs, model: mk, account, project: s.project, tokens,
           inTok: u.usage.input, outTok: u.usage.output, cacheReadTok: u.usage.cacheRead, cacheWriteTok: u.usage.cache5m + u.usage.cache1h, cost,
+          ...(u.modelProvider ? { provider: u.modelProvider } : {}), ...(priceKnown ? {} : { priceKnown: false }),
         });
         if (u.promptKey) {
           const p = this.promptRow(prompts, u.promptKey);
@@ -465,9 +476,11 @@ export class Aggregator {
     }
 
     const by = <T>(arr: T[], f: (x: T) => number) => arr.sort((a, b) => f(b) - f(a));
+    const providerUsageSnapshot = providerUsage.snapshot();
     return {
       ...(this.period ? { period: { ...this.period } } : {}),
       tokenDays: tokenDays.snapshot(),
+      ...(providerUsageSnapshot ? { providerUsage: providerUsageSnapshot } : {}),
       totalTokens,
       totalCost,
       apiCalls,

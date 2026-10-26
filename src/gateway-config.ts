@@ -7,7 +7,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir, platform } from "node:os";
 
-export type GatewayVendor = "claude" | "copilot";
+export type GatewayVendor = "claude" | "copilot" | "openrouter";
+export type OpenRouterRoutes = ReadonlyMap<string, ReadonlyMap<string, string>>;
 
 /** Gateway provider kinds this ledger can bill. */
 export const PROVIDER_TYPES: Record<string, GatewayVendor> = {
@@ -56,6 +57,8 @@ export interface GatewayConfigView {
    * a `CLAUDE_CONFIG_DIR` for Claude, a `COPILOT_HOME` for Copilot. Resolved as the gateway resolves it.
    */
   authDirectories: Map<string, AuthDirectory>;
+  /** Verified OpenRouter route id -> exact public alias/model mapping only. */
+  openrouter?: OpenRouterRoutes;
 }
 
 export interface AuthDirectory {
@@ -76,18 +79,36 @@ export function readGatewayConfig(): GatewayConfigView {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return none;
   const config = raw as Record<string, unknown>;
   const authDirectories = new Map<string, AuthDirectory>();
+  const openrouter = new Map<string, ReadonlyMap<string, string>>();
   if (Array.isArray(config.providers)) {
     for (const provider of config.providers as unknown[]) {
       const entry = provider as Record<string, unknown> | null;
       if (!entry || typeof entry !== "object") continue;
       const id = str(entry.id);
+      if (id && entry.type === "responses-api" && isOpenRouterUrl(entry.baseUrl)) {
+        const models = new Map<string, string>();
+        if (entry.models && typeof entry.models === "object" && !Array.isArray(entry.models)) {
+          for (const [alias, value] of Object.entries(entry.models)) {
+            if (alias && typeof value === "string" && /^[a-zA-Z0-9_.:/-]+$/.test(value)) models.set(alias, value);
+          }
+        }
+        openrouter.set(id, models);
+      }
       const authDirectory = str(entry.authDirectory);
       // Only a subscription this ledger bills names an account; any other provider's login is not ours to read.
       const vendor = vendorIn(PROVIDER_TYPES, str(entry.type));
       if (id && authDirectory && vendor) authDirectories.set(id, { vendor, directory: resolve(directory, authDirectory) });
     }
   }
-  return { directory, found: true, stateDirectory: str(config.stateDirectory), authDirectories };
+  return { directory, found: true, stateDirectory: str(config.stateDirectory), authDirectories, openrouter };
+}
+
+function isOpenRouterUrl(value: unknown): boolean {
+  try {
+    const url = new URL(str(value));
+    return url.origin === "https://openrouter.ai" && /^\/api\/v1\/?$/.test(url.pathname)
+      && !url.username && !url.password && !url.search && !url.hash;
+  } catch { return false; }
 }
 
 /**

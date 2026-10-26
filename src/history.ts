@@ -48,11 +48,22 @@ function monthlySpendSection(
         .sort((a, b) => b.day.localeCompare(a.day) || b.tokens - a.tokens || a.account.localeCompare(b.account))
         .map((row) => `<tr><td>${esc(row.day)}</td><td>${esc(row.account)}</td><td>${esc(sourceLabel(row.source))}</td><td class="num">${esc(fmtTok(row.tokens))}</td></tr>`)
         .join("");
+      const providerUsage = [...(month.providerUsage ?? [])]
+        .sort((a, b) => b.tokens - a.tokens || a.source.localeCompare(b.source) || a.model.localeCompare(b.model))
+        .map((row) => `<tr><td>${esc(sourceLabel(row.source))}</td><td>${esc(row.model)}</td><td class="num">${esc(fmtTok(row.tokens))}</td><td class="num">${row.calls.toLocaleString()}${row.unpricedCalls ? ` · ${row.unpricedCalls} unpriced` : ""}</td><td class="num">${row.unpricedCalls ? "unavailable" : esc(fmtUsd(row.cost))}</td></tr>`)
+        .join("");
+      const providerDays = [...(month.providerUsage ?? [])]
+        .sort((a, b) => b.day.localeCompare(a.day) || b.tokens - a.tokens || a.source.localeCompare(b.source))
+        .map((row) => `<tr><td>${esc(row.day)}</td><td>${esc(sourceLabel(row.source))}</td><td>${esc(row.model)}</td><td class="num">${esc(fmtTok(row.tokens))}</td><td class="num">${row.calls.toLocaleString()}</td></tr>`)
+        .join("");
       const projectTable = projects
         ? `<div class="month-pane"><h3>Where it went</h3><table><thead><tr><th>Project</th><th class="num">Tokens</th><th class="num">Estimated</th></tr></thead><tbody>${projects}</tbody></table></div>`
         : "";
       const accountTable = accounts
         ? `<div class="month-pane"><h3>By account</h3><table><thead><tr><th>Account</th><th>Machine · agent</th><th class="num">Tokens</th></tr></thead><tbody>${accounts}</tbody></table>${accountDays ? `<details class="account-days"><summary>Daily account detail</summary><table><thead><tr><th>Day</th><th>Account</th><th>Machine · agent</th><th class="num">Tokens</th></tr></thead><tbody>${accountDays}</tbody></table></details>` : ""}</div>`
+        : "";
+      const providerTable = providerUsage
+        ? `<div class="month-pane"><h3>OpenRouter route usage</h3><table><thead><tr><th>Machine · agent</th><th>Model</th><th class="num">Tokens</th><th class="num">Calls</th><th class="num">Estimate</th></tr></thead><tbody>${providerUsage}</tbody></table>${providerDays ? `<details class="account-days"><summary>Daily route detail (UTC)</summary><table><thead><tr><th>Day</th><th>Machine · agent</th><th>Model</th><th class="num">Tokens</th><th class="num">Calls</th></tr></thead><tbody>${providerDays}</tbody></table></details>` : ""}<p class="month-note">Transcript route estimates only. Account billed activity is tracked separately.</p></div>`
         : "";
       const lineageNote = month.lineageNotes?.length
         ? `<p class="month-lineage" role="note">${month.lineageNotes.map(esc).join(" ")}</p>`
@@ -62,7 +73,7 @@ function monthlySpendSection(
         ? `<p class="month-coverage" role="note">${esc(coverage.note ?? COVERAGE_WARNING)}</p>`
         : "";
       const recorded = month.updatedAt ? new Date(month.updatedAt).toISOString().slice(0, 10) : "";
-      return `<details class="month"${index === 0 ? " open" : ""}><summary><span class="month-name">${esc(month.label)}</span><span class="month-figures"><b>${esc(fmtTok(month.tokens))}</b> tokens<i>${esc(fmtUsd(month.cost))}</i><em>${month.calls.toLocaleString()} calls · ${month.sessions.toLocaleString()} sessions</em></span></summary><div class="month-body"><div class="month-panes"><div class="month-pane"><h3>By machine</h3><table><thead><tr><th>Machine · agent</th><th class="num">Tokens</th><th class="num">Estimated</th><th class="num">Calls</th><th class="num">Sessions</th></tr></thead><tbody>${sources}</tbody></table></div>${accountTable}${projectTable}</div>${lineageNote}${coverageNote}${recorded ? `<p class="month-note">Last recorded ${esc(recorded)}</p>` : ""}</div></details>`;
+      return `<details class="month"${index === 0 ? " open" : ""}><summary><span class="month-name">${esc(month.label)}</span><span class="month-figures"><b>${esc(fmtTok(month.tokens))}</b> tokens<i>${esc(fmtUsd(month.cost))}</i><em>${month.calls.toLocaleString()} calls · ${month.sessions.toLocaleString()} sessions</em></span></summary><div class="month-body"><div class="month-panes"><div class="month-pane"><h3>By machine</h3><table><thead><tr><th>Machine · agent</th><th class="num">Tokens</th><th class="num">Estimated</th><th class="num">Calls</th><th class="num">Sessions</th></tr></thead><tbody>${sources}</tbody></table></div>${accountTable}${projectTable}${providerTable}</div>${lineageNote}${coverageNote}${recorded ? `<p class="month-note">Last recorded ${esc(recorded)}</p>` : ""}</div></details>`;
     })
     .join("");
   const span = months.length === 1 ? "1 month" : `${months.length} months`;
