@@ -6,6 +6,8 @@
   the Copilot, Grok and Local Qwen cards can be refreshed as often as the Codex
   and Claude quota cards instead of only with a full report export. The 30-day
   totals are cached for 30 minutes so frequent refreshes read only the last day.
+  Copilot readings are cached for 15 minutes and back off from 30 minutes to 4
+  hours after a failure, so several machines cannot hit GitHub's rate limit.
 - Stopped double counting older forked Codex subagent rollouts. Turns whose id
   the actual parent rollout also opened are skipped; child-only turns still
   count, and a fork without a readable parent is counted whole with a warning.
