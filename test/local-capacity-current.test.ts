@@ -219,3 +219,91 @@ describe("local capacity collection", () => {
     expect(rows.map((row) => row.provider)).toEqual(["grok"]);
   });
 });
+
+describe("Copilot rate-limit protection", () => {
+  const user = { login: "alice", copilot_plan: "business", quota_snapshots: { premium_interactions: { credits_used: 10 } } };
+
+  function memory() {
+    let stored: unknown;
+    return { read: () => stored, write: (value: unknown) => { stored = value; }, peek: () => stored as any };
+  }
+
+  function counting(fail = false) {
+    const calls = { api: 0 };
+    const runner = async (_c: string, args: string[], env?: Record<string, string>): Promise<CommandResult> => {
+      if (args[0] === "auth" && args[1] === "status") return { code: 0, stdout: JSON.stringify({ hosts: { "github.com": [{ login: "alice" }] } }) };
+      if (args[0] === "auth" && args[1] === "token") return { code: 0, stdout: "secret\n" };
+      calls.api++;
+      return fail ? { code: 1, stdout: "" } : { code: 0, stdout: JSON.stringify(user) };
+    };
+    return { calls, runner };
+  }
+
+  const at = (offsetMs: number, copilotCache: ReturnType<typeof memory>, runner: LocalCapacityDeps["run"]) =>
+    deps({ now: NOW + offsetMs, which: () => "/usr/bin/gh", run: runner, copilotCache });
+
+  test("asks GitHub once per quarter hour and serves the cached row in between", async () => {
+    const cache = memory();
+    const { calls, runner } = counting();
+    expect(await collectLocalCapacity(["copilot"], at(0, cache, runner))).toHaveLength(1);
+    expect(await collectLocalCapacity(["copilot"], at(5 * 60_000, cache, runner))).toHaveLength(1);
+    expect(calls.api).toBe(1);
+    const rows = await collectLocalCapacity(["copilot"], at(16 * 60_000, cache, runner)) as any[];
+    expect(calls.api).toBe(2);
+    expect(rows[0].usage.updatedAt).toBe(new Date(NOW + 16 * 60_000).toISOString());
+  });
+
+  test("backs off after a failure, doubles, and serves the last good row with its original time", async () => {
+    const cache = memory();
+    const good = counting();
+    await collectLocalCapacity(["copilot"], at(0, cache, good.runner));
+    const bad = counting(true);
+    const first = await collectLocalCapacity(["copilot"], at(16 * 60_000, cache, bad.runner)) as any[];
+    expect(bad.calls.api).toBe(1);
+    expect(first[0].usage.updatedAt).toBe(new Date(NOW).toISOString());
+    expect(cache.peek().failures).toBe(1);
+    // Inside the 30-minute backoff nothing is sent.
+    await collectLocalCapacity(["copilot"], at(40 * 60_000, cache, bad.runner));
+    expect(bad.calls.api).toBe(1);
+    // After it, a second failure doubles the wait to one hour.
+    await collectLocalCapacity(["copilot"], at(47 * 60_000, cache, bad.runner));
+    expect(bad.calls.api).toBe(2);
+    expect(cache.peek().failures).toBe(2);
+    expect(cache.peek().nextAt - (NOW + 47 * 60_000)).toBe(60 * 60_000);
+    // Recovery clears the backoff.
+    await collectLocalCapacity(["copilot"], at(110 * 60_000, cache, good.runner));
+    expect(cache.peek().failures).toBe(0);
+    expect(cache.peek().nextAt).toBe(0);
+  });
+
+  test("caps the backoff at four hours", async () => {
+    const cache = memory();
+    const bad = counting(true);
+    let offset = 0;
+    const waits: number[] = [];
+    for (let i = 0; i < 8; i++) {
+      await collectLocalCapacity(["copilot"], at(offset, cache, bad.runner));
+      waits.push(cache.peek().nextAt - (NOW + offset));
+      offset = cache.peek().nextAt - NOW + 1;
+    }
+    const minute = 60_000;
+    expect(waits).toEqual([30, 60, 120, 240, 240, 240, 240, 240].map((m) => m * minute));
+    expect(cache.peek().failures).toBe(8);
+  });
+
+  test("ignores a cache that is malformed or from the future", async () => {
+    const { calls, runner } = counting();
+    for (const bad of ["junk", null, { fetchedAt: NOW + 60_000, failures: 0, nextAt: 0, rows: {} },
+      { fetchedAt: NOW, failures: 0, nextAt: NOW + 99 * 3_600_000, rows: {} }]) {
+      const before = calls.api;
+      await collectLocalCapacity(["copilot"], deps({ which: () => "/usr/bin/gh", run: runner, copilotCache: { read: () => bad, write: () => {} } }));
+      expect(calls.api).toBe(before + 1);
+    }
+  });
+
+  test("a missing gh is not a failure and starts no backoff", async () => {
+    const cache = memory();
+    expect(await collectLocalCapacity(["copilot"], deps({ copilotCache: cache }))).toEqual([]);
+    expect(cache.peek()).toBeUndefined();
+  });
+});

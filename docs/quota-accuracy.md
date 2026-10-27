@@ -106,3 +106,13 @@ minutes, so a frequent schedule normally pays only for the 1-day window. A
 cached sample from the future or with malformed fields is ignored, and the
 1-day figures are always read fresh. A scheduler must allow a cold read (no
 cache) to finish, or the cache never fills.
+
+Copilot is the one card that calls a provider endpoint (GitHub's per-user
+Copilot endpoint, through `gh`). To stay clear of rate limits, a machine asks
+GitHub at most once every 15 minutes and serves the last reading in between,
+keeping its original `updatedAt` so the card ages honestly. After any failure,
+a rate limit included, it waits 30 minutes, doubling per consecutive failure up
+to 4 hours, and keeps serving the last good reading meanwhile. The state lives
+in `~/.local/state/spendwatch/copilot-capacity.json`; a malformed file or one
+dated in the future is ignored. A missing `gh` or a missing local login sends
+nothing to GitHub and starts no backoff.
