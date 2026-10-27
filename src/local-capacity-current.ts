@@ -257,7 +257,9 @@ async function copilotRows(deps: LocalCapacityDeps): Promise<unknown[]> {
     for (const login of [...new Set(logins)]) {
       const token = await deps.run(gh, ["auth", "token", "--hostname", "github.com", "--user", login]);
       const secret = token.stdout.trim();
-      if (token.code !== 0 || !secret) continue; // local keychain miss: nothing was sent to GitHub
+      // No usable token (signed out, expired, keychain locked): nothing can be read for this login. Treat it as a
+      // failure so the last good row is kept and the next attempt backs off, rather than caching an empty answer.
+      if (token.code !== 0 || !secret) { failed = true; continue; }
       const row = await copilotUser(deps, gh, login, secret);
       if (row) fresh[login] = row; else failed = true;
     }
