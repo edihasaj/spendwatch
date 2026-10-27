@@ -70,6 +70,8 @@ interface Args {
   guardWindow: GuardWindow;
   minimumRemaining: number;
   provider?: CapacityProvider;
+  /** `--provider local`: refresh the Copilot, Grok and Local Qwen cards together. */
+  localCapacity?: boolean;
   failOpen: boolean;
   host: string;
   port: number;
@@ -192,9 +194,12 @@ function parseArgs(argv: string[]): Args {
     else if (x === "--min-remaining") a.minimumRemaining = Number(rest.shift());
     else if (x === "--provider") {
       const provider = rest.shift();
-      if (provider !== "codex" && provider !== "claude" && provider !== "copilot" && provider !== "lokai"
-        && provider !== "openrouter" && provider !== "grok") throw new Error("--provider must be codex, claude, copilot, openrouter, lokai, or grok");
-      a.provider = provider;
+      if (provider === "local") a.localCapacity = true;
+      else {
+        if (provider !== "codex" && provider !== "claude" && provider !== "copilot" && provider !== "lokai"
+          && provider !== "openrouter" && provider !== "grok" && provider !== "qwen") throw new Error("--provider must be codex, claude, copilot, openrouter, lokai, grok, qwen, or local");
+        a.provider = provider;
+      }
     }
     else if (x === "--fail-open") a.failOpen = true;
     else if (x === "--host") a.host = rest.shift() ?? "";
@@ -478,7 +483,7 @@ async function pushTest(a: Args): Promise<void> {
   if (result.sent === 0) process.exitCode = 69;
 }
 
-async function currentCapacity(provider: CapacityProvider | undefined): Promise<unknown[]> {
+async function currentCapacity(provider: CapacityProvider | undefined, local = false): Promise<unknown[]> {
   // Report why a read failed on stderr, keeping stdout the JSON contract. A
   // caller that only sees an empty array cannot tell "sign in again" from
   // "no Claude account here", which is how an expired token stayed hidden.
@@ -488,12 +493,17 @@ async function currentCapacity(provider: CapacityProvider | undefined): Promise<
       process.stderr.write(`claude capacity ${failure.reason}${who}: ${failure.message}\n`);
     });
   }
+  if (local || provider === "copilot" || provider === "grok" || provider === "qwen") {
+    const { collectLocalCapacity, LOCAL_PROVIDERS } = await import("./local-capacity-current");
+    return collectLocalCapacity(local ? LOCAL_PROVIDERS : [provider as "copilot" | "grok" | "qwen"], undefined,
+      (name, message) => process.stderr.write(`${name} capacity unavailable: ${message}\n`));
+  }
   if (provider === "openrouter") {
     const { collectOpenRouterCapacity } = await import("./openrouter");
     const result = await collectOpenRouterCapacity();
     return result ? [result] : [];
   }
-  if (provider && provider !== "codex") throw new Error("capacity-current supports codex, claude, or openrouter");
+  if (provider && provider !== "codex") throw new Error("capacity-current supports codex, claude, openrouter, copilot, grok, qwen, or local");
   return currentCodexCapacity(Date.now(), (failure) => {
     const who = failure.email ? ` for ${failure.email}` : "";
     process.stderr.write(`codex capacity ${failure.reason}${who}: ${failure.message}\n`);
@@ -569,7 +579,7 @@ if (routeExit !== undefined) {
         }
         const args = parseArgs(argv);
         if (args.cmd === "watch") watch(args);
-        else if (args.cmd === "capacity-current") process.stdout.write(JSON.stringify(await currentCapacity(args.provider), null, 2) + "\n");
+        else if (args.cmd === "capacity-current") process.stdout.write(JSON.stringify(await currentCapacity(args.provider, args.localCapacity), null, 2) + "\n");
         else if (args.cmd === "limits") await limits(args);
         else if (args.cmd === "guard") process.exitCode = guard(args);
         else if (args.cmd === "server") await server(args);

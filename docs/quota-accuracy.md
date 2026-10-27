@@ -4,6 +4,7 @@ read_when:
   - Changing Codex or Claude capacity collection.
   - Investigating a mismatch between Spendwatch and a provider quota page.
   - Changing capacity poll coordination or snapshot persistence.
+  - Changing the Copilot, Grok or Local Qwen capacity cards.
 ---
 
 # Quota accuracy
@@ -77,3 +78,22 @@ Named Claude profiles can keep their login in macOS Keychain rather than in
 of its absolute configuration directory. It never borrows the default profile's
 credential. A usable file credential still takes precedence, and Keychain
 refreshes retain the exact original service, account and Keychain path.
+
+## Copilot, Grok and Local Qwen cards
+
+These providers publish no quota window, so `capacity-current --provider local`
+(or `copilot`, `grok`, `qwen`) builds their cards from the machine itself, with
+no provider pacing and no coordinator lease:
+
+- **Copilot**: for every account `gh` is signed in to, the premium-credit usage
+  GitHub reports for that account. The token is passed to one `gh api` call
+  through the environment and never appears in the output.
+- **Grok**: the signed-in account's email, with the last day and last 30 days
+  of this machine's Grok spend (API-equivalent estimate, not billed money).
+- **Local Qwen**: tokens this machine sent to the self-hosted model, whichever
+  agent routed them. It carries no money. If the usage report cannot be read,
+  the card omits the figures instead of showing zero.
+
+Each card reads its own machine, so a card is only as current as the last time a
+scheduler ran the command on that machine. One provider failing never hides the
+others; the reason goes to stderr and stdout stays the JSON contract.

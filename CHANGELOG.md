@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added `capacity-current --provider local` (and `copilot`, `grok`, `qwen`) so
+  the Copilot, Grok and Local Qwen cards can be refreshed as often as the Codex
+  and Claude quota cards instead of only with a full report export.
 - Stopped double counting older forked Codex subagent rollouts. Turns whose id
   the actual parent rollout also opened are skipped; child-only turns still
   count, and a fork without a readable parent is counted whole with a warning.
