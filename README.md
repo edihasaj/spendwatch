@@ -59,6 +59,7 @@ bin/spendwatch limits --input limits.json --sqlite spendwatch.db --history-html 
 bin/spendwatch guard --input limits.json --account work --window weekly --min-remaining 15
 bin/spendwatch server --input limits.json --sqlite spendwatch.db --public-dir public
 bin/spendwatch capacity-current --provider claude   # live Claude 5h/weekly windows
+bin/spendwatch capacity-current --provider local    # Copilot, Grok and Local Qwen cards (or copilot|grok|qwen)
 bin/spendwatch capacity-history-export --label studio > capacity-history.jsonl
 bin/spendwatch report                       # compiled binary (bun run build)
 ```
