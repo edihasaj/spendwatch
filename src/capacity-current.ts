@@ -2,11 +2,14 @@
 //
 // `account/rateLimits/read` performs a live, authenticated quota read for the
 // selected CODEX_HOME. Rollout events remain useful for history, but are not a
-// current-capacity source: an idle profile may have no recent rollout at all.
+// current-capacity source: an idle profile may have no recent rollout at all, and
+// a profile that never ran a task may have no rollout directory of any kind. A
+// signed-in home is therefore discovered by its own credential, not by its history.
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { codexClaims, defaultCodexRoots } from "./sources";
+import { codexCapacityProfileHomes } from "./codex-capacity-profiles";
 import { coordinatedCapacity } from "./capacity-poll";
 import { CapacityCoordinatorUnavailableError } from "./capacity-coordinator-client";
 
@@ -313,6 +316,17 @@ export async function currentCodexCapacity(
   // Discover identity locally before starting app-server, and deduplicate homes
   // before any request. Several profiles may contain the same account.
   const profiles = new Map<string, string>();
+  // A live quota read needs a login, not a rollout, so signed-in homes are found by
+  // their own `auth.json` first. Feeding `codexClaims` a synthetic `<home>/sessions`
+  // path asks it for exactly the file it already reads, without creating a directory
+  // or writing any credential.
+  for (const home of codexCapacityProfileHomes()) {
+    const { email } = codexClaims(join(home, "sessions"));
+    if (email && !profiles.has(email.toLowerCase())) profiles.set(email.toLowerCase(), home);
+  }
+  // History roots remain as well: they carry the Qwen worker homes and any archived
+  // home whose live `sessions` directory a worker pruned, and they still win for the
+  // accounts only they can name.
   for (const root of defaultCodexRoots()) {
     const { email } = codexClaims(root.path);
     if (email && !profiles.has(email.toLowerCase())) profiles.set(email.toLowerCase(), dirname(root.path));

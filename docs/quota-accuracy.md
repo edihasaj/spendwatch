@@ -18,6 +18,20 @@ model-specific pool. It never combines matching-duration windows from separate
 pools. The selected pool identifier is retained with the sanitized snapshot for
 diagnosis.
 
+Live capacity is discovered from a profile's credential, not from its history.
+`codexCapacityProfileHomes` lists `$HOME/.codex` and `$HOME/.codex-*` directories
+that hold their own regular `auth.json`, default home first, resolved to real
+directories so a home reached through an alias is read once. A signed-in profile
+with no `sessions` or `archived_sessions` directory is therefore still collected,
+and the reader never creates a history directory or moves a credential to get it.
+A profile whose `auth.json` is a link to another home's login is not counted as a
+second account. The rollout-root scan remains as a union so Qwen worker homes and
+archived-only homes keep their accounts; as before, that legacy scan resolves
+symlinked roots, so a borrowed credential can still surface there under its own
+account. Discovery only proposes homes: the native `account/read` decides whether
+a home is a ChatGPT subscription account, and an API-key mode, a free plan, or a
+missing quota window contributes no capacity rather than an estimate.
+
 The shared coordinator owns quota attempt timing: Codex may read once a minute,
 Claude once every two minutes, and a rate limit has at least a one-hour
 cooldown. When the coordinator is unavailable, a source can display only its
