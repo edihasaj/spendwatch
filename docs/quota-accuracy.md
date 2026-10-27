@@ -97,3 +97,12 @@ no provider pacing and no coordinator lease:
 Each card reads its own machine, so a card is only as current as the last time a
 scheduler ran the command on that machine. One provider failing never hides the
 others; the reason goes to stderr and stdout stays the JSON contract.
+
+A report build scans the whole window whichever agent is asked for, so the
+30-day window is far costlier than the 1-day window (about 40 s against about
+4 s on a busy machine). One build per window serves every provider. The 30-day
+totals are cached in `~/.local/state/spendwatch/local-capacity.json` for 30
+minutes, so a frequent schedule normally pays only for the 1-day window. A
+cached sample from the future or with malformed fields is ignored, and the
+1-day figures are always read fresh. A scheduler must allow a cold read (no
+cache) to finish, or the cache never fills.

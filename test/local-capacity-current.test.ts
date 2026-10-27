@@ -13,9 +13,9 @@ import { tempDir } from "./tmp";
 
 const NOW = Date.parse("2026-10-27T12:00:00Z");
 
-function report(models: Array<Partial<Report["models"][number]>>, totalCost = 0, totalTokens = 0): Report {
+function report(models: Array<Partial<Report["models"][number]>>, totalCost = 0, totalTokens = 0, source = "x"): Report {
   return {
-    totalCost, totalTokens,
+    source, totalCost, totalTokens,
     models: models.map((m) => ({ model: "x", calls: 1, inTok: 0, outTok: 0, cacheReadTok: 0, cacheWriteTok: 0, cost: 0, ...m })),
   } as unknown as Report;
 }
@@ -101,18 +101,19 @@ describe("local capacity collection", () => {
     const home = tempDir("local-capacity-grok-");
     mkdirSync(join(home, ".grok"), { recursive: true });
     writeFileSync(join(home, ".grok/auth.json"), JSON.stringify({ scope: { email: "dev@example.com" } }));
-    const windows: Array<[string[] | undefined, number]> = [];
+    const windows: number[] = [];
     const rows = await collectLocalCapacity(["grok"], deps({
       home,
-      reports: (agents, days) => {
-        windows.push([agents, days]);
-        return days === 1 ? [report([], 0.5, 100)] : [report([], 4, 900)];
+      reports: (days) => {
+        windows.push(days);
+        // Another agent's spend in the same build must not reach the Grok card.
+        return [report([], 99, 999, "codex"), days === 1 ? report([], 0.5, 100, "grok") : report([], 4, 900, "grok")];
       },
     })) as any[];
     expect(rows).toHaveLength(1);
     expect(rows[0].account).toBe("dev@example.com");
     expect(rows[0].spend).toEqual({ recentUsd: 0.5, recentTokens: 100, recentHours: 24, monthUsd: 4, monthTokens: 900, monthDays: 30 });
-    expect(windows).toEqual([[["grok"], 1], [["grok"], 30]]);
+    expect(windows).toEqual([1, 30]);
   });
 
   test("Grok without a signed-in account contributes no card", async () => {
@@ -134,7 +135,7 @@ describe("local capacity collection", () => {
 
   test("Local Qwen reports measured spend with no money, and notes the observation", async () => {
     const rows = await collectLocalCapacity(["qwen"], deps({
-      reports: (_agents, days) => [report([{ model: "qwen3.8-flash-next", inTok: days === 1 ? 7 : 70 }])],
+      reports: (days) => [report([{ model: "qwen3.8-flash-next", inTok: days === 1 ? 7 : 70 }])],
     })) as any[];
     expect(rows).toHaveLength(1);
     expect(rows[0].local.detail).toBe("Self-hosted Qwen usage recorded on this machine.");
@@ -165,8 +166,42 @@ describe("local capacity collection", () => {
       exists: () => true,
       reports: () => { reads++; return []; },
     }));
-    // grok: (grok,1) (grok,30); qwen: (all,1) (all,30); the repeated grok reuses its windows.
-    expect(reads).toBe(4);
+    // One build per window serves Grok, Local Qwen and the repeated Grok alike.
+    expect(reads).toBe(2);
+  });
+
+  test("keeps the 30-day totals for half an hour and rereads them after", async () => {
+    const home = tempDir("local-capacity-cache-");
+    mkdirSync(join(home, ".grok"), { recursive: true });
+    writeFileSync(join(home, ".grok/auth.json"), JSON.stringify({ scope: { email: "dev@example.com" } }));
+    let stored: unknown;
+    const cache = { read: () => stored, write: (value: unknown) => { stored = value; } };
+    const run = async (offsetMs: number, monthTokens: number) => {
+      const windows: number[] = [];
+      const rows = await collectLocalCapacity(["grok"], deps({
+        home, cache, now: NOW + offsetMs,
+        reports: (days) => { windows.push(days); return [report([], 1, days === 1 ? 10 : monthTokens, "grok")]; },
+      })) as any[];
+      return { windows, month: rows[0].spend.monthTokens, recent: rows[0].spend.recentTokens };
+    };
+    expect(await run(0, 900)).toEqual({ windows: [1, 30], month: 900, recent: 10 });
+    // Ten minutes later only the day is read; the month still comes from the first read.
+    expect(await run(10 * 60_000, 5000)).toEqual({ windows: [1], month: 900, recent: 10 });
+    expect(await run(31 * 60_000, 5000)).toEqual({ windows: [1, 30], month: 5000, recent: 10 });
+  });
+
+  test("ignores a cached month that is malformed or dated in the future", async () => {
+    const home = tempDir("local-capacity-badcache-");
+    mkdirSync(join(home, ".grok"), { recursive: true });
+    writeFileSync(join(home, ".grok/auth.json"), JSON.stringify({ scope: { email: "dev@example.com" } }));
+    for (const bad of [{ at: NOW + 60_000, grokUsd: 1, grokTokens: 1, qwenTokens: 1 }, { at: NOW, grokUsd: "x" }, "junk", null]) {
+      const windows: number[] = [];
+      await collectLocalCapacity(["grok"], deps({
+        home, cache: { read: () => bad, write: () => {} },
+        reports: (days) => { windows.push(days); return []; },
+      }));
+      expect(windows).toEqual([1, 30]);
+    }
   });
 
   test("one failing provider never hides the others", async () => {
