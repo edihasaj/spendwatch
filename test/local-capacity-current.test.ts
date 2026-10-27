@@ -301,6 +301,22 @@ describe("Copilot rate-limit protection", () => {
     }
   });
 
+  test("a login with no usable token keeps the last good row and backs off instead of caching nothing", async () => {
+    const cache = memory();
+    const good = counting();
+    await collectLocalCapacity(["copilot"], at(0, cache, good.runner));
+    const signedOut = async (_c: string, args: string[]): Promise<CommandResult> => {
+      if (args[0] === "auth" && args[1] === "status") return { code: 0, stdout: JSON.stringify({ hosts: { "github.com": [{ login: "alice" }] } }) };
+      if (args[0] === "auth" && args[1] === "token") return { code: 1, stdout: "" };
+      throw new Error("must not call the API without a token");
+    };
+    const rows = await collectLocalCapacity(["copilot"], at(16 * 60_000, cache, signedOut)) as any[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].usage.updatedAt).toBe(new Date(NOW).toISOString());
+    expect(cache.peek().failures).toBe(1);
+    expect(Object.keys(cache.peek().rows)).toEqual(["alice"]);
+  });
+
   test("a missing gh is not a failure and starts no backoff", async () => {
     const cache = memory();
     expect(await collectLocalCapacity(["copilot"], deps({ copilotCache: cache }))).toEqual([]);
