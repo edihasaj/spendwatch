@@ -1,6 +1,7 @@
 // Renders a standalone, self-contained HTML report from spendwatch reports.
 import type { Report, ReportPeriod, ToolRow, PromptRow } from "./aggregate";
 import { BRAND_HEAD_HTML } from "./branding";
+import { THEME_HEAD_HTML, THEME_CSS, THEME_CONTROL_HTML } from "./theme";
 import { fmtTok, fmtUsd } from "./render";
 import {
   mergeReports,
@@ -385,6 +386,7 @@ export function renderHtml(
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 ${BRAND_HEAD_HTML}
+${THEME_HEAD_HTML}
 <title>${opts.coverage?.status === "latest-scan" ? esc(`spendwatch — latest scan ${opts.coverage.scope.source} ${opts.coverage.scope.month}`) : "spendwatch — agent spend report"}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fragment+Mono:ital@0;1&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -396,18 +398,18 @@ ${BRAND_HEAD_HTML}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-family:"Manrope",sans-serif;font-size:13px;line-height:1.5;
-  background-image:linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px),radial-gradient(800px 500px at 50% -180px,rgba(104,213,220,.13),transparent 70%);background-size:38px 38px,38px 38px,auto}
+  background-image:linear-gradient(var(--grid,rgba(255,255,255,.018)) 1px,transparent 1px),linear-gradient(90deg,var(--grid,rgba(255,255,255,.018)) 1px,transparent 1px),radial-gradient(800px 500px at 50% -180px,rgba(104,213,220,.13),transparent 70%);background-size:38px 38px,38px 38px,auto}
 .wrap{width:min(1120px,calc(100% - 36px));margin:0 auto;padding:30px 0 80px}
 h1,h2,h3{font-family:"Manrope",sans-serif;letter-spacing:-.025em}
 .topbar{display:flex;align-items:center;gap:20px;padding-bottom:26px;border-bottom:1px solid var(--line)}
 .brand{font-family:"Fragment Mono",monospace;font-size:14px;letter-spacing:-.04em}.brand b{color:var(--amber);font-weight:400}
-.nav{display:flex;gap:5px;margin-left:18px;padding:4px;background:#0d1014;border:1px solid #20262d;border-radius:9px}.nav a{padding:7px 11px;border-radius:6px;color:var(--dim);text-decoration:none;font-size:12px;font-weight:600}.nav a.active{color:var(--ink);background:var(--panel2)}
-.top-actions{margin-left:auto;display:flex;gap:8px}.button{appearance:none;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:9px 12px;font:600 12px "Manrope",sans-serif;cursor:pointer;text-decoration:none;transition:border-color .15s,transform .15s}.button:hover{border-color:#52606d;transform:translateY(-1px)}.button.primary{border-color:rgba(104,213,220,.5);background:rgba(104,213,220,.09);color:#bdf5f7}
-.report-hero{display:grid;grid-template-columns:1fr auto;gap:28px;align-items:end;padding:44px 0 30px}.eyebrow{margin:0 0 8px;color:var(--amber);font:12px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.12em}.report-hero h1{font-size:clamp(34px,6vw,58px);line-height:.98;letter-spacing:-.055em;margin:0}.report-hero h1 span{color:#75808a}.hero-copy{margin:16px 0 0;color:var(--dim);font-size:14px;max-width:680px}.head-total{text-align:right;padding-bottom:4px}.head-total .big{font:28px "Fragment Mono",monospace;color:var(--amber)}.head-total .exact{font:10px "Fragment Mono",monospace;color:var(--dim);margin-top:2px}.head-total .cost{font:13px "Fragment Mono",monospace;color:var(--ink);margin-top:5px}.head-total .meta{color:var(--dim);font:10px "Fragment Mono",monospace;margin-top:6px;max-width:330px}
+.nav{display:flex;gap:5px;margin-left:18px;padding:4px;background:var(--nav-bg,#0d1014);border:1px solid var(--line,#20262d);border-radius:9px}.nav a{padding:7px 11px;border-radius:6px;color:var(--dim);text-decoration:none;font-size:12px;font-weight:600}.nav a.active{color:var(--ink);background:var(--panel2)}
+.top-actions{margin-left:auto;display:flex;gap:8px}.button{appearance:none;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:9px 12px;font:600 12px "Manrope",sans-serif;cursor:pointer;text-decoration:none;transition:border-color .15s,transform .15s}.button:hover{border-color:#52606d;transform:translateY(-1px)}.button.primary{border-color:rgba(104,213,220,.5);background:rgba(104,213,220,.09);color:var(--accent-text,#bdf5f7)}
+.report-hero{display:grid;grid-template-columns:1fr auto;gap:28px;align-items:end;padding:44px 0 30px}.eyebrow{margin:0 0 8px;color:var(--amber);font:12px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.12em}.report-hero h1{font-size:clamp(34px,6vw,58px);line-height:.98;letter-spacing:-.055em;margin:0}.report-hero h1 span{color:var(--subtle,#75808a)}.hero-copy{margin:16px 0 0;color:var(--dim);font-size:14px;max-width:680px}.head-total{text-align:right;padding-bottom:4px}.head-total .big{font:28px "Fragment Mono",monospace;color:var(--amber)}.head-total .exact{font:10px "Fragment Mono",monospace;color:var(--dim);margin-top:2px}.head-total .cost{font:13px "Fragment Mono",monospace;color:var(--ink);margin-top:5px}.head-total .meta{color:var(--dim);font:10px "Fragment Mono",monospace;margin-top:6px;max-width:330px}
 .overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-bottom:30px}
 .overview .block{margin-top:0;min-width:0}
 .account-coverage{grid-column:1/-1;margin:0;padding:12px 14px;border:1px solid var(--line);border-radius:9px;color:var(--dim);font-size:12px}.account-coverage summary{cursor:pointer;color:var(--ink)}.account-coverage p{margin:10px 0 0;max-width:800px}
-.capture-coverage{grid-column:1/-1;margin:0 0 18px;padding:12px 14px;border:1px dashed rgba(230,154,115,.5);border-radius:9px;background:rgba(230,154,115,.05);color:#d8b199;font-size:12px}
+.capture-coverage{grid-column:1/-1;margin:0 0 18px;padding:12px 14px;border:1px dashed rgba(230,154,115,.5);border-radius:9px;background:rgba(230,154,115,.05);color:var(--notice,#d8b199);font-size:12px}
 .capture-coverage h4{margin:0 0 6px;color:var(--ink);font:11px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.1em}
 .capture-coverage p{margin:8px 0 0}
 .capture-scope{margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
@@ -415,7 +417,7 @@ h1,h2,h3{font-family:"Manrope",sans-serif;letter-spacing:-.025em}
 .capture-ref{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;margin:6px 0 2px}
 .capture-ref b{color:var(--ink)}
 .capture-ref code{font:10px "Fragment Mono",monospace;color:var(--dim);overflow-wrap:anywhere}
-.break-list{height:calc(100% - 27px);background:linear-gradient(145deg,rgba(21,26,32,.98),rgba(15,19,24,.98));border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.break-list{height:calc(100% - 27px);background:var(--card-fill,linear-gradient(145deg,rgba(21,26,32,.98),rgba(15,19,24,.98)));border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .break-row{padding:12px 14px;border-bottom:1px solid var(--line);animation:rise .5s both;animation-delay:calc(var(--i)*35ms)}
 .break-row:last-child{border-bottom:none}
 .break-main{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
@@ -426,7 +428,7 @@ h1,h2,h3{font-family:"Manrope",sans-serif;letter-spacing:-.025em}
 .account-name{min-width:0;overflow-wrap:anywhere}
 .break-value{flex:none;font-variant-numeric:tabular-nums}
 .break-value em{color:var(--dim);font-style:normal}
-.break-track{height:5px;background:#0a0b0e;border-radius:4px;overflow:hidden;margin:8px 0 6px}
+.break-track{height:5px;background:var(--track-bg,#0a0b0e);border-radius:4px;overflow:hidden;margin:8px 0 6px}
 .break-track span{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,var(--amber2),var(--amber));animation:grow 1s cubic-bezier(.2,.8,.2,1) both}
 .break-meta{color:var(--dim);font-size:10px}
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:22px}
@@ -443,13 +445,13 @@ h1,h2,h3{font-family:"Manrope",sans-serif;letter-spacing:-.025em}
 .block{margin-top:26px;min-width:0;max-width:100%}
 .block h3{font-size:15px;margin:0 0 12px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
 .block h3 .sub{font-family:"Fragment Mono";font-size:10px;color:var(--dim);font-weight:400;letter-spacing:0}
-.section-body{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:var(--amber2) #0a0b0e;border-radius:12px;outline:none}
+.section-body{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:var(--amber2) var(--track-bg,#0a0b0e);border-radius:12px;outline:none}
 .section-body:focus-visible{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--amber2)}
 table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-family:"Fragment Mono",monospace;font-size:11px}
 thead th{text-align:left;font-weight:500;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.08em;
   padding:11px 14px;border-bottom:1px solid var(--line);background:var(--panel2)}
 th.num,td.num{text-align:right;font-variant-numeric:tabular-nums}
-tbody td{padding:9px 14px;border-bottom:1px solid rgba(35,38,47,.6);position:relative}
+tbody td{padding:9px 14px;border-bottom:1px solid var(--divider,rgba(35,38,47,.6));position:relative}
 tbody tr:last-child td{border-bottom:none}
 tbody tr{animation:rise .5s both;animation-delay:calc(var(--i)*22ms)}
 tbody tr:hover td{background:rgba(255,180,84,.04)}
@@ -462,12 +464,12 @@ td.expand{cursor:pointer}
 tr.has-drill.open .caret{transform:rotate(90deg)}
 tr.has-drill:hover td{background:rgba(255,180,84,.06)}
 tr.drill{display:none}tr.drill.open{display:table-row}
-tr.drill td{padding:0;background:#0b0c10}
+tr.drill td{padding:0;background:var(--inset,#0b0c10)}
 .drillbox{padding:10px 14px 12px 30px;border-left:2px solid var(--amber2);margin:0 0 2px}
 .dhead{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px}
-.drow{display:flex;align-items:baseline;gap:12px;padding:3px 0;border-bottom:1px solid rgba(35,38,47,.5)}
+.drow{display:flex;align-items:baseline;gap:12px;padding:3px 0;border-bottom:1px solid var(--divider,rgba(35,38,47,.5))}
 .drow:last-child{border-bottom:none}
-.dcmd{flex:1;color:#cfd3da;white-space:pre-wrap;word-break:break-word;font-size:12px}
+.dcmd{flex:1;color:var(--secondary,#cfd3da);white-space:pre-wrap;word-break:break-word;font-size:12px}
 .dn{color:var(--amber);flex:none;width:64px;text-align:right;font-variant-numeric:tabular-nums}
 .dt{color:var(--dim);flex:none;width:90px;text-align:right;font-variant-numeric:tabular-nums}
 footer{margin-top:48px;color:var(--dim);font-size:11px;border-top:1px solid var(--line);padding-top:18px;line-height:1.8}
@@ -483,9 +485,11 @@ footer b{color:var(--amber)}
   .drow{align-items:flex-start;flex-wrap:wrap;gap:4px 10px}.dcmd{flex-basis:100%}.dn,.dt{width:auto;text-align:left}
 }
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+
+${THEME_CSS}
 </style></head>
 <body><div class="wrap">
-<div class="topbar"><div class="brand"><b>spend</b>watch</div>${opts.limitsHref ? `<nav class="nav"><a href="${esc(opts.limitsHref)}">Capacity</a><a class="active" href="./spend.html">Spend detail</a><a href="${esc(opts.historyHref ?? "history.html")}">History</a></nav>` : ""}<div class="top-actions"><button class="button" id="refresh">Refresh</button>${opts.limitsHref ? `<a class="button primary" href="${esc(opts.limitsHref)}#setup">Add account</a>` : ""}</div></div>
+<div class="topbar"><div class="brand"><b>spend</b>watch</div>${opts.limitsHref ? `<nav class="nav"><a href="${esc(opts.limitsHref)}">Capacity</a><a class="active" href="./spend.html">Spend detail</a><a href="${esc(opts.historyHref ?? "history.html")}">History</a></nav>` : ""}<div class="top-actions">${THEME_CONTROL_HTML}<button class="button" id="refresh">Refresh</button>${opts.limitsHref ? `<a class="button primary" href="${esc(opts.limitsHref)}#setup">Add account</a>` : ""}</div></div>
 <section class="report-hero"><div><p class="eyebrow">Spend detail</p><h1>Understand where <span>usage goes.</span></h1><p class="hero-copy">Recorded token usage and API-equivalent cost estimates by machine, account, agent, tool, and project for ${esc(periodCopy)}.</p></div><div class="head-total"><div class="big">${fmtTok(totalTokens)} tokens</div><div class="exact">${totalTokens.toLocaleString("en-US")} recorded</div><div class="cost">${fmtUsd(total)} estimated</div><div class="meta">${sources.length} machine-agent source${sources.length === 1 ? "" : "s"} · since ${esc(sinceStr)} · generated ${esc(genStr)}</div></div></section>
 
 <div class="overview">${collectionCoverage(sources, opts.captureRefs ?? {})}${accountCoverage(sources)}${overview}</div>

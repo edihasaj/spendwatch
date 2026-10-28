@@ -227,9 +227,16 @@ spendwatch eval --sqlite ~/.local/share/spendwatch/routing.db --json
 
 ## Capacity dashboard
 
+Click the appearance icon in the header of Capacity, Spend detail, or History
+to cycle through **System → Light → Dark**. The icon shows the current choice;
+its tooltip names the next one. System follows your device setting.
+Your choice is saved in this browser and shared across pages and open tabs on
+the same origin. Standalone HTML reports include the same control; when browser
+storage is unavailable, switching still works for the current page.
+
 `spendwatch limits` turns sanitized provider capacity JSON into a focused
-planning page with one compact account card per identity. Wide screens use
-three columns. Cards show provider, account, plan, capture time, the percent
+planning page with one compact account card per identity. The grid fits four
+columns on a typical wide screen and adapts to one column on a phone. Cards show provider, account, plan, capture time, the percent
 left, a capacity bar, pace, and reset times. The label and the bar both show
 what is left: the bar is full at the start of a window and drains as the window
 is used, so a full bar means there is room to work. Below the bar, each window shows its pace and a
@@ -296,7 +303,10 @@ durable-import path; it does not change provider quota timestamps. The source
 status row shows machine coverage separately, so historical device unions never
 misrepresent a single account capture.
 
-The dashboard includes a 90% utilization planner for subscription-backed capacity.
+Each subscription card includes a collapsed utilization row showing its action
+and projected use. Expand it for the 90% target pace and the recommendation
+explanation. Planning shares the account card so identity, quota, and reset
+information appear once. Expanded details stay open during automatic refresh.
 Resetting Codex and Claude allowances show projected utilization and the
 percentage points per hour or day needed to finish near 90%. Subscription calls
 use a 10% interruption buffer. Live projection begins with the first measurable
