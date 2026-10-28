@@ -212,20 +212,18 @@ describe("Codex limits", () => {
     expect(html).toContain('href="spend.html"');
     expect(html).toContain('href="history.html">History</a>');
     expect(html.indexOf("Spend detail")).toBeLessThan(html.indexOf(">History</a>"));
-    expect(html).toContain(".accounts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))");
-    expect(html).toContain("@media(max-width:1120px){.accounts{grid-template-columns:repeat(2,minmax(0,1fr))}");
+    expect(html).toContain("grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr))");
     expect(html).toContain("@media(max-width:720px){.shell");
-    expect(html).toContain(".accounts,.pace-policy{grid-template-columns:1fr}");
     expect(html).toContain("@media(max-width:480px){.topbar{grid-template-columns:1fr auto}");
     expect(html).toContain('<details class="menu">');
     expect(html).toContain('id="refresh" title="Refresh" aria-label="Refresh"');
     expect(html).toContain("min-height:44px");
-    expect(html).toContain('.limit-meta{justify-content:flex-end;color:var(--muted);font:11px/1.35 "Fragment Mono",monospace}');
-    expect(html).toContain('.pace{margin-top:5px;color:#aab3ba;font:11px/1.35 "Fragment Mono",monospace}');
+    expect(html).toContain('.limit-meta{color:var(--muted);font:10px/1.4 "Fragment Mono",monospace;justify-content:flex-end}');
+    expect(html).toContain('.pace{margin-top:3px;color:var(--secondary,#aab3ba);font:10px/1.4 "Fragment Mono",monospace}');
     expect(html).toContain('class="pace-marker reserve" style="--pace-position:72%"');
     expect(html).toContain('class="pace-marker deficit" style="--pace-position:89%"');
-    expect(html).toContain("--marker-color:#a8ffb9");
-    expect(html).toContain("box-shadow:0 0 0 1px #020304,0 0 7px var(--marker-color)");
+    expect(html).toContain("--marker-color:var(--marker-good,#a8ffb9)");
+    expect(html).toContain("box-shadow:0 0 0 1px var(--marker,#020304),0 0 7px var(--marker-color)");
     expect(html).toContain('aria-label="Expected pace: 89% left, 3% over"');
     expect(html).toContain("3% over pace");
     expect(html).not.toContain("Learned ·");
@@ -241,16 +239,15 @@ describe("Codex limits", () => {
     expect(html).not.toContain("account-number");
     expect(html).not.toContain("Current capacity");
     expect(html).not.toContain("2 accounts · 1 service");
-    expect(html).toContain("<span class=\"provider-label\">Codex</span><h2>Codex Primary</h2><span class=\"account-email\">personal@example.com</span>");
-    expect(html).toContain("<span class=\"provider-label\">Codex</span><h2>Codex Secondary</h2><span class=\"account-email\">work@example.com</span>");
+    expect(html).toContain("<h2>Codex Primary</h2><span class=\"account-email\">personal@example.com</span>");
+    expect(html).toContain("<h2>Codex Secondary</h2><span class=\"account-email\">work@example.com</span>");
     expect(html.indexOf("Codex Primary")).toBeLessThan(html.indexOf("Codex Secondary"));
     expect(html).toContain(".limits{display:grid;grid-template-columns:1fr");
     expect(html).toContain("data-account-key=");
     expect(html).toContain("patchNode(card,nextCard)");
-    expect(html).toContain("for(const selector of ['.utilization'])");
-    expect(html).toContain("90% utilization plan");
-    expect(html).toContain("Target 90% · buffer 10%");
-    expect(html.indexOf('<section class="accounts">')).toBeLessThan(html.indexOf('<section class="utilization">'));
+    expect(html).not.toContain('<section class="utilization">');
+    expect(html).toContain('<details class="capacity-plan');
+    expect(html).toContain("target 90%");
     expect(html).toContain('data-utilization-key="codex:work@example.com"');
     expect(html).toContain("pts / day");
     expect(html).toContain("More capacity");
@@ -309,7 +306,7 @@ describe("Codex limits", () => {
     const html = renderLimitsHtml(accounts, { generatedAt: now, sources });
     expect(html).not.toContain('class="source snapshot"');
     expect(html).toContain("raw==='snapshot'?'snapshot'");
-    expect(html).toContain(".source.snapshot i{background:#6f7a83}");
+    expect(html).toContain(".source.snapshot i{background:var(--subtle,#6f7a83)}");
   });
 
   test("ages automatic source health out of recommendations while preserving quota freshness rules", () => {
@@ -949,5 +946,31 @@ describe("free codex accounts", () => {
   test("a free plan on another provider is left alone", () => {
     const accounts = normalizeCodexLimits([{ ...freeAccount, provider: "lokai" }]);
     expect(accounts.map((a) => a.email)).toEqual(["spare@example.com"]);
+  });
+});
+
+describe("compact capacity cards", () => {
+  test("keeps planning in its account card without repeating identity or capture age", () => {
+    const accounts = normalizeCodexLimits(sample);
+    const html = renderLimitsHtml(accounts, { generatedAt: Date.parse("2026-08-09T20:55:00Z") });
+    const cards = html.match(/<article class="account-card[\s\S]*?<\/article>/g) ?? [];
+    expect(cards).toHaveLength(accounts.length);
+    for (const card of cards) {
+      expect(card.match(/data-account-key=/g)).toHaveLength(1);
+      expect(card.match(/data-utilization-key=/g)).toHaveLength(1);
+      expect(card.match(/data-captured=/g)).toHaveLength(1);
+      expect(card.match(/class="account-email"/g)).toHaveLength(1);
+      expect(card).not.toContain('class="provider-label"');
+      expect(card).not.toContain('class="capacity-plan" open');
+    }
+    expect(html).not.toContain('<section class="utilization">');
+  });
+
+  test("retains a distinct provider for custom labels and escapes names inside cards", () => {
+    const html = renderLimitsHtml([{
+      provider: "codex", name: '<Work & friends>', email: 'work@example.com',
+      plan: "Pro", devices: [],
+    }]);
+    expect(html).toContain('<span class="provider-label">Codex</span><h2>&lt;Work &amp; friends&gt;</h2>');
   });
 });
