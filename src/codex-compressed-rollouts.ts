@@ -2,7 +2,7 @@
 // archives without changing duplicate, account, or gateway semantics.
 import {
   chmodSync, closeSync, constants, fstatSync, lstatSync, mkdtempSync, openSync,
-  rmSync, statSync, writeFileSync, type Stats,
+  readdirSync, readFileSync, rmSync, statSync, writeFileSync, type Stats,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -89,12 +89,58 @@ function cleanup(): void {
   totalSnapshotBytes = 0;
 }
 
+const ROOT_PREFIX = "spendwatch-codex-zstd-";
+const OWNER_FILE = "owner.pid";
+// A root without an owner file is from a release before owner files, or one
+// whose owner died between creating it and recording itself.
+const UNOWNED_ROOT_GRACE_MS = 60 * 60 * 1000;
+
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/**
+ * Removes snapshot roots left by runs that ended without their exit cleanup: a
+ * crash on an uncaught error, or a SIGKILL from a timeout. Each holds whole
+ * decoded transcripts (several GiB), so leaked roots fill the disk within a day
+ * of scheduled runs. Only this user's roots whose recorded owner is dead (or,
+ * without an owner file, that are over an hour old) are removed.
+ */
+export function sweepStaleSnapshotRoots(directory = tmpdir(), now = Date.now()): number {
+  let removed = 0;
+  let names: string[];
+  try { names = readdirSync(directory); } catch { return 0; }
+  const uid = process.getuid?.();
+  for (const name of names) {
+    if (!name.startsWith(ROOT_PREFIX)) continue;
+    const path = join(directory, name);
+    if (path === root) continue;
+    try {
+      const stats = lstatSync(path);
+      if (!stats.isDirectory() || (uid !== undefined && stats.uid !== uid)) continue;
+      let owner: number | undefined;
+      try {
+        const value = Number(readFileSync(join(path, OWNER_FILE), "utf8").trim());
+        if (Number.isSafeInteger(value) && value > 0) owner = value;
+      } catch { /* No owner file. */ }
+      const stale = owner !== undefined ? owner !== process.pid && !processAlive(owner) : now - stats.mtimeMs > UNOWNED_ROOT_GRACE_MS;
+      if (!stale) continue;
+      rmSync(path, { recursive: true, force: true });
+      removed++;
+    } catch { /* Another run may be removing it; try again next time. */ }
+  }
+  return removed;
+}
+
 function snapshotRoot(): string {
   if (root) return root;
+  sweepStaleSnapshotRoots();
   // A fresh mode-0700 directory prevents another process from seeing decoded
   // transcript bytes or replacing an archive cache entry.
-  root = mkdtempSync(join(tmpdir(), "spendwatch-codex-zstd-"));
+  root = mkdtempSync(join(tmpdir(), ROOT_PREFIX));
   chmodSync(root, 0o700);
+  writeFileSync(join(root, OWNER_FILE), `${process.pid}\n`, { mode: 0o600, flag: "wx" });
   if (!cleanupInstalled) {
     cleanupInstalled = true;
     process.once("exit", cleanup);
