@@ -88,6 +88,10 @@ retains the original `.jsonl` basename, so a live rollout moving to a compressed
 archive keeps its watch identity. Decoding is capped at 1 GiB per rollout and
 64 GiB across 10,000 private snapshots; reaching either limit fails visibly
 rather than dropping archive history.
+Snapshots live in a private `spendwatch-codex-zstd-*` folder under the system
+temporary directory, removed when the run exits. A run that crashes or is killed
+cannot clean up, so each folder records its owner's process id and every run
+first removes folders whose owner has exited (and unowned ones over an hour old).
 
 ## Isolated Claude clients
 

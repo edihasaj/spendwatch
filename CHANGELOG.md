@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed decoded Codex archive snapshots filling the disk. A run that crashed or
+  was stopped by its timeout left its temporary `spendwatch-codex-zstd-*` folder
+  behind, several GiB each; Studio collected about 235 GiB in a day. Each folder
+  now records its owner, and every run removes folders whose owner has exited.
+
 - Added `capacity-current --provider local` (and `copilot`, `grok`, `qwen`) so
   the Copilot, Grok and Local Qwen cards can be refreshed as often as the Codex
   and Claude quota cards instead of only with a full report export. The 30-day
