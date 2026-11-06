@@ -4,7 +4,7 @@ read_when:
   - Changing Codex or Claude capacity collection.
   - Investigating a mismatch between Spendwatch and a provider quota page.
   - Changing capacity poll coordination or snapshot persistence.
-  - Changing the Grok or Local Qwen capacity cards.
+  - Changing the Local Qwen capacity card.
 ---
 
 # Quota accuracy
@@ -79,25 +79,23 @@ of its absolute configuration directory. It never borrows the default profile's
 credential. A usable file credential still takes precedence, and Keychain
 refreshes retain the exact original service, account and Keychain path.
 
-## Grok and Local Qwen cards
+## Local Qwen card
 
-These providers publish no quota window, so `capacity-current --provider local`
-(or `grok`, `qwen`) builds their cards from the machine itself, with
+Local Qwen publishes no quota window, so `capacity-current --provider local`
+(or `qwen`) builds its card from the machine itself, with
 no provider pacing and no coordinator lease:
 
-- **Grok**: the signed-in account's email, with the last day and last 30 days
-  of this machine's Grok spend (API-equivalent estimate, not billed money).
 - **Local Qwen**: tokens this machine sent to the self-hosted model, whichever
   agent routed them. It carries no money. If the usage report cannot be read,
   the card omits the figures instead of showing zero.
 
-Each card reads its own machine, so a card is only as current as the last time a
-scheduler ran the command on that machine. One provider failing never hides the
-others; the reason goes to stderr and stdout stays the JSON contract.
+The card reads its own machine, so it is only as current as the last time a
+scheduler ran the command on that machine. A failure goes to stderr and stdout
+stays the JSON contract.
 
 A report build scans the whole window whichever agent is asked for, so the
 30-day window is far costlier than the 1-day window (about 40 s against about
-4 s on a busy machine). One build per window serves every provider. The 30-day
+4 s on a busy machine). The 30-day
 totals are cached in `~/.local/state/spendwatch/local-capacity.json` for 30
 minutes, so a frequent schedule normally pays only for the 1-day window. A
 cached sample from the future or with malformed fields is ignored, and the

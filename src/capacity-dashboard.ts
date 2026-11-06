@@ -22,7 +22,7 @@ export interface CapacityDashboard {
 }
 
 export interface CapacityAuthenticationRequirement {
-  provider: Exclude<CapacityProvider, "lokai" | "grok" | "qwen" | "openrouter">;
+  provider: Exclude<CapacityProvider, "lokai" | "qwen" | "openrouter">;
   device: string;
   account?: string;
   profile?: string;

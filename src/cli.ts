@@ -70,7 +70,7 @@ interface Args {
   guardWindow: GuardWindow;
   minimumRemaining: number;
   provider?: CapacityProvider;
-  /** `--provider local`: refresh the Grok and Local Qwen cards together. */
+  /** `--provider local`: refresh the Local Qwen card. */
   localCapacity?: boolean;
   failOpen: boolean;
   host: string;
@@ -88,15 +88,13 @@ Connect an account on this trusted Mac using the provider's official login.
   spendwatch account add codex --name work --device-auth
   spendwatch account add codex --name api --api-key-env OPENAI_API_KEY
   spendwatch account add claude --name work
-  spendwatch account add grok --name personal
 
 providers:
   codex      ChatGPT browser OAuth (default), device OAuth, or metered API key
   claude     Claude browser OAuth in an isolated config directory
-  grok       Grok browser OAuth in an isolated GROK_HOME
 
 options:
-  --name NAME       isolated profile name (required for Codex, Claude, and Grok)
+  --name NAME       isolated profile name (required for Codex and Claude)
   --device-auth     use Codex device OAuth instead of local browser callback
   --api-key-env VAR read a Codex API key from VAR and pass it over stdin
 
@@ -112,8 +110,8 @@ function parseAccountArgs(argv: string[]): AccountAddOptions | undefined {
   }
   if (argv[1] !== "add") throw new Error("usage: spendwatch account add PROVIDER [options]");
   const provider = argv[2] as AccountProvider | undefined;
-  if (provider !== "codex" && provider !== "claude" && provider !== "grok") {
-    throw new Error("provider must be codex, claude, or grok");
+  if (provider !== "codex" && provider !== "claude") {
+    throw new Error("provider must be codex or claude");
   }
   const options: AccountAddOptions = { provider };
   const rest = argv.slice(3);
@@ -195,7 +193,7 @@ function parseArgs(argv: string[]): Args {
       if (provider === "local") a.localCapacity = true;
       else {
         if (provider !== "codex" && provider !== "claude" && provider !== "lokai"
-          && provider !== "openrouter" && provider !== "grok" && provider !== "qwen") throw new Error("--provider must be codex, claude, openrouter, lokai, grok, qwen, or local");
+          && provider !== "openrouter" && provider !== "qwen") throw new Error("--provider must be codex, claude, openrouter, lokai, qwen, or local");
         a.provider = provider;
       }
     }
@@ -223,7 +221,7 @@ usage: spendwatch [report|watch|limits|guard|route|run|eval|capacity|capacity-cu
   push-test         send a background test to every enrolled browser
   capacity-history-export
                     export recoverable Codex quota history as sanitized JSONL
-  account add       connect Codex, Claude, or Grok using official auth
+  account add       connect Codex or Claude using official auth
 
 options:
   --days N          rolling window of N days instead of a calendar month
@@ -491,9 +489,9 @@ async function currentCapacity(provider: CapacityProvider | undefined, local = f
       process.stderr.write(`claude capacity ${failure.reason}${who}: ${failure.message}\n`);
     });
   }
-  if (local || provider === "grok" || provider === "qwen") {
+  if (local || provider === "qwen") {
     const { collectLocalCapacity, LOCAL_PROVIDERS } = await import("./local-capacity-current");
-    return collectLocalCapacity(local ? LOCAL_PROVIDERS : [provider as "grok" | "qwen"], undefined,
+    return collectLocalCapacity(local ? LOCAL_PROVIDERS : ["qwen"], undefined,
       (name, message) => process.stderr.write(`${name} capacity unavailable: ${message}\n`));
   }
   if (provider === "openrouter") {
@@ -501,7 +499,7 @@ async function currentCapacity(provider: CapacityProvider | undefined, local = f
     const result = await collectOpenRouterCapacity();
     return result ? [result] : [];
   }
-  if (provider && provider !== "codex") throw new Error("capacity-current supports codex, claude, openrouter, grok, qwen, or local");
+  if (provider && provider !== "codex") throw new Error("capacity-current supports codex, claude, openrouter, qwen, or local");
   return currentCodexCapacity(Date.now(), (failure) => {
     const who = failure.email ? ` for ${failure.email}` : "";
     process.stderr.write(`codex capacity ${failure.reason}${who}: ${failure.message}\n`);

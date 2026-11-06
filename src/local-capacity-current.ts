@@ -1,7 +1,6 @@
 // Live capacity cards for providers that publish no quota window of their own.
 //
-// Grok is covered by a plan and reports only what was sent, and Local Qwen is self-hosted and unlimited. Neither
-// needs a provider quota read, but each card still has to follow the machine's own usage closely, so a scheduler can refresh them as often as the
+// Local Qwen is self-hosted and unlimited. It needs no provider quota read, but its card still has to follow the machine's own usage closely, so a scheduler can refresh them as often as the
 // quota-based providers. Every read is injected, which keeps this module testable without a network, a
 // credential, or a transcript on disk.
 //
@@ -11,13 +10,12 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { readGrokAccountEmail } from "./accounts";
 import type { Report } from "./aggregate";
 import { build, reportsFrom } from "./build";
 import { rollingDays } from "./periods";
 
-export type LocalProvider = "grok" | "qwen";
-export const LOCAL_PROVIDERS: readonly LocalProvider[] = ["grok", "qwen"];
+export type LocalProvider = "qwen";
+export const LOCAL_PROVIDERS: readonly LocalProvider[] = ["qwen"];
 
 export interface CommandResult { code: number; stdout: string }
 
@@ -92,11 +90,7 @@ function isoSeconds(now: number): string {
 }
 
 /** What the cards need from one report window. */
-interface WindowTotals { grokUsd: number; grokTokens: number; qwenTokens: number }
-
-function sum(reports: Report[], field: "totalCost" | "totalTokens"): number {
-  return reports.reduce((total, report) => total + number(report[field]), 0);
-}
+interface WindowTotals { qwenTokens: number }
 
 /** Tokens one report set holds for the self-hosted model, whichever agent routed them. */
 export function localQwenTokens(reports: Report[]): number {
@@ -112,8 +106,7 @@ export function localQwenTokens(reports: Report[]): number {
 }
 
 function totalsOf(reports: Report[]): WindowTotals {
-  const grok = reports.filter((report) => report.source === "grok");
-  return { grokUsd: sum(grok, "totalCost"), grokTokens: sum(grok, "totalTokens"), qwenTokens: localQwenTokens(reports) };
+  return { qwenTokens: localQwenTokens(reports) };
 }
 
 function cachedMonth(deps: LocalCapacityDeps): WindowTotals | undefined {
@@ -124,13 +117,11 @@ function cachedMonth(deps: LocalCapacityDeps): WindowTotals | undefined {
   const finite = (field: string): number | undefined =>
     typeof value[field] === "number" && Number.isFinite(value[field]) && (value[field] as number) >= 0 ? value[field] as number : undefined;
   const at = finite("at");
-  const grokUsd = finite("grokUsd");
-  const grokTokens = finite("grokTokens");
   const qwenTokens = finite("qwenTokens");
   // A sample from the future (a clock that moved back) is never trusted.
   if (at === undefined || at > deps.now || deps.now - at >= MONTH_TTL_MS) return undefined;
-  if (grokUsd === undefined || grokTokens === undefined || qwenTokens === undefined) return undefined;
-  return { grokUsd, grokTokens, qwenTokens };
+  if (qwenTokens === undefined) return undefined;
+  return { qwenTokens };
 }
 
 /** Reads each window once however many providers ask for it, and the month from the cache while it is fresh. */
@@ -153,22 +144,6 @@ function windowLoader(deps: LocalCapacityDeps): (days: number) => WindowTotals {
     if (value instanceof Error) throw value;
     return value;
   };
-}
-
-function grokRows(deps: LocalCapacityDeps, window: (days: number) => WindowTotals): unknown[] {
-  const email = readGrokAccountEmail(`${deps.home}/.grok`);
-  if (!email) return [];
-  const recent = window(RECENT_DAYS);
-  const month = window(MONTH_DAYS);
-  return [{
-    provider: "grok",
-    account: email,
-    usage: { accountEmail: email, loginMethod: "xAI plan", primary: null, secondary: null, tertiary: null, updatedAt: isoSeconds(deps.now) },
-    spend: {
-      recentUsd: recent.grokUsd, recentTokens: recent.grokTokens, recentHours: 24,
-      monthUsd: month.grokUsd, monthTokens: month.grokTokens, monthDays: MONTH_DAYS,
-    },
-  }];
 }
 
 function qwenRows(deps: LocalCapacityDeps, window: (days: number) => WindowTotals): unknown[] {
@@ -206,8 +181,7 @@ export async function collectLocalCapacity(
   const rows: unknown[] = [];
   for (const provider of providers) {
     try {
-      if (provider === "grok") rows.push(...grokRows(deps, window));
-      else rows.push(...qwenRows(deps, window));
+      rows.push(...qwenRows(deps, window));
     } catch (error) {
       onFailure?.(provider, error instanceof Error ? error.message : String(error));
     }
