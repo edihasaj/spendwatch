@@ -6,6 +6,9 @@
   readings from older collectors are ignored. Past Grok spend in reports and
   session history is unchanged.
 
+- Kept accepting recorded Copilot and Grok capacity history on import. Only the
+  live cards and collection were removed.
+
 - Removed the Copilot capacity card, its monthly budget and budget alerts, the
   GitHub usage read, and `spendwatch account add copilot`. Stored Copilot
   readings from older collectors are ignored. Past Copilot spend in reports,
