@@ -29,7 +29,7 @@ export const CAPACITY_CARD_CSS = `
 .limit.unreadable .limit-head strong{color:var(--warn);font-size:11px}
 .limit.unreadable .pace{color:var(--muted)}
 .track.stale>i{background:var(--muted);opacity:.4}
-.limit.balance .limit-meta,.copilot-usage .limit-meta,.copilot-pool .limit-meta,.limit.spend .limit-meta{margin-top:4px}
+.limit.balance .limit-meta,.limit.spend .limit-meta{margin-top:4px}
 .capacity-plan{margin-top:10px;border-top:1px solid var(--line)}
 .capacity-plan>summary{display:flex;align-items:center;gap:8px;min-height:34px;padding-top:4px;cursor:pointer;list-style:none;font:10px "Fragment Mono",monospace}
 .capacity-plan>summary::-webkit-details-marker{display:none}

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type AccountProvider = "codex" | "claude" | "grok" | "copilot";
+export type AccountProvider = "codex" | "claude" | "grok";
 
 export interface AccountAddOptions {
   provider: AccountProvider;
@@ -38,13 +38,6 @@ function validateEnvName(value: string): string {
 
 export function buildAccountLoginPlan(options: AccountAddOptions): AccountLoginPlan {
   const baseHome = options.home ?? homedir();
-  if (options.provider === "copilot") {
-    if (options.name || options.deviceAuth || options.apiKeyEnv) {
-      throw new Error("Copilot accounts are managed by GitHub CLI; use: spendwatch account add copilot");
-    }
-    return { command: "gh", args: ["auth", "login", "--hostname", "github.com", "--web"], env: {} };
-  }
-
   if (!options.name) throw new Error(`--name is required for ${options.provider}`);
   const name = normalizeProfileName(options.name);
   if (options.provider === "codex") {
@@ -166,8 +159,5 @@ export async function addAccount(options: AccountAddOptions): Promise<string> {
     const email = readGrokAccountEmail(plan.profileHome);
     return `Grok account connected${email ? `: ${email}` : ""}\nProfile: ${plan.profileHome}\nSpendwatch will discover it automatically.`;
   }
-  if (options.provider === "claude") {
-    return `Claude account connected\nProfile: ${plan.profileHome}\nThe local collector will include it on its next refresh.`;
-  }
-  return "Copilot account connected through GitHub CLI. The local collector will include it on its next refresh.";
+  return `Claude account connected\nProfile: ${plan.profileHome}\nThe local collector will include it on its next refresh.`;
 }

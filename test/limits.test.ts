@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { copilotBudget, copilotBudgetStatus, copilotCreditWindow } from "../src/copilot-budget";
 import { normalizeCodexLimits, predictWindow, renderLimitsHtml, renderLimitsText } from "../src/limits";
 import { normalizeSourceHealth } from "../src/capacity-dashboard";
 import { buildUtilizationPlans, recommendAccount } from "../src/capacity-planner";
@@ -200,9 +199,7 @@ describe("Codex limits", () => {
     expect(html).toContain("spendwatch account add codex --name new-account --device-auth");
     expect(html).toContain("spendwatch account add codex --name new-account --api-key-env OPENAI_API_KEY");
     expect(html).toContain("spendwatch account add claude --name new-account");
-    expect(html).toContain("spendwatch account add copilot");
     expect(html).toContain("ChatGPT OAuth");
-    expect(html).toContain("GitHub OAuth");
     expect(html).toContain(".setup-item{min-width:0");
     expect(html).toContain(".command code{flex:1;min-width:0");
     expect(html).toContain("lokai-router check");
@@ -360,13 +357,11 @@ describe("Codex limits", () => {
       authentication: [
         { provider: "codex", device: "studio", profile: "work" },
         { provider: "claude", device: "macbook", account: "claude@example.com", profile: "default" },
-        { provider: "copilot", device: "studio", profile: "default" },
       ],
     });
     expect(html).toContain("Authentication required");
     expect(html).toContain("Sign in with ChatGPT");
     expect(html).toContain("Sign in with Claude");
-    expect(html).toContain("Sign in with GitHub");
     expect(html).toContain('data-auth-profile="work"');
   });
 
@@ -721,7 +716,7 @@ describe("Codex limits", () => {
     expect(invalidShape?.extraUsage).toBeUndefined();
   });
 
-  test("renders Claude, Copilot, and Lokai with provider-specific capacity", () => {
+  test("renders Claude and Lokai with provider-specific capacity", () => {
     const accounts = normalizeCodexLimits([
       {
         provider: "claude",
@@ -732,21 +727,6 @@ describe("Codex limits", () => {
           primary: { usedPercent: 0, windowMinutes: 300 },
           secondary: { usedPercent: 100, windowMinutes: 10080 },
           updatedAt: "2026-08-09T21:00:00Z",
-        },
-      },
-      {
-        provider: "copilot",
-        account: "dev (Business)",
-        usage: { accountEmail: "dev (Business)", loginMethod: "business", updatedAt: "2026-08-09T21:00:00Z" },
-        copilot: {
-          chatUnlimited: true,
-          completionsUnlimited: true,
-          premiumUnlimited: true,
-          premiumCreditsUsed: 186179,
-          overagePermitted: true,
-          tokenBasedBilling: true,
-          resetsAt: "2026-09-01T00:00:00Z",
-          seatAssignedAt: "2026-05-13T12:12:57Z",
         },
       },
       {
@@ -785,18 +765,6 @@ describe("Codex limits", () => {
     const html = renderLimitsHtml(accounts, { generatedAt: Date.parse("2026-08-09T21:00:00Z") });
     expect(html).toContain("Claude");
     expect(html).toContain("100% left");
-    expect(html).toContain("Copilot");
-    expect(html).toContain("AI credits used");
-    expect(html).toContain("186,179");
-    expect(html).toContain("186,179 / 40,000");
-    expect(html).toContain("$1,861.79 / $400");
-    expect(html).toContain("Monthly budget");
-    expect(html).toContain("$0.01 per credit");
-    expect(html).toContain("Over budget by 146,179 credits");
-    expect(html).toContain("$1,461.79 over the $400 ceiling");
-    expect(html).toContain("Ceiling passed, spending allowed");
-    expect(html).toContain("Token-based billing");
-    expect(html).toContain('data-reset="2026-09-01T00:00:00Z"');
     expect(html).toContain("Lokai");
     expect(html).toContain("Kimi K3 Cloud");
     expect(html).toContain("$7.81 left");
@@ -806,7 +774,6 @@ describe("Codex limits", () => {
     expect(html).toContain("LiteLLM · 1M context");
     expect(html).not.toContain("Cloud route");
     expect(renderLimitsText(accounts)).toContain("$4.60 left");
-    expect(renderLimitsText(accounts)).toContain("186179 of 40000 AI credits used ($1,861.79 of $400)\tover budget by 146179 credits ($1,461.79)");
     expect(html.indexOf("DeepSeek V4 Flash")).toBeLessThan(html.indexOf("Kimi K3 Cloud"));
     expect(html).not.toContain("Ollama Cloud");
     expect(html).not.toContain("Premium interactions");
@@ -815,76 +782,15 @@ describe("Codex limits", () => {
     expect(html).not.toContain("DeepSeek V4 Flash\t5h not active");
   });
 
-  test("reports overspend instead of clamping the monthly budget", () => {
-    const accounts = normalizeCodexLimits({
+  test("drops stored Copilot readings left by older collectors", () => {
+    const accounts = normalizeCodexLimits([{
       provider: "copilot",
       account: "dev (Business)",
-      usage: { accountEmail: "dev (Business)", loginMethod: "business", updatedAt: "2026-08-17T12:00:00Z" },
-      copilot: { premiumCreditsUsed: 52_500, overagePermitted: true, resetsAt: "2026-09-01T00:00:00Z" },
-    });
-    const status = copilotBudgetStatus(accounts[0]!);
-    expect(status.creditsOver).toBe(12_500);
-    expect(status.usdOver).toBeCloseTo(125, 6);
-    expect(status.usedPercent).toBeCloseTo(131.25, 2);
-    expect(status.over).toBe(true);
-    const html = renderLimitsHtml(accounts, { generatedAt: Date.parse("2026-08-17T12:00:00Z") });
-    expect(html).toContain("52,500 / 40,000");
-    expect(html).toContain("Over budget by 12,500 credits");
-    expect(html).toContain("$125 over the $400 ceiling");
-    expect(html).toContain("copilot-usage danger");
-    expect(html).toContain('aria-label="Monthly AI credit budget spent" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><i style="width:100%">');
-    expect(html).not.toContain("% of budget left");
-    const plan = buildUtilizationPlans(accounts, Date.parse("2026-08-17T12:00:00Z"))[0];
-    expect(plan?.action).toBe("more");
-    expect(plan?.detail).toContain("Monthly ceiling passed by 12,500 credits");
-  });
-
-  test("keeps the budget meter and overflow copy while inside the ceiling", () => {
-    const accounts = normalizeCodexLimits({
-      provider: "copilot",
-      account: "dev (Business)",
-      usage: { accountEmail: "dev (Business)", loginMethod: "business", updatedAt: "2026-08-17T12:00:00Z" },
-      copilot: { premiumCreditsUsed: 10_000, overagePermitted: true, resetsAt: "2026-09-01T00:00:00Z" },
-    });
-    const html = renderLimitsHtml(accounts, { generatedAt: Date.parse("2026-08-17T12:00:00Z") });
-    expect(html).toContain("10,000 / 40,000");
-    expect(html).toContain("75% of budget left");
-    expect(html).toContain('aria-valuenow="75"><i style="width:75%">');
-    expect(html).toContain("Paid overflow on");
-    expect(html).not.toContain("Over budget by");
-  });
-
-  test("paces the manual monthly credit budget instead of a seat allowance", () => {
-    const account = normalizeCodexLimits({
-      provider: "copilot",
-      account: "dev (Business)",
-      usage: { accountEmail: "dev (Business)", loginMethod: "business" },
-      copilot: { premiumCreditsUsed: 20_000, resetsAt: "2026-09-01T00:00:00Z" },
-    })[0]!;
-    const budget = copilotBudget({});
-    expect(budget).toEqual({ credits: 40_000, usd: 400, creditUsd: 0.01 });
-    const window = copilotCreditWindow(account, Date.parse("2026-08-16T00:00:00Z"), budget);
-    expect(window?.usedPercent).toBe(50);
-    expect(window?.resetsAt).toBe("2026-09-01T00:00:00Z");
-    expect(window?.windowMinutes).toBe(31 * 24 * 60);
-  });
-
-  test("falls back to the next month boundary when GitHub reports no reset", () => {
-    const account = normalizeCodexLimits({
-      provider: "copilot",
-      account: "dev (Business)",
-      usage: { accountEmail: "dev (Business)", loginMethod: "business" },
-      copilot: { premiumCreditsUsed: 50_000 },
-    })[0]!;
-    const window = copilotCreditWindow(account, Date.parse("2026-08-16T00:00:00Z"));
-    expect(window?.resetsAt).toBe("2026-09-01T00:00:00.000Z");
-    expect(window?.usedPercent).toBe(100);
-  });
-
-  test("honours budget overrides from the environment", () => {
-    expect(copilotBudget({ SPENDWATCH_COPILOT_MONTHLY_CREDITS: "20000", SPENDWATCH_COPILOT_MONTHLY_USD: "400" }))
-      .toEqual({ credits: 20_000, usd: 400, creditUsd: 0.02 });
-    expect(copilotBudget({ SPENDWATCH_COPILOT_MONTHLY_CREDITS: "0" }).credits).toBe(40_000);
+      usage: { accountEmail: "dev (Business)", loginMethod: "business", updatedAt: "2026-08-09T21:00:00Z" },
+      copilot: { premiumCreditsUsed: 3540, overagePermitted: true, resetsAt: "2026-09-01T00:00:00Z" },
+    }]);
+    expect(accounts).toEqual([]);
+    expect(renderLimitsHtml(accounts, { generatedAt: Date.parse("2026-08-09T21:00:00Z") })).not.toContain("Copilot");
   });
 
   test("never calls a reachable API route unlimited when balance is missing", () => {

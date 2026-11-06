@@ -37,7 +37,7 @@ describe("capacity dashboard", () => {
     const dashboard = dashboardInput([
       { kind: "source-health", device: "studio", status: "live", checkedAt: "2026-10-19T10:00:00Z" },
       { kind: "authentication-required", provider: "codex", device: "studio", profile: "work" },
-      { kind: "authentication-required", provider: "copilot", device: "autoreview-prod", profile: "default" },
+      { kind: "authentication-required", provider: "claude", device: "autoreview-prod", profile: "default" },
     ]);
 
     expect(dashboard.authentication).toEqual([
@@ -47,23 +47,23 @@ describe("capacity dashboard", () => {
 
   test("retains standalone authentication when source-health was not collected", () => {
     const dashboard = dashboardInput([
-      { kind: "authentication-required", provider: "copilot", device: "autoreview-prod", profile: "default" },
+      { kind: "authentication-required", provider: "claude", device: "autoreview-prod", profile: "default" },
     ]);
 
     expect(dashboard.authentication).toEqual([
-      { provider: "copilot", device: "autoreview-prod", profile: "default" },
+      { provider: "claude", device: "autoreview-prod", profile: "default" },
     ]);
   });
 
   test("retains authentication when every source-health record is malformed", () => {
     const dashboard = dashboardInput([
       { kind: "source-health", device: "studio", status: "unknown", checkedAt: "not-a-time" },
-      { kind: "authentication-required", provider: "copilot", device: "autoreview-prod", profile: "default" },
+      { kind: "authentication-required", provider: "claude", device: "autoreview-prod", profile: "default" },
     ]);
 
     expect(dashboard.sources).toEqual([]);
     expect(dashboard.authentication).toEqual([
-      { provider: "copilot", device: "autoreview-prod", profile: "default" },
+      { provider: "claude", device: "autoreview-prod", profile: "default" },
     ]);
   });
 

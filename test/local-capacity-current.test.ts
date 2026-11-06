@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Report } from "../src/aggregate";
 import {
   collectLocalCapacity,
+  LOCAL_PROVIDERS,
   localQwenTokens,
   type CommandResult,
   type LocalCapacityDeps,
@@ -48,53 +49,8 @@ function ghRunner(users: Record<string, unknown>, calls: string[][] = []) {
 }
 
 describe("local capacity collection", () => {
-  test("reports Copilot premium usage for every signed-in account and never leaks the token", async () => {
-    const calls: string[][] = [];
-    const rows = await collectLocalCapacity(["copilot"], deps({
-      which: () => "/usr/bin/gh",
-      run: ghRunner({
-        alice: {
-          login: "alice", copilot_plan: "business", assigned_date: "2026-01-02",
-          quota_reset_date: "2026-11-01", organization_login_list: ["acme"],
-          quota_snapshots: { premium_interactions: { credits_used: 123.5, overage_permitted: true, token_based_billing: true } },
-        },
-        bob: { login: "bob", copilot_plan: "pro", quota_snapshots: {} },
-      }, calls),
-    }));
-    expect(rows).toHaveLength(2);
-    const alice = rows[0] as any;
-    expect(alice.provider).toBe("copilot");
-    expect(alice.account).toBe("alice (BUSINESS)");
-    expect(alice.usage.updatedAt).toBe("2026-10-27T12:00:00.000Z");
-    expect(alice.copilot.premiumCreditsUsed).toBe(123.5);
-    expect(alice.copilot.resetsAt).toBe("2026-11-01T00:00:00Z");
-    expect(JSON.stringify(rows)).not.toContain("token-");
-    const normalized = normalizeCodexLimits(rows.map((row) => ({ ...(row as object), devices: ["demo"] })));
-    expect(normalized.map((account) => account.email).sort()).toEqual(["alice (BUSINESS)", "bob (PRO)"]);
-    expect(calls.some((args) => args[0] === "api")).toBe(true);
-  });
-
-  test("yields nothing for Copilot without gh, without a login, or on a failed read", async () => {
-    expect(await collectLocalCapacity(["copilot"], deps())).toEqual([]);
-    expect(await collectLocalCapacity(["copilot"], deps({ which: () => "/usr/bin/gh" }))).toEqual([]);
-    expect(await collectLocalCapacity(["copilot"], deps({
-      which: () => "/usr/bin/gh",
-      run: async (_command, args) => args[0] === "api" ? { code: 1, stdout: "" } : args[1] === "status"
-        ? { code: 0, stdout: JSON.stringify({ hosts: { "github.com": [{ login: "alice" }] } }) } : { code: 0, stdout: "t\n" },
-    }))).toEqual([]);
-  });
-
-  test("rejects a hostile login before it reaches a command", async () => {
-    const calls: string[][] = [];
-    const rows = await collectLocalCapacity(["copilot"], deps({
-      which: () => "/usr/bin/gh",
-      run: async (_c, args) => {
-        calls.push(args);
-        return { code: 0, stdout: JSON.stringify({ hosts: { "github.com": [{ login: "a; rm -rf /" }] } }) };
-      },
-    }));
-    expect(rows).toEqual([]);
-    expect(calls).toHaveLength(1);
+  test("no longer offers Copilot as a local card", () => {
+    expect(LOCAL_PROVIDERS).toEqual(["grok", "qwen"]);
   });
 
   test("Grok reports its account with day and month spend from the same reader", async () => {
@@ -209,117 +165,12 @@ describe("local capacity collection", () => {
     mkdirSync(join(home, ".grok"), { recursive: true });
     writeFileSync(join(home, ".grok/auth.json"), JSON.stringify({ scope: { email: "dev@example.com" } }));
     const failures: string[] = [];
-    const rows = await collectLocalCapacity(["copilot", "grok"], deps({
+    const rows = await collectLocalCapacity(["grok", "qwen"], deps({
       home,
-      which: () => "/usr/bin/gh",
-      run: async () => { throw new Error("spawn failed"); },
-      reports: () => [],
+      exists: () => true,
+      reports: () => { throw new Error("report failed"); },
     }), (provider, message) => failures.push(`${provider}:${message}`)) as any[];
-    expect(failures).toEqual(["copilot:spawn failed"]);
-    expect(rows.map((row) => row.provider)).toEqual(["grok"]);
-  });
-});
-
-describe("Copilot rate-limit protection", () => {
-  const user = { login: "alice", copilot_plan: "business", quota_snapshots: { premium_interactions: { credits_used: 10 } } };
-
-  function memory() {
-    let stored: unknown;
-    return { read: () => stored, write: (value: unknown) => { stored = value; }, peek: () => stored as any };
-  }
-
-  function counting(fail = false) {
-    const calls = { api: 0 };
-    const runner = async (_c: string, args: string[], env?: Record<string, string>): Promise<CommandResult> => {
-      if (args[0] === "auth" && args[1] === "status") return { code: 0, stdout: JSON.stringify({ hosts: { "github.com": [{ login: "alice" }] } }) };
-      if (args[0] === "auth" && args[1] === "token") return { code: 0, stdout: "secret\n" };
-      calls.api++;
-      return fail ? { code: 1, stdout: "" } : { code: 0, stdout: JSON.stringify(user) };
-    };
-    return { calls, runner };
-  }
-
-  const at = (offsetMs: number, copilotCache: ReturnType<typeof memory>, runner: LocalCapacityDeps["run"]) =>
-    deps({ now: NOW + offsetMs, which: () => "/usr/bin/gh", run: runner, copilotCache });
-
-  test("asks GitHub once per quarter hour and serves the cached row in between", async () => {
-    const cache = memory();
-    const { calls, runner } = counting();
-    expect(await collectLocalCapacity(["copilot"], at(0, cache, runner))).toHaveLength(1);
-    expect(await collectLocalCapacity(["copilot"], at(5 * 60_000, cache, runner))).toHaveLength(1);
-    expect(calls.api).toBe(1);
-    const rows = await collectLocalCapacity(["copilot"], at(16 * 60_000, cache, runner)) as any[];
-    expect(calls.api).toBe(2);
-    expect(rows[0].usage.updatedAt).toBe(new Date(NOW + 16 * 60_000).toISOString());
-  });
-
-  test("backs off after a failure, doubles, and serves the last good row with its original time", async () => {
-    const cache = memory();
-    const good = counting();
-    await collectLocalCapacity(["copilot"], at(0, cache, good.runner));
-    const bad = counting(true);
-    const first = await collectLocalCapacity(["copilot"], at(16 * 60_000, cache, bad.runner)) as any[];
-    expect(bad.calls.api).toBe(1);
-    expect(first[0].usage.updatedAt).toBe(new Date(NOW).toISOString());
-    expect(cache.peek().failures).toBe(1);
-    // Inside the 30-minute backoff nothing is sent.
-    await collectLocalCapacity(["copilot"], at(40 * 60_000, cache, bad.runner));
-    expect(bad.calls.api).toBe(1);
-    // After it, a second failure doubles the wait to one hour.
-    await collectLocalCapacity(["copilot"], at(47 * 60_000, cache, bad.runner));
-    expect(bad.calls.api).toBe(2);
-    expect(cache.peek().failures).toBe(2);
-    expect(cache.peek().nextAt - (NOW + 47 * 60_000)).toBe(60 * 60_000);
-    // Recovery clears the backoff.
-    await collectLocalCapacity(["copilot"], at(110 * 60_000, cache, good.runner));
-    expect(cache.peek().failures).toBe(0);
-    expect(cache.peek().nextAt).toBe(0);
-  });
-
-  test("caps the backoff at four hours", async () => {
-    const cache = memory();
-    const bad = counting(true);
-    let offset = 0;
-    const waits: number[] = [];
-    for (let i = 0; i < 8; i++) {
-      await collectLocalCapacity(["copilot"], at(offset, cache, bad.runner));
-      waits.push(cache.peek().nextAt - (NOW + offset));
-      offset = cache.peek().nextAt - NOW + 1;
-    }
-    const minute = 60_000;
-    expect(waits).toEqual([30, 60, 120, 240, 240, 240, 240, 240].map((m) => m * minute));
-    expect(cache.peek().failures).toBe(8);
-  });
-
-  test("ignores a cache that is malformed or from the future", async () => {
-    const { calls, runner } = counting();
-    for (const bad of ["junk", null, { fetchedAt: NOW + 60_000, failures: 0, nextAt: 0, rows: {} },
-      { fetchedAt: NOW, failures: 0, nextAt: NOW + 99 * 3_600_000, rows: {} }]) {
-      const before = calls.api;
-      await collectLocalCapacity(["copilot"], deps({ which: () => "/usr/bin/gh", run: runner, copilotCache: { read: () => bad, write: () => {} } }));
-      expect(calls.api).toBe(before + 1);
-    }
-  });
-
-  test("a login with no usable token keeps the last good row and backs off instead of caching nothing", async () => {
-    const cache = memory();
-    const good = counting();
-    await collectLocalCapacity(["copilot"], at(0, cache, good.runner));
-    const signedOut = async (_c: string, args: string[]): Promise<CommandResult> => {
-      if (args[0] === "auth" && args[1] === "status") return { code: 0, stdout: JSON.stringify({ hosts: { "github.com": [{ login: "alice" }] } }) };
-      if (args[0] === "auth" && args[1] === "token") return { code: 1, stdout: "" };
-      throw new Error("must not call the API without a token");
-    };
-    const rows = await collectLocalCapacity(["copilot"], at(16 * 60_000, cache, signedOut)) as any[];
-    expect(rows).toHaveLength(1);
-    expect(rows[0].usage.updatedAt).toBe(new Date(NOW).toISOString());
-    expect(cache.peek().failures).toBe(1);
-    expect(Object.keys(cache.peek().rows)).toEqual(["alice"]);
-  });
-
-  test("a missing gh is not a failure and starts no backoff", async () => {
-    const cache = memory();
-    expect(await collectLocalCapacity(["copilot"], deps({ copilotCache: cache }))).toEqual([]);
-    expect(cache.peek()).toBeUndefined();
+    expect(failures).toEqual(["grok:report failed"]);
+    expect(rows.map((row) => row.provider)).toEqual(["qwen"]);
   });
 });

@@ -42,17 +42,6 @@ describe("capacity history", () => {
     add("one-eighty-days", now - 180 * 86400_000, 14, "live", "boundaries@example.com");
     add("one-eighty-days-before", now - 180 * 86400_000 - 1, 15, "live", "boundaries@example.com");
     db.close();
-    for (const [offset, credits] of [[3_599_000, 10], [3_598_000, 11], [3_597_000, 12]]) {
-      const at = now - offset;
-      writeCapacitySnapshot(dbPath, [{
-        provider: "copilot", email: "credits@example.com", plan: "Business", devices: ["studio"],
-        updatedAt: new Date(at).toISOString(),
-        copilot: {
-          chatUnlimited: true, completionsUnlimited: true, premiumUnlimited: false, premiumCreditsUsed: credits,
-          overagePermitted: true, tokenBasedBilling: false,
-        },
-      }], { collectedAt: at });
-    }
 
     const history = loadCapacityHistory(dbPath, now);
     const verified = history.series.find((series) => series.account === "work@example.com");
@@ -60,9 +49,7 @@ describe("capacity history", () => {
     expect(verified).toMatchObject({ sampleCount: 4, points: [{ value: 31, resetsAt: now + 2_000 }] });
     expect(legacy).toMatchObject({ sampleCount: 2, points: [{ value: 32 }] });
     expect(history.series.find((series) => series.account === "boundaries@example.com")?.sampleCount).toBe(6);
-    expect(history.series.find((series) => series.account === "credits@example.com" && series.kind === "credits"))
-      .toMatchObject({ sampleCount: 3, points: [{ value: 12 }] });
-    expect(history.sampleCount).toBe(15);
+    expect(history.sampleCount).toBe(12);
   });
 
   test("stores live and imported samples idempotently", () => {
@@ -197,49 +184,6 @@ describe("capacity history", () => {
     } finally {
       check.close();
     }
-  });
-
-  test("stores Copilot credit history", () => {
-    const dir = tempDir("spendwatch-copilot-");
-    const db = join(dir, "history.db");
-    writeCapacitySnapshot(db, [{
-      provider: "copilot",
-      email: "developer (Business)",
-      plan: "Business",
-      devices: ["studio"],
-      updatedAt: "2026-08-09T20:00:00Z",
-      copilot: {
-        chatUnlimited: true,
-        completionsUnlimited: true,
-        premiumUnlimited: false,
-        premiumCreditsUsed: 1234,
-        overagePermitted: true,
-        tokenBasedBilling: true,
-        resetsAt: "2026-09-01T00:00:00Z",
-        seatAssignedAt: "2026-05-13T12:12:57Z",
-      },
-    }], { collectedAt: Date.parse("2026-08-09T20:00:00Z") });
-    const history = loadCapacityHistory(db, Date.parse("2026-08-10T00:00:00Z"));
-    expect(history.series[0]?.kind).toBe("credits");
-    expect(history.series[0]?.points[0]?.value).toBe(1234);
-    const sqlite = new Database(db, { readonly: true });
-    const billing = sqlite.query<{
-      overage: number;
-      tokenBased: number;
-      resetsAt: number;
-      assignedAt: number;
-    }, []>(`
-      SELECT copilot_overage_permitted AS overage,
-             copilot_token_based_billing AS tokenBased,
-             copilot_resets_at_ms AS resetsAt,
-             copilot_seat_assigned_at_ms AS assignedAt
-      FROM capacity_account_history
-    `).get();
-    sqlite.close();
-    expect(billing?.overage).toBe(1);
-    expect(billing?.tokenBased).toBe(1);
-    expect(billing?.resetsAt).toBe(Date.parse("2026-09-01T00:00:00Z"));
-    expect(billing?.assignedAt).toBe(Date.parse("2026-05-13T12:12:57Z"));
   });
 
   test("stores API balances in account history", () => {

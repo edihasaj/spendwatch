@@ -59,7 +59,7 @@ bin/spendwatch limits --input limits.json --sqlite spendwatch.db --history-html 
 bin/spendwatch guard --input limits.json --account work --window weekly --min-remaining 15
 bin/spendwatch server --input limits.json --sqlite spendwatch.db --public-dir public
 bin/spendwatch capacity-current --provider claude   # live Claude 5h/weekly windows
-bin/spendwatch capacity-current --provider local    # Copilot, Grok and Local Qwen cards (or copilot|grok|qwen)
+bin/spendwatch capacity-current --provider local    # Grok and Local Qwen cards (or grok|qwen)
 bin/spendwatch capacity-history-export --label studio > capacity-history.jsonl
 bin/spendwatch report                       # compiled binary (bun run build)
 ```
@@ -249,34 +249,14 @@ account response currently reports (including the five-hour window when
 available under a model-specific Codex limit ID). Under the plan name, a Codex
 account that has bought credits shows that balance, and a Claude account shows
 valid promotional cloud credits and paid extra usage when either has a balance
-or usage to report. Copilot is paced against a manual
-monthly ceiling instead of GitHub seat maths: 40,000 AI credits for $400 per
-calendar month, which fixes the credit price at $0.01. The card shows credits
-used against that budget, percent left, the money spent against the $400 cap,
-the per-credit price, paid-overflow status, and monthly reset, and it gets the
-same pace forecast and utilization plan as the subscription providers. The
-ceiling only reports, it never blocks: past it the card switches to
-`Over budget by N credits`, shows the dollars spent beyond the cap, and the plan
-turns to `More capacity`. Browser alerts follow the same 30/15/10/5/0 steps as
-weekly quota, so the 0% alert is the notification that the budget was passed,
-sent once per monthly cycle. Override
-the ceiling with `SPENDWATCH_COPILOT_MONTHLY_CREDITS` and
-`SPENDWATCH_COPILOT_MONTHLY_USD`. For a euro reporting ceiling, set
-`SPENDWATCH_COPILOT_MONTHLY_EUR=400` and `SPENDWATCH_USD_EUR_RATE` to the
-number of euros per US dollar. `SPENDWATCH_FX_RATE_DATE` records the quote date.
-The EUR card converts GitHub's $0.01-per-credit value, displays the dated
-estimate, and derives the matching credit allowance. It keeps warning and
-pacing behavior; it does not enforce a GitHub spending cap. Subscription fees
-and taxes are outside this usage-value meter. Rendering makes no FX requests.
-When GitHub reports no monthly reset the next
-UTC month boundary is used. It never labels paid overflow as unlimited. API-backed
+or usage to report. API-backed
 Lokai routes show sanitized cash balances; route
 readiness without a reported balance is never labeled unlimited. Grok Build
 publishes neither a quota nor a balance: the xAI plan absorbs the usage and the
 CLI holds no API key, so its card reports what was *sent* over a rolling 24 hours
 and 30 days rather than an allowance to pace. Those dollars are API-equivalent
 estimates at published list rates, not billed money, so the card is excluded from
-the utilization planner and from `guard`. Cards render Claude, Codex, Copilot,
+the utilization planner and from `guard`. Cards render Claude, Codex,
 Lokai, then local Qwen and Grok, keeping the providers without an allowance last. When the input
 includes a reported pace forecast, Spendwatch shows its learned deficit/reserve
 and run-out ETA. Other reset windows get a transparent live linear forecast.
@@ -314,8 +294,7 @@ usage, so early-cycle cards immediately say where to shift work while purchase
 and downgrade guidance remains cautious until more of the cycle has elapsed.
 Rebalance existing accounts first, add capacity
 only for a credible run-out or projection above 105%, and consider less capacity
-only below 60% after half the cycle and confirmation in another cycle. Copilot
-waits for the organization pool and budget totals. PAYG API and token-credit
+only below 60% after half the cycle and confirmation in another cycle. PAYG API and token-credit
 balances remain visible on their normal capacity cards, but are excluded from
 utilization targets and subscription-sizing guidance because they have no fixed
 allowance or reset cycle.
@@ -331,7 +310,6 @@ through each provider's official login:
 ```bash
 spendwatch account add codex --name work       # ChatGPT browser OAuth
 spendwatch account add claude --name work      # Claude browser OAuth
-spendwatch account add copilot                 # GitHub browser OAuth
 spendwatch limits --input agent-limits.json --html capacity.html
 spendwatch limits --input studio.json,macbook.json --json
 ```
@@ -354,8 +332,7 @@ spendwatch account add codex --name api --api-key-env OPENAI_API_KEY
 spendwatch account add grok --name personal     # Grok browser OAuth
 ```
 
-Claude uses an isolated `CLAUDE_CONFIG_DIR`; GitHub CLI owns Copilot's
-multi-account credentials. On a trusted macOS collector, Claude Code's default
+Claude uses an isolated `CLAUDE_CONFIG_DIR`. On a trusted macOS collector, Claude Code's default
 profile may keep its OAuth JSON in the login Keychain instead of a credentials
 file. When that happens, `capacity-current` refreshes the exact existing
 `Claude Code-credentials` item before its access token expires. It chooses the
@@ -412,8 +389,8 @@ browser only renders stored readings. A capacity-only worker can run separately
 from transcript and spend-history collection.
 
 Collectors may also emit sanitized `authentication-required` records. The
-dashboard then shows provider-specific sign-in links for Codex, Claude, or
-Copilot and opens the matching local setup command. API credentials and OAuth
+dashboard then shows provider-specific sign-in links for Codex or Claude
+and opens the matching local setup command. API credentials and OAuth
 tokens remain on the source machine.
 
 With `--sqlite`, every capacity check is appended to `capacity_history` and

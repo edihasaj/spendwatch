@@ -8,7 +8,6 @@ import type { BurnForecast } from "./capacity-burn";
 import { buildUtilizationPlans, type AccountUtilizationPlan } from "./capacity-planner";
 import { renderCapacityPlan } from "./capacity-card-plan";
 import { CAPACITY_CARD_CSS } from "./capacity-card-styles";
-import { copilotBudgetStatus, copilotCreditWindow, formatCopilotMoney } from "./copilot-budget";
 import { compactDuration } from "./duration";
 import { normalizeLocalQwenCapacity } from "./local-capacity";
 import type { CapacityCloudCredits, CapacityExtraUsage } from "./capacity-current";
@@ -36,22 +35,11 @@ export interface CapacityPrediction {
   source: "reported" | "linear";
 }
 
-export type CapacityProvider = "codex" | "claude" | "copilot" | "openrouter" | "lokai" | "grok" | "qwen";
+export type CapacityProvider = "codex" | "claude" | "openrouter" | "lokai" | "grok" | "qwen";
 
 // Cards render in this order, so a provider without an allowance sits after
 // the metered ones instead of interleaving by name.
-const PROVIDER_ORDER: CapacityProvider[] = ["claude", "codex", "copilot", "openrouter", "lokai", "qwen", "grok"];
-
-export interface CopilotCapacity {
-  chatUnlimited: boolean;
-  completionsUnlimited: boolean;
-  premiumUnlimited: boolean;
-  premiumCreditsUsed: number;
-  overagePermitted: boolean;
-  tokenBasedBilling: boolean;
-  resetsAt?: string;
-  seatAssignedAt?: string;
-}
+const PROVIDER_ORDER: CapacityProvider[] = ["claude", "codex", "openrouter", "lokai", "qwen", "grok"];
 
 export interface CloudRouteCapacity {
   ready: boolean;
@@ -94,7 +82,6 @@ export interface CodexLimitAccount {
   updatedAt?: string;
   session?: LimitWindow;
   weekly?: LimitWindow;
-  copilot?: CopilotCapacity;
   route?: CloudRouteCapacity;
   /** Purchased credits that cover usage past the included window. */
   credits?: { balance: string; unlimited: boolean };
@@ -171,7 +158,6 @@ interface RawCodexResult {
   account?: unknown;
   provider?: unknown;
   usage?: RawCodexUsage;
-  copilot?: Partial<CopilotCapacity>;
   route?: {
     ready?: unknown;
     detail?: unknown;
@@ -482,7 +468,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
     if (!item || typeof item !== "object") continue;
     const result = item as RawCodexResult;
     const provider = result.provider;
-    if (provider !== "codex" && provider !== "claude" && provider !== "copilot" && provider !== "lokai"
+    if (provider !== "codex" && provider !== "claude" && provider !== "lokai"
       && provider !== "openrouter" && provider !== "grok") continue;
     const usage = result.usage;
     if (!usage || typeof usage !== "object") continue;
@@ -543,20 +529,6 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
       account.openrouter = openrouter;
       account.plan = "Pay as you go";
     }
-    if (provider === "copilot" && result.copilot) {
-      account.copilot = {
-        chatUnlimited: Boolean(result.copilot.chatUnlimited),
-        completionsUnlimited: Boolean(result.copilot.completionsUnlimited),
-        premiumUnlimited: Boolean(result.copilot.premiumUnlimited),
-        premiumCreditsUsed: finiteNumber(result.copilot.premiumCreditsUsed) ?? 0,
-        overagePermitted: typeof result.copilot.overagePermitted === "boolean"
-          ? result.copilot.overagePermitted
-          : Boolean(result.copilot.premiumUnlimited),
-        tokenBasedBilling: Boolean(result.copilot.tokenBasedBilling),
-        resetsAt: typeof result.copilot.resetsAt === "string" ? result.copilot.resetsAt : undefined,
-        seatAssignedAt: typeof result.copilot.seatAssignedAt === "string" ? result.copilot.seatAssignedAt : undefined,
-      };
-    }
     if (provider === "grok" && result.spend) {
       const spend = result.spend;
       account.spend = {
@@ -592,7 +564,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
   }
 
   const normalized = [...accounts.values()];
-  for (const provider of ["codex", "claude", "copilot", "openrouter", "grok"] as const) {
+  for (const provider of ["codex", "claude", "openrouter", "grok"] as const) {
     const group = normalized
       .filter((account) => account.provider === provider)
       .sort((a, b) => a.email.localeCompare(b.email));
@@ -627,11 +599,11 @@ function leftPercent(window?: LimitWindow): number | undefined {
 }
 
 function providerLabel(provider: CapacityProvider): string {
-  return ({ codex: "Codex", claude: "Claude", copilot: "Copilot", openrouter: "OpenRouter", lokai: "Lokai", grok: "Grok", qwen: "Qwen" })[provider];
+  return ({ codex: "Codex", claude: "Claude", openrouter: "OpenRouter", lokai: "Lokai", grok: "Grok", qwen: "Qwen" })[provider];
 }
 
 function providerAccent(provider: CapacityProvider): string {
-  return ({ codex: "#68d5dc", claude: "#e69a73", copilot: "#8ea9ff", openrouter: "#f5a623", lokai: "#b8d96b", grok: "#c58af9", qwen: "#e6bf66" })[provider];
+  return ({ codex: "#68d5dc", claude: "#e69a73", openrouter: "#f5a623", lokai: "#b8d96b", grok: "#c58af9", qwen: "#e6bf66" })[provider];
 }
 
 function formatBalance(balance: ApiCreditBalance): string {
@@ -747,38 +719,6 @@ function formatCredits(balance: string): string {
   }).format(value);
 }
 
-function copilotLimits(account: CodexLimitAccount, nowMs: number): string {
-  const capacity = account.copilot!;
-  const status = copilotBudgetStatus(account);
-  const budget = status.budget;
-  const window = copilotCreditWindow(account, nowMs, budget);
-  const left = Math.max(0, Math.round(100 - (window?.usedPercent ?? 0)));
-  const tone = status.over || left <= 15 ? "danger" : left <= 35 ? "warn" : "good";
-  const marker = window && !status.over ? paceMarker(window, nowMs) : "";
-  const reset = window
-    ? `<span class="reset" data-reset="${esc(window.resetsAt!)}">Reset time loading</span>`
-    : "<span>Monthly reset</span>";
-  const billing = capacity.tokenBasedBilling ? "Token-based billing" : "AI credit billing";
-  const overflow = capacity.overagePermitted ? "Paid overflow on" : "Overflow off at GitHub";
-  const standing = status.over
-    ? `Over budget by ${status.creditsOver.toLocaleString()} credits`
-    : `${left}% of budget left`;
-  const money = status.over
-    ? `${esc(formatCopilotMoney(status.usdOver, budget))} over the ${esc(formatCopilotMoney(budget.usd, budget))} ceiling`
-    : `${esc(overflow)}`;
-  return `<section class="limit copilot-usage ${tone}">
-    <div class="limit-head"><span>AI credits used</span><strong>${status.creditsUsed.toLocaleString()} / ${budget.credits.toLocaleString()}</strong></div>
-    <div class="track" role="progressbar" aria-label="${status.over ? "Monthly AI credit budget spent" : "Monthly AI credit budget remaining"}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${status.over ? 100 : left}"><i style="width:${status.over ? 100 : left}%"></i>${marker}</div>
-    <div class="limit-meta split"><span>${esc(standing)}</span>${reset}</div>
-    ${window && !status.over && paceLabel(window, nowMs) ? `<div class="pace"><span>${esc(paceLabel(window, nowMs)!)}</span></div>` : ""}
-  </section><section class="limit copilot-pool ${tone}">
-    <div class="limit-head"><span>Monthly budget</span><strong>${esc(formatCopilotMoney(status.usdSpent, budget))} / ${esc(formatCopilotMoney(budget.usd, budget))}</strong></div>
-    <div class="limit-meta split"><span>${money}</span><span>${esc(formatCopilotMoney(budget.creditUsd, budget, 4))} per credit</span></div>
-    ${budget.currency === "EUR" ? `<div class="limit-meta" title="ECB reference conversion; credit value excludes subscription fees and taxes"><span>EUR estimate · FX ${esc(budget.rateDate ?? "date unavailable")}</span></div>` : ""}
-    <div class="pace"><span>${status.over ? "Ceiling passed, spending allowed" : "Manual ceiling"}</span><strong>${esc(billing)}</strong></div>
-  </section>`;
-}
-
 function formatTokens(total: number): string {
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(total);
 }
@@ -862,9 +802,6 @@ function providerLimits(account: CodexLimitAccount, nowMs: number): string {
   }
   if (account.provider === "lokai" && account.route) {
     return routeBalanceBlock(account.route);
-  }
-  if (account.provider === "copilot" && account.copilot) {
-    return copilotLimits(account, nowMs);
   }
   if (account.provider === "qwen" && account.local) {
     return localQwenLimits(account);
@@ -957,13 +894,6 @@ export function renderLimitsText(accounts: CodexLimitAccount[], nowMs = Date.now
         : "";
       return `OpenRouter · ${account.email}\t${formatUsd(capacity.balanceUsd, 4)} left\t${formatUsd(capacity.totalUsageUsd, 4)} account billed\t${usage}${history}`;
     }
-    if (account.copilot) {
-      const status = copilotBudgetStatus(account);
-      const standing = status.over
-        ? `over budget by ${status.creditsOver} credits (${formatCopilotMoney(status.usdOver, status.budget)})`
-        : `${status.creditsLeft} credits left`;
-      return `${account.email}\t${account.plan}\t${status.creditsUsed} of ${status.budget.credits} AI credits used (${formatCopilotMoney(status.usdSpent, status.budget)} of ${formatCopilotMoney(status.budget.usd, status.budget)})\t${standing}`;
-    }
     if (account.provider === "qwen" && account.local) {
       const usage = account.spend
         ? `Measured ${Math.round(account.spend.recentHours)}h ${formatTokens(account.spend.recentTokens)} tokens\tMeasured ${Math.round(account.spend.monthDays)}d ${formatTokens(account.spend.monthTokens)} tokens`
@@ -1010,7 +940,7 @@ export function renderLimitsHtml(
   const authenticationHtml = (opts.authentication ?? []).map((item) => {
     const provider = providerLabel(item.provider);
     const label = item.account ? `${provider} · ${item.account}` : provider;
-    return `<section class="auth-required" data-auth-provider="${item.provider}" data-auth-profile="${esc(item.profile ?? "default")}"><div><strong>Authentication required</strong><span>${esc(label)} on ${esc(item.device)}</span></div><a href="#setup">Sign in with ${esc(item.provider === "codex" ? "ChatGPT" : item.provider === "claude" ? "Claude" : "GitHub")}</a></section>`;
+    return `<section class="auth-required" data-auth-provider="${item.provider}" data-auth-profile="${esc(item.profile ?? "default")}"><div><strong>Authentication required</strong><span>${esc(label)} on ${esc(item.device)}</span></div><a href="#setup">Sign in with ${esc(item.provider === "codex" ? "ChatGPT" : "Claude")}</a></section>`;
   }).join("");
 
   return `<!doctype html>
@@ -1046,7 +976,6 @@ ${authenticationHtml}
 <section class="setup" id="setup"><div class="setup-head"><div><h2>Connect another account</h2><p>Copy one command to a trusted Mac. Provider credentials never reach this dashboard.</p></div><label class="profile-field"><span>Profile name</span><input id="profile-name" value="new-account" maxlength="32" pattern="[a-z0-9][a-z0-9-]*" spellcheck="false"></label></div><div class="provider-setup">
   <div class="setup-item" style="--item-accent:#68d5dc"><div class="setup-label"><b>Codex</b><span class="auth-kind">ChatGPT OAuth</span></div><p>Official browser sign-in. Each named profile stays logged in and refreshes independently.</p><div class="command"><code data-template="spendwatch account add codex --name {name}">spendwatch account add codex --name new-account</code><button class="copy">COPY</button></div><details class="alternatives"><summary>Headless or metered API key</summary><div class="command"><code data-template="spendwatch account add codex --name {name} --device-auth">spendwatch account add codex --name new-account --device-auth</code><button class="copy">COPY</button></div><div class="command"><code data-template="spendwatch account add codex --name {name} --api-key-env OPENAI_API_KEY">spendwatch account add codex --name new-account --api-key-env OPENAI_API_KEY</code><button class="copy">COPY</button></div></details></div>
   <div class="setup-item" style="--item-accent:#e69a73"><div class="setup-label"><b>Claude</b><span class="auth-kind">Claude OAuth</span></div><p>Official browser sign-in in a separate local Claude configuration.</p><div class="command"><code data-template="spendwatch account add claude --name {name}">spendwatch account add claude --name new-account</code><button class="copy">COPY</button></div></div>
-  <div class="setup-item" style="--item-accent:#8ea9ff"><div class="setup-label"><b>Copilot</b><span class="auth-kind">GitHub OAuth</span></div><p>GitHub CLI keeps multiple identities; Copilot Business capacity follows the signed-in account.</p><div class="command"><code>spendwatch account add copilot</code><button class="copy">COPY</button></div></div>
   <div class="setup-item" style="--item-accent:#b8d96b"><div class="setup-label"><b>Lokai</b><span class="auth-kind">API keys</span></div><p>Keys stay in the existing local LiteLLM/1Password setup. This only verifies routes and balances.</p><div class="command"><code>lokai-router check</code><button class="copy">COPY</button></div></div>
 </div></section>
 <section class="accounts">${cards}</section>

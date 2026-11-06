@@ -1,6 +1,5 @@
 import { Database } from "./database";
 import { crossedWeeklyThreshold, type WeeklyAlertThreshold } from "./capacity-alerts";
-import { copilotCreditWindow } from "./copilot-budget";
 import type { CodexLimitAccount } from "./limits";
 
 const PUSH_SCHEMA = `
@@ -132,8 +131,7 @@ export class PushStore {
     let created = 0;
     const transaction = this.db.transaction(() => {
       for (const account of accounts) {
-        // Copilot is watched through its manual monthly credit budget; the others through weekly quota.
-        const watched = account.weekly ?? copilotCreditWindow(account, nowMs);
+        const watched = account.weekly;
         if (!watched) continue;
         const accountKey = account.email.toLowerCase();
         const resetKey = watched.resetsAt ?? `window-${watched.windowMinutes}`;

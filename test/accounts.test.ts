@@ -27,8 +27,6 @@ describe("account login", () => {
     const claude = buildAccountLoginPlan({ provider: "claude", name: "personal", home: "/Users/test" });
     expect(claude.args).toEqual(["auth", "login"]);
     expect(claude.env.CLAUDE_CONFIG_DIR).toBe("/Users/test/.claude-personal");
-    const copilot = buildAccountLoginPlan({ provider: "copilot" });
-    expect(copilot.args).toEqual(["auth", "login", "--hostname", "github.com", "--web"]);
   });
 
   test("rejects paths, flags, and ambiguous auth methods as account names", () => {
