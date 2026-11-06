@@ -9,6 +9,22 @@ import { attachSessionEquivalentForecasts } from "../src/session-equivalents";
 import { tempDir } from "./tmp";
 
 describe("capacity history", () => {
+  test("keeps importing recorded Copilot and Grok capacity history", () => {
+    const dir = tempDir("spendwatch-retired-history-");
+    const db = join(dir, "capacity.db");
+    const input = join(dir, "history.jsonl");
+    const sample = (provider: string) => JSON.stringify({
+      provider, account: `${provider}@example.com`, device: "studio", source: "manual",
+      sampledAt: new Date(Date.now() - 3_600_000).toISOString(), plan: "Plan",
+      windows: [{ kind: "weekly", usedPercent: 12, windowMinutes: 10_080 }],
+    });
+    writeFileSync(input, `${sample("copilot")}\n${sample("grok")}\n`);
+    expect(importCapacityHistory(db, [input]).accepted).toBe(2);
+    const accounts = loadCapacityHistory(db).series.map((series) => series.account);
+    expect(accounts).toContain("copilot@example.com");
+    expect(accounts).toContain("grok@example.com");
+  });
+
   test("downsamples dense buckets without changing raw counts or provenance series", () => {
     const dbPath = join(tempDir("spendwatch-capacity-buckets-"), "history.db");
     const now = Date.parse("2026-10-20T12:00:00Z");

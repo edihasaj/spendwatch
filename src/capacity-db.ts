@@ -265,8 +265,11 @@ export function writeCapacitySnapshot(
   return { rows };
 }
 
+/** Copilot and Grok are no longer collected, but their recorded capacity history stays. */
+type HistoricalProvider = CapacityProvider | "copilot" | "grok";
+
 function normalizeHistoricalRecord(value: unknown): {
-  provider: CapacityProvider;
+  provider: HistoricalProvider;
   account: string;
   device: string;
   source: string;
@@ -278,8 +281,8 @@ function normalizeHistoricalRecord(value: unknown): {
   const record = value as HistoricalRecordInput;
   // Qwen is self-hosted unlimited capacity, not a quota-history provider.
   if (record.provider === "qwen") return undefined;
-  if (record.provider !== "codex" && record.provider !== "claude"
-    && record.provider !== "openrouter" && record.provider !== "lokai") return undefined;
+  if (record.provider !== "codex" && record.provider !== "claude" && record.provider !== "copilot"
+    && record.provider !== "openrouter" && record.provider !== "lokai" && record.provider !== "grok") return undefined;
   if (typeof record.account !== "string" || !record.account.trim()) return undefined;
   const sampledAt = parsedTime(record.sampledAt);
   if (sampledAt === undefined || !Array.isArray(record.windows)) return undefined;
