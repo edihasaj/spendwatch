@@ -5,7 +5,6 @@ import { Aggregator } from "../src/aggregate";
 import { IncrementalReader } from "../src/scan";
 import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "../src/grok";
 import { defaultGrokRoots, discover, type SourceFile } from "../src/sources";
-import { grokAccountEmail } from "../src/accounts";
 import { priceFor, usageCost } from "../src/pricing";
 import { tempDir } from "./tmp";
 
@@ -200,11 +199,6 @@ describe("grok discovery", () => {
       join(home, ".grok", "sessions"),
       join(home, ".grok-work", "sessions"),
     ]);
-  });
-
-  test("reads the account email out of a scope-keyed auth.json", () => {
-    expect(grokAccountEmail({ "https://auth.x.ai::abc": { email: "me@example.com", refresh_token: "x" } })).toBe("me@example.com");
-    expect(grokAccountEmail({ "https://auth.x.ai::abc": { user_id: "no-email" } })).toBeUndefined();
   });
 
   test("decodes the session directory name into a project", () => {

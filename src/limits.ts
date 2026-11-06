@@ -35,11 +35,11 @@ export interface CapacityPrediction {
   source: "reported" | "linear";
 }
 
-export type CapacityProvider = "codex" | "claude" | "openrouter" | "lokai" | "grok" | "qwen";
+export type CapacityProvider = "codex" | "claude" | "openrouter" | "lokai" | "qwen";
 
 // Cards render in this order, so a provider without an allowance sits after
 // the metered ones instead of interleaving by name.
-const PROVIDER_ORDER: CapacityProvider[] = ["claude", "codex", "openrouter", "lokai", "qwen", "grok"];
+const PROVIDER_ORDER: CapacityProvider[] = ["claude", "codex", "openrouter", "lokai", "qwen"];
 
 export interface CloudRouteCapacity {
   ready: boolean;
@@ -469,7 +469,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
     const result = item as RawCodexResult;
     const provider = result.provider;
     if (provider !== "codex" && provider !== "claude" && provider !== "lokai"
-      && provider !== "openrouter" && provider !== "grok") continue;
+      && provider !== "openrouter") continue;
     const usage = result.usage;
     if (!usage || typeof usage !== "object") continue;
     // A free Codex plan carries no capacity worth planning against. Filtering at
@@ -529,17 +529,6 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
       account.openrouter = openrouter;
       account.plan = "Pay as you go";
     }
-    if (provider === "grok" && result.spend) {
-      const spend = result.spend;
-      account.spend = {
-        recentUsd: finiteNumber(spend.recentUsd) ?? 0,
-        recentTokens: finiteNumber(spend.recentTokens) ?? 0,
-        recentHours: finiteNumber(spend.recentHours) ?? 24,
-        monthUsd: finiteNumber(spend.monthUsd) ?? 0,
-        monthTokens: finiteNumber(spend.monthTokens) ?? 0,
-        monthDays: finiteNumber(spend.monthDays) ?? 30,
-      };
-    }
     if (provider === "lokai" && result.route) {
       account.route = {
         ready: Boolean(result.route.ready),
@@ -564,7 +553,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
   }
 
   const normalized = [...accounts.values()];
-  for (const provider of ["codex", "claude", "openrouter", "grok"] as const) {
+  for (const provider of ["codex", "claude", "openrouter"] as const) {
     const group = normalized
       .filter((account) => account.provider === provider)
       .sort((a, b) => a.email.localeCompare(b.email));
@@ -599,11 +588,11 @@ function leftPercent(window?: LimitWindow): number | undefined {
 }
 
 function providerLabel(provider: CapacityProvider): string {
-  return ({ codex: "Codex", claude: "Claude", openrouter: "OpenRouter", lokai: "Lokai", grok: "Grok", qwen: "Qwen" })[provider];
+  return ({ codex: "Codex", claude: "Claude", openrouter: "OpenRouter", lokai: "Lokai", qwen: "Qwen" })[provider];
 }
 
 function providerAccent(provider: CapacityProvider): string {
-  return ({ codex: "#68d5dc", claude: "#e69a73", openrouter: "#f5a623", lokai: "#b8d96b", grok: "#c58af9", qwen: "#e6bf66" })[provider];
+  return ({ codex: "#68d5dc", claude: "#e69a73", openrouter: "#f5a623", lokai: "#b8d96b", qwen: "#e6bf66" })[provider];
 }
 
 function formatBalance(balance: ApiCreditBalance): string {
@@ -723,20 +712,6 @@ function formatTokens(total: number): string {
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(total);
 }
 
-function spendLimits(account: CodexLimitAccount): string {
-  const spend = account.spend!;
-  const block = (label: string, usd: number, tokens: number, meta: string) => `<section class="limit spend good">
-    <div class="limit-head"><span>${esc(label)}</span><strong>${esc(formatUsd(usd))}</strong></div>
-    <div class="limit-meta split"><span>${esc(formatTokens(tokens))} tokens</span><span>${esc(meta)}</span></div>
-  </section>`;
-  const days = Math.round(spend.monthDays);
-  const hours = Math.round(spend.recentHours);
-  return [
-    block(`Sent · last ${hours}h`, spend.recentUsd, spend.recentTokens, "API-equivalent"),
-    block(`Sent · last ${days} days`, spend.monthUsd, spend.monthTokens, "Plan covers it"),
-  ].join("");
-}
-
 function localQwenLimits(account: CodexLimitAccount): string {
   const tokens = (label: string, count: number) => `<section class="limit local-usage good">
     <div class="limit-head"><span>${esc(label)}</span><strong>${esc(formatTokens(count))} tokens</strong></div>
@@ -805,11 +780,6 @@ function providerLimits(account: CodexLimitAccount, nowMs: number): string {
   }
   if (account.provider === "qwen" && account.local) {
     return localQwenLimits(account);
-  }
-  // No quota and no balance: the plan absorbs the usage, so the card reports
-  // what was sent rather than inventing an allowance to pace against.
-  if (account.provider === "grok" && account.spend) {
-    return spendLimits(account);
   }
   return [
     account.session
@@ -899,11 +869,6 @@ export function renderLimitsText(accounts: CodexLimitAccount[], nowMs = Date.now
         ? `Measured ${Math.round(account.spend.recentHours)}h ${formatTokens(account.spend.recentTokens)} tokens\tMeasured ${Math.round(account.spend.monthDays)}d ${formatTokens(account.spend.monthTokens)} tokens`
         : "Measured usage unavailable";
       return `Qwen · ${account.email}\tUnlimited\t${usage}`;
-    }
-    if (account.spend) {
-      const days = Math.round(account.spend.monthDays);
-      const hours = Math.round(account.spend.recentHours);
-      return `${providerLabel(account.provider)} · ${account.email}\t${hours}h ${formatUsd(account.spend.recentUsd)} (${formatTokens(account.spend.recentTokens)} tokens)\t${days}d ${formatUsd(account.spend.monthUsd)} (${formatTokens(account.spend.monthTokens)} tokens)\tplan-covered, API-equivalent`;
     }
     if (account.route) {
       const balance = account.route.balances.map(formatBalance).join(" + ");

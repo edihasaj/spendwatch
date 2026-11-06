@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type AccountProvider = "codex" | "claude" | "grok";
+export type AccountProvider = "codex" | "claude";
 
 export interface AccountAddOptions {
   provider: AccountProvider;
@@ -56,11 +56,7 @@ export function buildAccountLoginPlan(options: AccountAddOptions): AccountLoginP
   }
 
   if (options.deviceAuth || options.apiKeyEnv) {
-    throw new Error(`${options.provider === "grok" ? "Grok" : "Claude"} account setup uses the official browser OAuth flow`);
-  }
-  if (options.provider === "grok") {
-    const grokHome = join(baseHome, `.grok-${name}`);
-    return { command: "grok", args: ["login"], env: { GROK_HOME: grokHome }, profileHome: grokHome };
+    throw new Error(`Claude account setup uses the official browser OAuth flow`);
   }
   const profileHome = join(baseHome, `.claude-${name}`);
   return {
@@ -80,25 +76,6 @@ function jwtClaims(token: unknown): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
-}
-
-// Grok's auth.json is keyed by auth scope; each entry carries a plain email.
-export function readGrokAccountEmail(profileHome: string): string | undefined {
-  const authPath = join(profileHome, "auth.json");
-  if (!existsSync(authPath)) return undefined;
-  try {
-    return grokAccountEmail(JSON.parse(readFileSync(authPath, "utf8")));
-  } catch {}
-  return undefined;
-}
-
-export function grokAccountEmail(auth: unknown): string | undefined {
-  if (!auth || typeof auth !== "object") return undefined;
-  for (const entry of Object.values(auth as Record<string, unknown>)) {
-    const email = (entry as { email?: unknown } | undefined)?.email;
-    if (typeof email === "string" && email.includes("@")) return email;
-  }
-  return undefined;
 }
 
 export function readCodexAccountEmail(profileHome: string): string | undefined {
@@ -155,9 +132,5 @@ export async function addAccount(options: AccountAddOptions): Promise<string> {
     return `Codex account connected${email ? `: ${email}` : ""}\nProfile: ${plan.profileHome}\nSpendwatch will discover it automatically.`;
   }
 
-  if (options.provider === "grok" && plan.profileHome) {
-    const email = readGrokAccountEmail(plan.profileHome);
-    return `Grok account connected${email ? `: ${email}` : ""}\nProfile: ${plan.profileHome}\nSpendwatch will discover it automatically.`;
-  }
   return `Claude account connected\nProfile: ${plan.profileHome}\nThe local collector will include it on its next refresh.`;
 }

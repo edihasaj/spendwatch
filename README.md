@@ -59,7 +59,7 @@ bin/spendwatch limits --input limits.json --sqlite spendwatch.db --history-html 
 bin/spendwatch guard --input limits.json --account work --window weekly --min-remaining 15
 bin/spendwatch server --input limits.json --sqlite spendwatch.db --public-dir public
 bin/spendwatch capacity-current --provider claude   # live Claude 5h/weekly windows
-bin/spendwatch capacity-current --provider local    # Grok and Local Qwen cards (or grok|qwen)
+bin/spendwatch capacity-current --provider local    # Local Qwen card (or qwen)
 bin/spendwatch capacity-history-export --label studio > capacity-history.jsonl
 bin/spendwatch report                       # compiled binary (bun run build)
 ```
@@ -251,13 +251,8 @@ account that has bought credits shows that balance, and a Claude account shows
 valid promotional cloud credits and paid extra usage when either has a balance
 or usage to report. API-backed
 Lokai routes show sanitized cash balances; route
-readiness without a reported balance is never labeled unlimited. Grok Build
-publishes neither a quota nor a balance: the xAI plan absorbs the usage and the
-CLI holds no API key, so its card reports what was *sent* over a rolling 24 hours
-and 30 days rather than an allowance to pace. Those dollars are API-equivalent
-estimates at published list rates, not billed money, so the card is excluded from
-the utilization planner and from `guard`. Cards render Claude, Codex,
-Lokai, then local Qwen and Grok, keeping the providers without an allowance last. When the input
+readiness without a reported balance is never labeled unlimited. Cards render Claude, Codex,
+Lokai, then local Qwen, keeping the providers without an allowance last. When the input
 includes a reported pace forecast, Spendwatch shows its learned deficit/reserve
 and run-out ETA. Other reset windows get a transparent live linear forecast.
 That fallback starts as soon as a new window begins, so newly reset Claude
@@ -329,7 +324,6 @@ or shell history:
 ```bash
 export OPENAI_API_KEY=... # preferably injected by your secret manager
 spendwatch account add codex --name api --api-key-env OPENAI_API_KEY
-spendwatch account add grok --name personal     # Grok browser OAuth
 ```
 
 Claude uses an isolated `CLAUDE_CONFIG_DIR`. On a trusted macOS collector, Claude Code's default

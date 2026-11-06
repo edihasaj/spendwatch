@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Removed the Grok capacity card and `spendwatch account add grok`. Stored Grok
+  readings from older collectors are ignored. Past Grok spend in reports and
+  session history is unchanged.
+
 - Removed the Copilot capacity card, its monthly budget and budget alerts, the
   GitHub usage read, and `spendwatch account add copilot`. Stored Copilot
   readings from older collectors are ignored. Past Copilot spend in reports,

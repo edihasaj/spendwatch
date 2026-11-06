@@ -6,7 +6,6 @@ import {
   collectLocalCapacity,
   LOCAL_PROVIDERS,
   localQwenTokens,
-  type CommandResult,
   type LocalCapacityDeps,
 } from "../src/local-capacity-current";
 import { normalizeCodexLimits } from "../src/limits";
@@ -33,47 +32,9 @@ function deps(over: Partial<LocalCapacityDeps> = {}): LocalCapacityDeps {
   };
 }
 
-function ghRunner(users: Record<string, unknown>, calls: string[][] = []) {
-  return async (_cmd: string, args: string[], env?: Record<string, string>): Promise<CommandResult> => {
-    calls.push(args);
-    if (args[0] === "auth" && args[1] === "status") {
-      return { code: 0, stdout: JSON.stringify({ hosts: { "github.com": Object.keys(users).map((login) => ({ login })) } }) };
-    }
-    if (args[0] === "auth" && args[1] === "token") return { code: 0, stdout: `token-${args[args.length - 1]}\n` };
-    if (args[0] === "api") {
-      const login = env?.GH_TOKEN?.replace("token-", "") ?? "";
-      return login in users ? { code: 0, stdout: JSON.stringify(users[login]) } : { code: 1, stdout: "" };
-    }
-    return { code: 1, stdout: "" };
-  };
-}
-
 describe("local capacity collection", () => {
-  test("no longer offers Copilot as a local card", () => {
-    expect(LOCAL_PROVIDERS).toEqual(["grok", "qwen"]);
-  });
-
-  test("Grok reports its account with day and month spend from the same reader", async () => {
-    const home = tempDir("local-capacity-grok-");
-    mkdirSync(join(home, ".grok"), { recursive: true });
-    writeFileSync(join(home, ".grok/auth.json"), JSON.stringify({ scope: { email: "dev@example.com" } }));
-    const windows: number[] = [];
-    const rows = await collectLocalCapacity(["grok"], deps({
-      home,
-      reports: (days) => {
-        windows.push(days);
-        // Another agent's spend in the same build must not reach the Grok card.
-        return [report([], 99, 999, "codex"), days === 1 ? report([], 0.5, 100, "grok") : report([], 4, 900, "grok")];
-      },
-    })) as any[];
-    expect(rows).toHaveLength(1);
-    expect(rows[0].account).toBe("dev@example.com");
-    expect(rows[0].spend).toEqual({ recentUsd: 0.5, recentTokens: 100, recentHours: 24, monthUsd: 4, monthTokens: 900, monthDays: 30 });
-    expect(windows).toEqual([1, 30]);
-  });
-
-  test("Grok without a signed-in account contributes no card", async () => {
-    expect(await collectLocalCapacity(["grok"], deps())).toEqual([]);
+  test("offers only Local Qwen as a local card", () => {
+    expect(LOCAL_PROVIDERS).toEqual(["qwen"]);
   });
 
   test("Local Qwen counts only the self-hosted model, whichever agent routed it", () => {
@@ -112,31 +73,15 @@ describe("local capacity collection", () => {
     expect(rows[0].local.detail).toBe("Self-hosted Qwen usage report unavailable on this machine.");
   });
 
-  test("reads each report window once however many providers ask for it", async () => {
-    const home = tempDir("local-capacity-memo-");
-    mkdirSync(join(home, ".grok"), { recursive: true });
-    writeFileSync(join(home, ".grok/auth.json"), JSON.stringify({ scope: { email: "dev@example.com" } }));
-    let reads = 0;
-    await collectLocalCapacity(["grok", "qwen", "grok"], deps({
-      home,
-      exists: () => true,
-      reports: () => { reads++; return []; },
-    }));
-    // One build per window serves Grok, Local Qwen and the repeated Grok alike.
-    expect(reads).toBe(2);
-  });
-
   test("keeps the 30-day totals for half an hour and rereads them after", async () => {
     const home = tempDir("local-capacity-cache-");
-    mkdirSync(join(home, ".grok"), { recursive: true });
-    writeFileSync(join(home, ".grok/auth.json"), JSON.stringify({ scope: { email: "dev@example.com" } }));
     let stored: unknown;
     const cache = { read: () => stored, write: (value: unknown) => { stored = value; } };
     const run = async (offsetMs: number, monthTokens: number) => {
       const windows: number[] = [];
-      const rows = await collectLocalCapacity(["grok"], deps({
+      const rows = await collectLocalCapacity(["qwen"], deps({
         home, cache, now: NOW + offsetMs,
-        reports: (days) => { windows.push(days); return [report([], 1, days === 1 ? 10 : monthTokens, "grok")]; },
+        reports: (days) => { windows.push(days); return [report([{ model: "qwen3.8-flash-next", inTok: days === 1 ? 10 : monthTokens }])]; },
       })) as any[];
       return { windows, month: rows[0].spend.monthTokens, recent: rows[0].spend.recentTokens };
     };
@@ -148,11 +93,9 @@ describe("local capacity collection", () => {
 
   test("ignores a cached month that is malformed or dated in the future", async () => {
     const home = tempDir("local-capacity-badcache-");
-    mkdirSync(join(home, ".grok"), { recursive: true });
-    writeFileSync(join(home, ".grok/auth.json"), JSON.stringify({ scope: { email: "dev@example.com" } }));
-    for (const bad of [{ at: NOW + 60_000, grokUsd: 1, grokTokens: 1, qwenTokens: 1 }, { at: NOW, grokUsd: "x" }, "junk", null]) {
+    for (const bad of [{ at: NOW + 60_000, qwenTokens: 1 }, { at: NOW, qwenTokens: "x" }, "junk", null]) {
       const windows: number[] = [];
-      await collectLocalCapacity(["grok"], deps({
+      await collectLocalCapacity(["qwen"], deps({
         home, cache: { read: () => bad, write: () => {} },
         reports: (days) => { windows.push(days); return []; },
       }));
@@ -160,17 +103,4 @@ describe("local capacity collection", () => {
     }
   });
 
-  test("one failing provider never hides the others", async () => {
-    const home = tempDir("local-capacity-fail-");
-    mkdirSync(join(home, ".grok"), { recursive: true });
-    writeFileSync(join(home, ".grok/auth.json"), JSON.stringify({ scope: { email: "dev@example.com" } }));
-    const failures: string[] = [];
-    const rows = await collectLocalCapacity(["grok", "qwen"], deps({
-      home,
-      exists: () => true,
-      reports: () => { throw new Error("report failed"); },
-    }), (provider, message) => failures.push(`${provider}:${message}`)) as any[];
-    expect(failures).toEqual(["grok:report failed"]);
-    expect(rows.map((row) => row.provider)).toEqual(["qwen"]);
-  });
 });
