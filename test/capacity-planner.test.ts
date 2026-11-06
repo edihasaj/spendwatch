@@ -70,20 +70,6 @@ describe("90% capacity utilization planning", () => {
     const accounts: CodexLimitAccount[] = [
       { provider: "codex", email: "codex@example.com", plan: "Pro", updatedAt: "2026-08-14T23:59:00Z", weekly: window(30), devices: [] },
       {
-        provider: "copilot",
-        email: "org (Business)",
-        plan: "Business",
-        devices: [],
-        copilot: {
-          chatUnlimited: false,
-          completionsUnlimited: false,
-          premiumUnlimited: false,
-          premiumCreditsUsed: 4_200,
-          overagePermitted: true,
-          tokenBasedBilling: true,
-        },
-      },
-      {
         provider: "lokai",
         email: "Kimi K3 Cloud",
         plan: "Moonshot API",
@@ -103,12 +89,8 @@ describe("90% capacity utilization planning", () => {
       },
     ];
     const plans = buildUtilizationPlans(accounts, Date.parse("2026-08-15T00:00:00Z"));
-    expect(plans).toHaveLength(2);
+    expect(plans).toHaveLength(1);
     expect(plans[0]?.resource).toBe("Weekly allowance");
-    expect(plans[1]?.resource).toBe("Monthly AI credit budget");
-    expect(plans[1]?.currentValue).toBe("4,200 of 40,000 credits used");
-    expect(plans[1]?.window?.currentUsedPercent).toBeCloseTo(10.5, 1);
-    expect(plans[1]?.action).toBe("rebalance");
     expect(plans.some((plan) => plan.provider === "lokai")).toBe(false);
     expect(plans.some((plan) => plan.provider === "openrouter")).toBe(false);
   });

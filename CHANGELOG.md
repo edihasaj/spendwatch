@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Removed the Copilot capacity card, its monthly budget and budget alerts, the
+  GitHub usage read, and `spendwatch account add copilot`. Stored Copilot
+  readings from older collectors are ignored. Past Copilot spend in reports,
+  session history and gateway rows is unchanged.
+
 - Fixed decoded Codex archive snapshots filling the disk. A run that crashed or
   was stopped by its timeout left its temporary `spendwatch-codex-zstd-*` folder
   behind, several GiB each; Studio collected about 235 GiB in a day. Each folder

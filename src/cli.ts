@@ -70,7 +70,7 @@ interface Args {
   guardWindow: GuardWindow;
   minimumRemaining: number;
   provider?: CapacityProvider;
-  /** `--provider local`: refresh the Copilot, Grok and Local Qwen cards together. */
+  /** `--provider local`: refresh the Grok and Local Qwen cards together. */
   localCapacity?: boolean;
   failOpen: boolean;
   host: string;
@@ -89,13 +89,11 @@ Connect an account on this trusted Mac using the provider's official login.
   spendwatch account add codex --name api --api-key-env OPENAI_API_KEY
   spendwatch account add claude --name work
   spendwatch account add grok --name personal
-  spendwatch account add copilot
 
 providers:
   codex      ChatGPT browser OAuth (default), device OAuth, or metered API key
   claude     Claude browser OAuth in an isolated config directory
   grok       Grok browser OAuth in an isolated GROK_HOME
-  copilot    GitHub browser OAuth; GitHub CLI manages the account list
 
 options:
   --name NAME       isolated profile name (required for Codex, Claude, and Grok)
@@ -114,8 +112,8 @@ function parseAccountArgs(argv: string[]): AccountAddOptions | undefined {
   }
   if (argv[1] !== "add") throw new Error("usage: spendwatch account add PROVIDER [options]");
   const provider = argv[2] as AccountProvider | undefined;
-  if (provider !== "codex" && provider !== "claude" && provider !== "grok" && provider !== "copilot") {
-    throw new Error("provider must be codex, claude, grok, or copilot");
+  if (provider !== "codex" && provider !== "claude" && provider !== "grok") {
+    throw new Error("provider must be codex, claude, or grok");
   }
   const options: AccountAddOptions = { provider };
   const rest = argv.slice(3);
@@ -196,8 +194,8 @@ function parseArgs(argv: string[]): Args {
       const provider = rest.shift();
       if (provider === "local") a.localCapacity = true;
       else {
-        if (provider !== "codex" && provider !== "claude" && provider !== "copilot" && provider !== "lokai"
-          && provider !== "openrouter" && provider !== "grok" && provider !== "qwen") throw new Error("--provider must be codex, claude, copilot, openrouter, lokai, grok, qwen, or local");
+        if (provider !== "codex" && provider !== "claude" && provider !== "lokai"
+          && provider !== "openrouter" && provider !== "grok" && provider !== "qwen") throw new Error("--provider must be codex, claude, openrouter, lokai, grok, qwen, or local");
         a.provider = provider;
       }
     }
@@ -225,7 +223,7 @@ usage: spendwatch [report|watch|limits|guard|route|run|eval|capacity|capacity-cu
   push-test         send a background test to every enrolled browser
   capacity-history-export
                     export recoverable Codex quota history as sanitized JSONL
-  account add       connect Codex, Claude, or Copilot using official auth
+  account add       connect Codex, Claude, or Grok using official auth
 
 options:
   --days N          rolling window of N days instead of a calendar month
@@ -493,9 +491,9 @@ async function currentCapacity(provider: CapacityProvider | undefined, local = f
       process.stderr.write(`claude capacity ${failure.reason}${who}: ${failure.message}\n`);
     });
   }
-  if (local || provider === "copilot" || provider === "grok" || provider === "qwen") {
+  if (local || provider === "grok" || provider === "qwen") {
     const { collectLocalCapacity, LOCAL_PROVIDERS } = await import("./local-capacity-current");
-    return collectLocalCapacity(local ? LOCAL_PROVIDERS : [provider as "copilot" | "grok" | "qwen"], undefined,
+    return collectLocalCapacity(local ? LOCAL_PROVIDERS : [provider as "grok" | "qwen"], undefined,
       (name, message) => process.stderr.write(`${name} capacity unavailable: ${message}\n`));
   }
   if (provider === "openrouter") {
@@ -503,7 +501,7 @@ async function currentCapacity(provider: CapacityProvider | undefined, local = f
     const result = await collectOpenRouterCapacity();
     return result ? [result] : [];
   }
-  if (provider && provider !== "codex") throw new Error("capacity-current supports codex, claude, openrouter, copilot, grok, qwen, or local");
+  if (provider && provider !== "codex") throw new Error("capacity-current supports codex, claude, openrouter, grok, qwen, or local");
   return currentCodexCapacity(Date.now(), (failure) => {
     const who = failure.email ? ` for ${failure.email}` : "";
     process.stderr.write(`codex capacity ${failure.reason}${who}: ${failure.message}\n`);

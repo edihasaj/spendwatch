@@ -62,7 +62,7 @@ export function normalizeAuthenticationRequirements(input: unknown): CapacityAut
     if (!item || typeof item !== "object") continue;
     const value = item as Record<string, unknown>;
     if (value.kind !== "authentication-required") continue;
-    if (value.provider !== "codex" && value.provider !== "claude" && value.provider !== "copilot") continue;
+    if (value.provider !== "codex" && value.provider !== "claude") continue;
     if (typeof value.device !== "string" || !value.device.trim()) continue;
     const requirement: CapacityAuthenticationRequirement = {
       provider: value.provider,

@@ -250,14 +250,8 @@ export function writeCapacitySnapshot(
         account.plan,
         account.organization ?? null,
         JSON.stringify(account.devices),
-        account.copilot ? Number(account.copilot.chatUnlimited) : null,
-        account.copilot ? Number(account.copilot.completionsUnlimited) : null,
-        account.copilot ? Number(account.copilot.premiumUnlimited) : null,
-        account.copilot?.premiumCreditsUsed ?? null,
-        account.copilot ? Number(account.copilot.overagePermitted) : null,
-        account.copilot ? Number(account.copilot.tokenBasedBilling) : null,
-        account.copilot?.resetsAt ? parsedTime(account.copilot.resetsAt) ?? null : null,
-        account.copilot?.seatAssignedAt ? parsedTime(account.copilot.seatAssignedAt) ?? null : null,
+        // Copilot capacity is no longer collected; these columns keep only samples recorded before its removal.
+        null, null, null, null, null, null, null, null,
         account.route?.available === undefined ? null : Number(account.route.available),
         account.route ? JSON.stringify(account.route.balances) : null,
       );
@@ -284,7 +278,7 @@ function normalizeHistoricalRecord(value: unknown): {
   const record = value as HistoricalRecordInput;
   // Qwen is self-hosted unlimited capacity, not a quota-history provider.
   if (record.provider === "qwen") return undefined;
-  if (record.provider !== "codex" && record.provider !== "claude" && record.provider !== "copilot"
+  if (record.provider !== "codex" && record.provider !== "claude"
     && record.provider !== "openrouter" && record.provider !== "lokai" && record.provider !== "grok") return undefined;
   if (typeof record.account !== "string" || !record.account.trim()) return undefined;
   const sampledAt = parsedTime(record.sampledAt);

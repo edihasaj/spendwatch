@@ -1,5 +1,4 @@
 import { effectiveSourceHealth, type CapacitySourceHealth } from "./capacity-dashboard";
-import { copilotBudgetStatus, copilotCreditWindow } from "./copilot-budget";
 import { predictWindow } from "./capacity-prediction";
 import { isWindowLive } from "./capacity-freshness";
 import type { CapacityProvider, CodexLimitAccount, LimitWindow } from "./limits";
@@ -133,28 +132,6 @@ export function buildUtilizationPlans(
         });
         continue;
       }
-    }
-    if (account.provider === "copilot" && account.copilot) {
-      const status = copilotBudgetStatus(account);
-      const creditWindow = copilotCreditWindow(account, nowMs, status.budget);
-      const window = creditWindow ? planWindowUtilization(creditWindow, nowMs, targetPercent) : undefined;
-      plans.push({
-        provider: account.provider,
-        account: account.email,
-        resource: "Monthly AI credit budget",
-        action: status.over ? "more" : window?.action ?? "measure",
-        confidence: window?.confidence ?? "unavailable",
-        window,
-        currentValue: `${status.creditsUsed.toLocaleString()} of ${status.budget.credits.toLocaleString()} credits used`,
-        paceValue: window ? undefined : "Cycle reset needed",
-        resetsAt: creditWindow?.resetsAt ?? account.copilot.resetsAt,
-        detail: status.over
-          ? `Monthly ceiling passed by ${status.creditsOver.toLocaleString()} credits. Spending continues; raise the budget or move work off Copilot.`
-          : window
-            ? windowDetail(window)
-            : "A monthly cycle reset is required before pacing the manual credit budget.",
-      });
-      continue;
     }
     if (account.provider === "codex" || account.provider === "claude") {
       const notCurrent = Boolean(account.weekly) && !isWindowLive(account.weekly!, account.updatedAt, nowMs);
