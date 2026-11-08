@@ -28,6 +28,11 @@ has no machine/key identifier and only retains completed UTC days that the API
 returns. Do not apportion account history to a machine or add it to transcript
 totals.
 
+The capacity card shows the prepaid balance and the key's Today, Week and Month
+spending at a glance. Purchased credits, account-billed totals, key lifetime
+usage, spending caps, collector information and completed-day history live in a
+collapsed Details section. Their values and attribution remain unchanged.
+
 The first direct local OpenRouter routes were configured on 2026-10-26. Older
 machine attribution appears only when a retained transcript or gateway ledger
 proves its route. Gateway settlement removes a matching unconfirmed call from
