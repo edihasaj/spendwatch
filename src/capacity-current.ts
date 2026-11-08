@@ -131,11 +131,13 @@ function windowFrom(value: AppServerWindow | null | undefined): CapacityWindow |
 // Purchased credits cover usage beyond the plan's included window. The API
 // reports the balance as a decimal string; keep it verbatim so a large balance
 // never loses precision to a float. `hasCredits` false with a "0" balance means
-// the account simply has none, which is not worth rendering.
+// the account simply has none, which is not worth rendering. A null balance
+// also means no credit reading; it must not become the invalid string "null".
 function creditsFrom(value: AppServerCredits | null | undefined): CapacityCredits | null {
   if (!value) return null;
   const unlimited = value.unlimited === true;
-  const balance = typeof value.balance === "string" ? value.balance : Number.isFinite(Number(value.balance)) ? String(value.balance) : undefined;
+  const balance = typeof value.balance === "string" ? value.balance
+    : typeof value.balance === "number" && Number.isFinite(value.balance) ? String(value.balance) : undefined;
   if (unlimited) return { balance: balance ?? "0", unlimited: true };
   if (balance === undefined) return null;
   if (value.hasCredits !== true && Number(balance) <= 0) return null;

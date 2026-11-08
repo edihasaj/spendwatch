@@ -70,7 +70,9 @@ or a remaining balance above its limit — is dropped while its snapshot's quota
 windows are kept. An unparsable promotional expiry is omitted, so the valid
 balance remains visible. A malformed Claude credit reading is a reporting gap,
 not a reason to discard an accurate window. Codex purchased-credit fields remain
-part of strict snapshot validation.
+part of strict snapshot validation. A null Codex balance is an absent credit
+reading, so it does not discard valid quota windows. Unlimited credits with no
+balance use the existing zero-balance representation.
 
 Named Claude profiles can keep their login in macOS Keychain rather than in
 `.credentials.json`. Discovery uses only the profile's exact service,

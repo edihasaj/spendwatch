@@ -144,6 +144,8 @@ test("purchased credits ride along with the rate-limit snapshot", () => {
   expect(read({ hasCredits: false, unlimited: true, balance: "0" })).toEqual({ balance: "0", unlimited: true });
   // An empty balance is not worth a card of its own.
   expect(read({ hasCredits: false, unlimited: false, balance: "0" })).toBeNull();
+  expect(read({ hasCredits: false, unlimited: false, balance: null })).toBeNull();
+  expect(read({ hasCredits: false, unlimited: true, balance: null })).toEqual({ balance: "0", unlimited: true });
   expect(read(undefined)).toBeNull();
 });
 
@@ -166,7 +168,7 @@ for await (const line of console) {
   if (message.method === "account/read") result = {account:{type:"chatgpt",email:"same@example.com",planType:"pro"}};
   if (message.method === "account/rateLimits/read") {
     appendFileSync(process.env.HOME + "/requests", "quota\\n");
-    result = {rateLimits:{primary:{usedPercent:12,windowDurationMins:10080}}};
+    result = {rateLimits:{primary:{usedPercent:12,windowDurationMins:10080},credits:{hasCredits:false,unlimited:false,balance:null}}};
   }
   console.log(JSON.stringify({id:message.id,result}));
 }
