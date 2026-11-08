@@ -424,12 +424,17 @@ function keychainCredentials(
 }
 
 /**
- * Prefer whichever source actually carries a token. Falling back only on a
- * missing file lets a husk left by the Keychain migration — present, but with
- * blank tokens — shadow the credentials that still work.
+ * Keep a live file login, but let a newer exact-profile Keychain login replace
+ * an expired file left behind by Claude Code's migration to Keychain.
  */
-export function preferUsableCredentials(fileCredentials: unknown, fromKeychain: () => unknown): unknown {
-  if (stringField(fileCredentials, "accessToken")) return fileCredentials;
+export function preferUsableCredentials(fileCredentials: unknown, fromKeychain: () => unknown, nowMs = Date.now()): unknown {
+  if (stringField(fileCredentials, "accessToken")) {
+    const expiresAt = Number((fileCredentials as Record<string, unknown>).expiresAt);
+    if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= nowMs) {
+      return freshestCredentials([fileCredentials, fromKeychain()], nowMs);
+    }
+    return fileCredentials;
+  }
   return fromKeychain() ?? fileCredentials;
 }
 
