@@ -171,7 +171,7 @@ describe("named Claude Keychain discovery", () => {
     mkdirSync(home);
     writeFileSync(join(home, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "secondary@example.com" } }));
     const service = claudeKeychainService(home);
-    const oauth = { accessToken: "secondary-token", refreshToken: "secondary-refresh", subscriptionType: "max" };
+    const oauth = { accessToken: "secondary-token", refreshToken: "secondary-refresh", subscriptionType: "max", expiresAt: Date.now() + 3_600_000 };
     const credential = { locator: { service, account: "operator", path: "/test/login.keychain-db" }, wrapper: { claudeAiOauth: oauth }, oauth };
     const consulted: string[] = [];
     const read = (requested: string) => { consulted.push(requested); return requested === service ? { oauth, credential } : undefined; };
@@ -190,6 +190,15 @@ describe("named Claude Keychain discovery", () => {
     expect(fileProfiles[0].token).toBe("file-token");
     expect(fileProfiles[0].credentialsPath).toBe(join(home, ".credentials.json"));
     expect(fileProfiles[0].keychainCredential).toBeUndefined();
+
+    writeFileSync(join(home, ".credentials.json"), JSON.stringify({
+      claudeAiOauth: { accessToken: "expired-file", refreshToken: "expired-refresh", expiresAt: Date.now() - 86_400_000 },
+    }));
+    const recovered = discoverClaudeProfiles(base, read);
+    expect(recovered[0].token).toBe("secondary-token");
+    expect(recovered[0].refreshToken).toBe("secondary-refresh");
+    expect(recovered[0].keychainCredential).toBe(credential);
+    expect(recovered[0].credentialsPath).toBeUndefined();
   });
 });
 
@@ -301,6 +310,17 @@ describe("Claude credential source", () => {
     let consulted = false;
     expect(preferUsableCredentials(file, () => { consulted = true; return keychain; })).toBe(file);
     expect(consulted).toBe(false);
+  });
+
+  test("uses a newer Keychain login when a nonblank file login has expired", () => {
+    const now = Date.parse("2026-11-08T09:00:00Z");
+    const file = { accessToken: "expired-file", expiresAt: now - 86_400_000 };
+    const current = { accessToken: "current-keychain", expiresAt: now + 3_600_000 };
+    expect(preferUsableCredentials(file, () => current, now)).toBe(current);
+    expect(preferUsableCredentials(file, () => undefined, now)).toBe(file);
+    expect(preferUsableCredentials(file, () => ({ accessToken: "older", expiresAt: now - 172_800_000 }), now)).toBe(file);
+    expect(preferUsableCredentials(file, () => ({ accessToken: "", expiresAt: now + 3_600_000 }), now)).toBe(file);
+    expect(preferUsableCredentials(current, () => { throw new Error("Live file must take precedence"); }, now)).toBe(current);
   });
 
   test("keeps the husk when the Keychain yields nothing, so the caller still rejects it", () => {

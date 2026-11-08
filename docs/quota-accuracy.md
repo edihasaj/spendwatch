@@ -76,7 +76,9 @@ Named Claude profiles can keep their login in macOS Keychain rather than in
 `.credentials.json`. Discovery uses only the profile's exact service,
 `Claude Code-credentials-` followed by the first eight SHA-256 hex characters
 of its absolute configuration directory. It never borrows the default profile's
-credential. A usable file credential still takes precedence, and Keychain
+credential. A live file credential still takes precedence. An expired file can
+fall back to a newer login in that profile's exact Keychain service; an absent
+or older Keychain login leaves the file available for renewal. Keychain
 refreshes retain the exact original service, account and Keychain path.
 
 ## Local Qwen card
