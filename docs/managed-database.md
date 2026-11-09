@@ -7,6 +7,20 @@ read_when:
 
 # Managed database conversion
 
+Managed read-only report readers can reuse a disposable binary cache under
+`SPENDWATCH_SERVER_ROOT/.report-read-cache`. Only four explicit deterministic
+archive queries qualify. Every access still checks the original projection's
+database permissions and result types, then reads row-version metadata from
+PostgreSQL in the same repeatable-read snapshot as a cold fetch. Inserts,
+updates, deletes, table/database recreation, server recovery and transaction-ID
+epochs invalidate saved results. A database failure never serves a stale file.
+
+The private, checksummed files retain the complete result, including signed
+64-bit values. Missing or corrupt files cause a fresh database read. They are
+bounded to one current file per query/identity and are not application state,
+recovery archives or a replacement for PostgreSQL. Native SQLite, writers,
+parameterized reads and all other queries keep their existing behavior.
+
 The managed reader sends fixed timeout, durability and read-only settings in
 the PostgreSQL startup packet, then independently verifies durability. Capacity
 renders batch all live account/window burn reads into one query. Stale readings

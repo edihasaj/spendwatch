@@ -2,6 +2,7 @@ import { PgConnection, type PgParameter } from "./libpq";
 import { translateSql } from "./pg-sql";
 import { quoteIdentifier, sqlStatements, sqlTokens, word } from "./sql-tokens";
 import { decodeSampleDetail } from "./codecs";
+import { archiveVersionQuery, cachedArchiveRead } from "./archive-read-cache";
 
 const initialized = new Set<string>();
 export const COMPATIBILITY_FUNCTION = `CREATE OR REPLACE FUNCTION sqlite_nocase(text) RETURNS text
@@ -137,7 +138,22 @@ export class ManagedPostgresDatabase {
     if (mode === "run" && identity && !sqlTokens(sql).some((token) => word(token, "RETURNING"))) {
       translated.sql += " RETURNING " + quoteIdentifier(identity);
     }
-    const result = this.connection.query(translated.sql, parameters(input));
+    const cacheRoot = process.env.SPENDWATCH_SERVER_ROOT;
+    const versionQuery = this.readonly && mode === "rows" && !input.length && cacheRoot
+      ? archiveVersionQuery(sql) : undefined;
+    const fetch = () => this.connection.query(translated.sql, parameters(input));
+    const readArchive = () => {
+      // Recheck the original projection's privileges and result types even on
+      // cache hits; metadata-only access must never grant report-body access.
+      const admitted = this.connection.query(`SELECT * FROM (${translated.sql}) admitted_archive LIMIT 0`);
+      const version = this.connection.query(versionQuery!).rows[0]!.version;
+      if (typeof version !== "string" || !/^[a-f0-9]{64}$/.test(version)) throw Error("Invalid archive version");
+      const identity = [this.options.hostaddr ?? this.options.host, this.options.port,
+        this.options.dbname, this.options.user].join("|");
+      return cachedArchiveRead(cacheRoot!, identity + JSON.stringify(admitted.columns), sql, version, fetch);
+    };
+    // Version metadata and the cold read must share one database snapshot.
+    const result = versionQuery ? (this.inTransaction ? readArchive() : this.transaction(readArchive)()) : fetch();
     if (result.columns.some((column) => column.type === 17)) {
       if (this.sampleOrigin === undefined) {
         const detail = this.columns("samples").find((column) => column.name === "detail" && column.type === "BLOB");
