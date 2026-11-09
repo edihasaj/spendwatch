@@ -20,6 +20,9 @@ The private, checksummed files retain the complete result, including signed
 bounded to one current file per query/identity and are not application state,
 recovery archives or a replacement for PostgreSQL. Native SQLite, writers,
 parameterized reads and all other queries keep their existing behavior.
+File loading and persistence run outside the database transaction so slow
+container disks or CPU limits cannot consume its idle timeout. Readers already
+inside a caller-owned transaction bypass the optional cache.
 
 The managed reader sends fixed timeout, durability and read-only settings in
 the PostgreSQL startup packet, then independently verifies durability. Capacity

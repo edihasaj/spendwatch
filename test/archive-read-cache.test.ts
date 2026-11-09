@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test";
 import { chmodSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { archiveVersionQuery, cachedArchiveRead } from "../src/managed/archive-read-cache";
+import { archiveVersionQuery, loadArchiveRead, matchesArchiveRead, saveArchiveRead } from "../src/managed/archive-read-cache";
 import type { PgResult } from "../src/managed/libpq";
 import { tempDir } from "./tmp";
+
+const cachedArchiveRead = (root: string, identity: string, sql: string, version: string, read: () => PgResult) => {
+  const cached = loadArchiveRead(root, identity, sql);
+  if (cached && matchesArchiveRead(cached, version, cached.result.columns)) return cached.result;
+  const result = read(); saveArchiveRead(root, identity, sql, version, result); return result;
+};
 
 const sql = `SELECT month, source, report_json FROM spend_report
   WHERE report_json LIKE '%"gatewayBilled"%' OR report_json LIKE '%"gatewayUnconfirmed"%' ORDER BY month, source`;

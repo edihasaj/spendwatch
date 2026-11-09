@@ -2,7 +2,7 @@ import { PgConnection, type PgParameter } from "./libpq";
 import { translateSql } from "./pg-sql";
 import { quoteIdentifier, sqlStatements, sqlTokens, word } from "./sql-tokens";
 import { decodeSampleDetail } from "./codecs";
-import { archiveVersionQuery, cachedArchiveRead } from "./archive-read-cache";
+import { archiveVersionQuery, loadArchiveRead, matchesArchiveRead, saveArchiveRead } from "./archive-read-cache";
 
 const initialized = new Set<string>();
 export const COMPATIBILITY_FUNCTION = `CREATE OR REPLACE FUNCTION sqlite_nocase(text) RETURNS text
@@ -139,21 +139,25 @@ export class ManagedPostgresDatabase {
       translated.sql += " RETURNING " + quoteIdentifier(identity);
     }
     const cacheRoot = process.env.SPENDWATCH_SERVER_ROOT;
-    const versionQuery = this.readonly && mode === "rows" && !input.length && cacheRoot
+    const versionQuery = this.readonly && !this.inTransaction && mode === "rows" && !input.length && cacheRoot
       ? archiveVersionQuery(sql) : undefined;
+    const cacheIdentity = [this.options.hostaddr ?? this.options.host, this.options.port,
+      this.options.dbname, this.options.user].join("|");
+    // Large file decoding/encoding must not hold a database transaction idle.
+    const cached = versionQuery ? loadArchiveRead(cacheRoot!, cacheIdentity, sql) : undefined;
+    let version: string | undefined;
     const fetch = () => this.connection.query(translated.sql, parameters(input));
     const readArchive = () => {
       // Recheck the original projection's privileges and result types even on
       // cache hits; metadata-only access must never grant report-body access.
       const admitted = this.connection.query(`SELECT * FROM (${translated.sql}) admitted_archive LIMIT 0`);
-      const version = this.connection.query(versionQuery!).rows[0]!.version;
+      version = this.connection.query(versionQuery!).rows[0]!.version as string;
       if (typeof version !== "string" || !/^[a-f0-9]{64}$/.test(version)) throw Error("Invalid archive version");
-      const identity = [this.options.hostaddr ?? this.options.host, this.options.port,
-        this.options.dbname, this.options.user].join("|");
-      return cachedArchiveRead(cacheRoot!, identity + JSON.stringify(admitted.columns), sql, version, fetch);
+      return matchesArchiveRead(cached, version, admitted.columns) ? cached!.result : fetch();
     };
     // Version metadata and the cold read must share one database snapshot.
-    const result = versionQuery ? (this.inTransaction ? readArchive() : this.transaction(readArchive)()) : fetch();
+    const result = versionQuery ? this.transaction(readArchive)() : fetch();
+    if (versionQuery && result !== cached?.result) saveArchiveRead(cacheRoot!, cacheIdentity, sql, version!, result);
     if (result.columns.some((column) => column.type === 17)) {
       if (this.sampleOrigin === undefined) {
         const detail = this.columns("samples").find((column) => column.name === "detail" && column.type === "BLOB");
