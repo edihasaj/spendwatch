@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { ManagedPostgresDatabase } from "../src/managed/postgres-db";
@@ -31,7 +32,19 @@ suite("managed archive cache with real PostgreSQL", () => {
       writer.query(`GRANT SELECT ON spend_report TO "${role}"`);
       const connection = { ...options, dbname: name, user: role, password: "isolated-cache-test" };
       reader = new ManagedPostgresDatabase(connection, { readonly: true });
-      expect(reader.query(sql).all()).toEqual([{ month: "2026-11", source: "fixture", report_json: '{"gatewayBilled":["old"]}' }]);
+      const write = fs.writeFileSync;
+      const observations: unknown[] = [];
+      const fileWrite = spyOn(fs, "writeFileSync").mockImplementation((file, data, options) => {
+        const rows = writer.query("SELECT xact_start IS NULL AS idle FROM pg_stat_activity WHERE usename=$1", [role]).rows;
+        observations.push(rows);
+        return write(file, data, options);
+      });
+      try {
+        expect(reader.query(sql).all()).toEqual([{ month: "2026-11", source: "fixture", report_json: '{"gatewayBilled":["old"]}' }]);
+        expect(fileWrite).toHaveBeenCalled();
+        expect(observations.length).toBeGreaterThan(0);
+        for (const rows of observations) expect(rows).toEqual([{ idle: true }]);
+      } finally { fileWrite.mockRestore(); }
       reader.close();
       reader = new ManagedPostgresDatabase(connection, { readonly: true });
       expect(reader.query(sql).all()).toHaveLength(1);

@@ -37,35 +37,50 @@ export function archiveVersionQuery(sql: string): string | undefined {
 
 const digest = (body: string | Uint8Array) => createHash("sha256").update(body).digest("hex");
 
-export function cachedArchiveRead(
-  root: string, identity: string, sql: string, version: string, read: () => PgResult,
-): PgResult {
+function location(root: string, identity: string, sql: string) {
   const directory = join(root, ".report-read-cache");
   const path = join(directory, digest(identity + "\n" + normalize(sql)) + ".bin");
+  return { directory, path };
+}
+
+export interface CachedArchive { version: string; result: PgResult }
+
+export function loadArchiveRead(root: string, identity: string, sql: string): CachedArchive | undefined {
+  const { directory, path } = location(root, identity, sql);
   try {
     const folder = lstatSync(directory);
     const file = lstatSync(path);
     if (!folder.isDirectory() || folder.isSymbolicLink() || (folder.mode & 0o077) ||
         !file.isFile() || file.isSymbolicLink() || (file.mode & 0o077)) throw Error("Unsafe cache path");
     const stored = readFileSync(path), body = stored.subarray(130);
-    if (stored.subarray(0, 65).toString() === digest(version) + "\n" &&
+    const version = stored.subarray(0, 64).toString();
+    if (/^[a-f0-9]{64}$/.test(version) && stored[64] === 10 &&
         stored.subarray(65, 130).toString() === digest(body) + "\n") {
       const result = deserialize(body) as PgResult;
       if (!Array.isArray(result.rows) || !Array.isArray(result.columns) || typeof result.changes !== "number") {
         throw Error("Invalid cached result");
       }
-      return result;
+      return { version, result };
     }
   } catch { /* Missing or corrupt local data is a cache miss, never a stale fallback. */ }
-  const result = read();
+  return undefined;
+}
+
+export function matchesArchiveRead(cache: CachedArchive | undefined, version: string, columns: PgResult["columns"]): boolean {
+  return Boolean(cache && cache.version === digest(version) &&
+    JSON.stringify(cache.result.columns) === JSON.stringify(columns));
+}
+
+export function saveArchiveRead(root: string, identity: string, sql: string, version: string, result: PgResult): void {
+  const { directory, path } = location(root, identity, sql);
   let temporary: string | undefined;
   let descriptor: number | undefined;
   try {
     // Archive queries return scalar text/numbers, never binary-origin values.
-    if (result.columns.some(column => column.type === 17)) return result;
+    if (result.columns.some(column => column.type === 17)) return;
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const folder = lstatSync(directory);
-    if (!folder.isDirectory() || folder.isSymbolicLink() || (folder.mode & 0o077)) return result;
+    if (!folder.isDirectory() || folder.isSymbolicLink() || (folder.mode & 0o077)) return;
     const body = serialize(result);
     temporary = path + "." + randomUUID();
     descriptor = openSync(temporary, "wx", 0o600);
@@ -78,5 +93,4 @@ export function cachedArchiveRead(
     if (descriptor !== undefined) closeSync(descriptor);
     if (temporary) try { unlinkSync(temporary); } catch { /* Already renamed. */ }
   }
-  return result;
 }
