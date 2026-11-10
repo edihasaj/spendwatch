@@ -4,6 +4,7 @@
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { Event } from "./parse";
+import { isLocalQwenModel } from "./local-qwen-model";
 import {
   admitCodexHistoryLine,
   assertCodexHistoryComplete,
@@ -40,11 +41,7 @@ export function isLocalQwenWorkerRoot(sessionsDir: string): boolean {
   return canonical.includes(`${join(...CLAUDE_QWEN_WORKER, "generations")}/`);
 }
 
-export function isLocalQwenModel(model: unknown): boolean {
-  if (typeof model !== "string") return false;
-  const normalized = model.trim().toLowerCase().replace(/^(?:codex|claude)\//, "");
-  return normalized === "qwen3.8-flash-next" || normalized === "qwen/qwen3.8-flash-next";
-}
+export { isLocalQwenModel };
 
 /**
  * `current` points to a generation during normal use, but retained generations
