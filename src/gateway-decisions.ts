@@ -1,5 +1,6 @@
 // What a transcript tells the gateway ledger about one routed call, and in which order: the types the ledger's index
 // contract (gateway.ts) and the parsers that read one (codex.ts, claude-routed.ts) share.
+import type { AgentTag } from "./subagents";
 
 /** How far apart the ledger's clock and the transcript's may be for one call. */
 export const CLAIM_WINDOW_MS = 30_000;
@@ -19,6 +20,8 @@ export interface ClaimOptions {
    * alike row (see gateway-match.ts), so a later ledger can be asked for the row the claim ended on.
    */
   onClaim?: (key: string) => void;
+  /** Set when the claiming call ran in a subagent, so the row that bills it can say so. */
+  agent?: AgentTag;
 }
 
 /** A call a rollout billed itself because the ledger held no row for it when the line was read. */
@@ -39,7 +42,7 @@ export interface BilledCall {
  * the reports already hold.
  */
 export type LedgerDecision =
-  | { seq?: number; kind: "claimed"; model: string; input: number; output: number; ts: number; gatewayRows: boolean; responseId?: string; key?: string }
+  | { seq?: number; kind: "claimed"; model: string; input: number; output: number; ts: number; gatewayRows: boolean; responseId?: string; key?: string; agent?: AgentTag }
   | ({ seq?: number; kind: "billed" } & BilledCall);
 
 let decisionSeq = 0;

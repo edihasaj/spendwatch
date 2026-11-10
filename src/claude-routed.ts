@@ -12,6 +12,7 @@
 // repeating the message id with usage that has grown since the last. The aggregator keeps the latest usage it sees for
 // a requestId, so those lines stay one call as long as they keep the requestId the first line of the response had.
 import type { Usage } from "./pricing";
+import type { AgentTag } from "./subagents";
 import type { Event, GatewayMark } from "./parse";
 
 /** The one kind of event this module bills with. */
@@ -30,6 +31,8 @@ export interface RoutedMessage {
   model?: string;
   usage: Usage;
   sidechain: boolean;
+  /** Set for a subagent transcript; see subagents.ts. */
+  agent?: AgentTag;
   ts: number;
   /** When this process read the latest line of the message, which may be long after the line was stamped. */
   seenAt: number;
@@ -70,6 +73,7 @@ const grossInput = (usage: Usage): number => usage.input + usage.cacheRead + usa
 
 const apiEvent = (message: RoutedMessage, model: string | undefined, gateway?: GatewayMark): ApiEvent => ({
   t: "api", sessionId: message.sessionId, requestId: message.requestId, model, usage: message.usage, sidechain: message.sidechain, ts: message.ts,
+  ...(message.agent ? { agent: message.agent } : {}),
   ...(gateway ? { gateway } : {}),
 });
 

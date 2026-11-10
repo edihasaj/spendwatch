@@ -13,6 +13,7 @@ import type { Database } from "bun:sqlite";
 import type { Report, UnconfirmedCall } from "./aggregate";
 import { installationRowKey } from "./installation-lineage";
 import { withoutProviderUsageCalls } from "./provider-usage-report";
+import { withoutSubagentCalls } from "./subagents";
 
 /** The calendar day of `ts` in `timeZone`, as the daily token rows key it. */
 export function dayIn(timeZone: string, ts: number): string {
@@ -112,8 +113,9 @@ export function withoutCalls(report: Report, calls: UnconfirmedCall[]): Report {
   // behind that account (configured route, profile, or unknown). Retaining
   // aggregate coverage after removing calls would overstate what the settled
   // report can prove, so omit it rather than guess.
-  const { gatewayUnconfirmed: _taken, accountAttribution: _attribution, providerUsage: _providerUsage, ...base } = report;
+  const { gatewayUnconfirmed: _taken, accountAttribution: _attribution, providerUsage: _providerUsage, subagents: _subagents, ...base } = report;
   const providerUsage = withoutProviderUsageCalls(report.providerUsage, own);
+  const subagents = withoutSubagentCalls(report.subagents, own);
   return {
     ...base,
     totalTokens: report.totalTokens - tokens,
@@ -122,6 +124,7 @@ export function withoutCalls(report: Report, calls: UnconfirmedCall[]): Report {
     routedCalls: (report.routedCalls ?? 0) + own.length,
     ...(rest.length ? { gatewayUnconfirmed: rest } : {}),
     ...(providerUsage ? { providerUsage } : {}),
+    ...(subagents ? { subagents } : {}),
     models: models.filter((row) => row.calls > 0),
     accounts,
     projects: projects.filter((row) => row.tokens > 0 || row.cost > 0),

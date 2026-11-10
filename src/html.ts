@@ -16,6 +16,8 @@ import {
   type CaptureCoverage,
   type CaptureReference,
 } from "./report-coverage";
+import { isLocalQwenModel } from "./local-qwen-model";
+import { localShare, mergeSubagentUsage, validateSubagentUsage, type SubagentUsage } from "./subagents";
 import { validateProviderUsage } from "./provider-usage-report";
 
 function localDate(ts: number): string {
@@ -198,6 +200,31 @@ function openRouterUsageSections(report: Report): string[] {
   )];
 }
 
+/** Subagent spend: overall, by role and by individual agent. A projection of calls already in the totals. */
+function subagentSections(usage: SubagentUsage | undefined): string[] {
+  if (!usage || usage.subagent.calls === 0) return [];
+  const all = usage.main.tokens + usage.subagent.tokens;
+  const pct = (part: number, whole: number) => (whole > 0 ? `${Math.round((part / whole) * 100)}%` : "0%");
+  const modelText = (models: Array<{ model: string; tokens: number }>, total: number) =>
+    models.slice(0, 3).map((m) => `${m.model}${isLocalQwenModel(m.model) ? " (local)" : ""} ${pct(m.tokens, total)}`).join(" · ");
+  const roles = dataTable(
+    [{ head: "role", bar: true }, { head: "tokens", num: true }, { head: "share", num: true }, { head: "calls", num: true }, { head: "sessions", num: true }, { head: "$ est.", num: true }, { head: "models" }],
+    usage.roles.map((r) => [r.role, fmtTok(r.tokens), pct(r.tokens, usage.subagent.tokens), r.calls.toLocaleString(), r.sessions.toLocaleString(), fmtUsd(r.cost), modelText(r.models, r.tokens)]),
+    usage.roles.map((r) => r.tokens),
+  );
+  const agents = usage.agents.length ? dataTable(
+    [{ head: "agent", bar: true }, { head: "role" }, { head: "tokens", num: true }, { head: "calls", num: true }, { head: "$ est.", num: true }, { head: "model" }],
+    usage.agents.map((a) => [a.path ? `${a.name} · ${a.path}` : a.name, a.role, fmtTok(a.tokens), a.calls.toLocaleString(), fmtUsd(a.cost), a.models.map((m) => `${m}${isLocalQwenModel(m) ? " (local)" : ""}`).join(", ")]),
+    usage.agents.map((a) => a.tokens),
+  ) : "";
+  const local = Math.round(localShare(usage) * 100);
+  return [section(
+    "Subagents",
+    `${fmtTok(usage.subagent.tokens)} of ${fmtTok(all)} tokens (${pct(usage.subagent.tokens, all)}) · ${usage.subagent.calls.toLocaleString()} calls · ${fmtUsd(usage.subagent.cost)} est. · ${local}% on local models`,
+    `${roles}${agents ? `<details class="provider-history"><summary>By individual agent (largest ${usage.agents.length})</summary>${agents}</details>` : ""}`,
+  )];
+}
+
 function section(title: string, sub: string, body: string): string {
   return `<section class="block"><h3>${esc(title)}<span class="sub">${esc(sub)}</span></h3><div class="section-body" tabindex="0" role="region" aria-label="${esc(title)}">${body}</div></section>`;
 }
@@ -264,6 +291,7 @@ function agentPanel(
   const stats = `<div class="stats">${stat("tokens", fmtTok(r.totalTokens))}${stat("estimated spend", fmtUsd(r.totalCost))}${stat("API calls", r.apiCalls.toLocaleString())}${stat("sessions", String(r.sessions))}</div>`;
   const parts: string[] = [stats];
   parts.push(...openRouterUsageSections(r));
+  parts.push(...subagentSections(validateSubagentUsage(r.subagents)));
   if (r.accounts.length > 1)
     parts.push(
       section(
@@ -375,6 +403,7 @@ export function renderHtml(
       breakdownTable(dimensions.accounts, totalTokens, accountNumbers),
     ),
     section("By agent", "same agent merged across machines", breakdownTable(dimensions.agents, totalTokens)),
+    ...subagentSections(mergeSubagentUsage(sources.map((r) => validateSubagentUsage(r.subagents)))),
   ].join("");
 
   const tabs = live.map((r, i) => `<button class="tab${i === 0 ? " active" : ""}" data-tab="${esc(r.source)}">${esc(sourceLabel(r.source))} <em>${fmtTok(r.totalTokens)} tok</em><small>${fmtUsd(r.totalCost)}</small></button>`).join("");

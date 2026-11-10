@@ -4,6 +4,7 @@ import { projectFromCwd } from "./projects";
 import { isMarked, markedId } from "./gateway-ledger-files";
 import { routedMessage, type ClaudeCtx } from "./claude-routed";
 import type { AccountAttribution } from "./codex-account-attribution";
+import { agentTag, type AgentTag } from "./subagents";
 
 // {sub, deep} for a shell command, for spreading onto a tooluse event.
 export function cmdParts(command: string): { sub: string; deep: string } {
@@ -61,7 +62,7 @@ export interface GatewayMark {
 
 export type Event =
   | { t: "prompt"; sessionId: string; promptId: string; text: string; sidechain: boolean; ts: number }
-  | { t: "api"; sessionId: string; requestId: string; model?: string; modelProvider?: string; usage: Usage; costUsd?: number; sidechain: boolean; ts: number; gateway?: GatewayMark; accountAttribution?: AccountAttribution }
+  | { t: "api"; sessionId: string; requestId: string; model?: string; modelProvider?: string; usage: Usage; costUsd?: number; sidechain: boolean; ts: number; gateway?: GatewayMark; accountAttribution?: AccountAttribution; agent?: AgentTag }
   | { t: "tooluse"; sessionId: string; requestId: string; id: string; name: string; argChars: number; sub?: string; deep?: string; detail?: string; ts: number }
   | { t: "toolresult"; sessionId: string; id: string; chars: number; error?: boolean; exit?: number; ts: number }
   | { t: "meta"; sessionId: string; project?: string; model?: string; ts: number }
@@ -161,6 +162,8 @@ export function* parseLine(line: string, ctx?: ClaudeCtx): Generator<Event> {
   const sessionId = d.sessionId ?? "?";
   const ts = d.timestamp ? Date.parse(d.timestamp) : 0;
   const sidechain = d.isSidechain === true;
+  // A Claude sidechain transcript is a subagent. It records no role, so it is named by its agent id.
+  const agent = sidechain ? agentTag("subagent", d.agentId) : undefined;
 
   // The session directory name has every "/" flattened to "-", so it cannot
   // tell "tg/payroll-backend" from "tg-payroll-backend". The transcript records
@@ -186,11 +189,11 @@ export function* parseLine(line: string, ctx?: ClaudeCtx): Generator<Event> {
       // line is settled against it, exactly as a marked Codex rollout record is (claude-routed.ts).
       const messageId = typeof m.id === "string" ? m.id : undefined;
       if (isMarked(messageId) && ctx?.gateway) {
-        yield* routedMessage(ctx, { id: messageId, sessionId, requestId, model: m.model, usage, sidechain, ts });
+        yield* routedMessage(ctx, { id: messageId, sessionId, requestId, model: m.model, usage, sidechain, ts, ...(agent ? { agent } : {}) });
       } else {
         // Without the gateway source, the call keeps its id here, unlabelled but for the mark, so a serving Mac's
         // report can still settle it, as a Codex rollout's marked record does.
-        yield { t: "api", sessionId, requestId, model: m.model, usage, sidechain, ts, ...(isMarked(messageId) ? { gateway: { id: markedId(messageId), role: "unconfirmed" as const } } : {}) };
+        yield { t: "api", sessionId, requestId, model: m.model, usage, sidechain, ts, ...(agent ? { agent } : {}), ...(isMarked(messageId) ? { gateway: { id: markedId(messageId), role: "unconfirmed" as const } } : {}) };
       }
     }
     if (Array.isArray(m.content)) {

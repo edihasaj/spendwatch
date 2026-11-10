@@ -5,6 +5,7 @@ import { contextCost, estTokens, usagePriceFor, usageCost, type Usage } from "./
 import { mergeProjectRows } from "./projects";
 import {TokenDayAccumulator, type TokenDays} from "./token-days";
 import { homedir } from "node:os";
+import { SubagentAccumulator, type AgentTag, type SubagentUsage } from "./subagents";
 import { join } from "node:path";
 import { isLocalQwenModel, LOCAL_QWEN_ACCOUNT } from "./local-qwen-model";
 import { claudeAccountIn } from "./sources";
@@ -28,7 +29,7 @@ interface StreamState {
   currentPromptKey?: string;
   toolUse: Map<string, { name: string; argChars: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string }>;
   results: Array<{ name: string; tokens: number; idx: number; promptKey?: string; sub?: string; deep?: string; detail?: string; error?: boolean; exit?: number }>;
-  usage: Map<string, { model?: string; modelProvider?: string; usage: Usage; costUsd?: number; promptKey?: string; lastTs: number; gateway?: GatewayMark; accountAttribution?: AccountAttribution }>;
+  usage: Map<string, { agent?: AgentTag; model?: string; modelProvider?: string; usage: Usage; costUsd?: number; promptKey?: string; lastTs: number; gateway?: GatewayMark; accountAttribution?: AccountAttribution }>;
   firstUserText?: string;
 }
 
@@ -99,6 +100,8 @@ export interface UnconfirmedCall {
   cacheReadTok: number;
   cacheWriteTok: number;
   cost: number;
+  /** Set when the call ran in a subagent, so settling it elsewhere can take it out of the subagent projection. */
+  agent?: AgentTag;
   /** Direct provider route carried by the exact call; absent on older archives. */
   provider?: string;
   /** False means this direct provider call had no dated catalog rate. */
@@ -116,6 +119,8 @@ export interface Report {
   tokenDays?: TokenDays;
   /** Optional provider-route projection of these exact machine calls. */
   providerUsage?: ProviderUsage[];
+  /** How much of this report ran in subagents, by role and by agent; a projection of calls already counted. */
+  subagents?: SubagentUsage;
   /** Stable for one installation; changes when the machine starts with fresh history. */
   installationId?: string;
   /** Explicitly verified restored history; aliases one prior installation of this source. */
@@ -277,7 +282,7 @@ export class Aggregator {
           prior.usage.cache5m === e.usage.cache5m && prior.usage.cache1h === e.usage.cache1h;
         s.usage.set(e.requestId, {
           model: e.model, modelProvider: e.modelProvider, usage: e.usage, costUsd: e.costUsd, promptKey: s.currentPromptKey,
-          lastTs: e.ts, gateway: e.gateway, ...(sameVector && prior?.accountAttribution ? { accountAttribution: prior.accountAttribution } : {}),
+          lastTs: e.ts, gateway: e.gateway, ...(e.agent ? { agent: e.agent } : {}), ...(sameVector && prior?.accountAttribution ? { accountAttribution: prior.accountAttribution } : {}),
         });
         break;
       }
@@ -307,6 +312,7 @@ export class Aggregator {
     const includesAccount = (account: string): boolean => !accountNeedle || account.toLowerCase().includes(accountNeedle);
     const tokenDays = new TokenDayAccumulator();
     const providerUsage = new ProviderUsageAccumulator();
+    const subagents = new SubagentAccumulator();
     const tools = new Map<string, ToolRow>();
     const bash = new Map<string, ToolRow>();
     const deep = new Map<string, ToolRow>();
@@ -395,6 +401,7 @@ export class Aggregator {
         const mk = u.model ?? "unknown";
         tokenDays.add(u.lastTs, mk, tokens, account);
         providerUsage.add(u.modelProvider, u.lastTs, mk, tokens, cost, priceKnown);
+        subagents.add(u.agent, s.sessionId, mk, tokens, cost);
         let m = models.get(mk);
         if (!m) models.set(mk, (m = { model: mk, calls: 0, inTok: 0, outTok: 0, cacheReadTok: 0, cacheWriteTok: 0, cost: 0 }));
         m.calls++;
@@ -405,7 +412,7 @@ export class Aggregator {
         m.cost += cost;
         if (u.gateway?.role === "billed") gatewayBilled.push(u.gateway.id);
         else if (u.gateway) gatewayUnconfirmed.push({
-          id: u.gateway.id, ts: u.lastTs, model: mk, account, project: s.project, tokens,
+          id: u.gateway.id, ts: u.lastTs, model: mk, account, project: s.project, tokens, ...(u.agent ? { agent: u.agent } : {}),
           inTok: u.usage.input, outTok: u.usage.output, cacheReadTok: u.usage.cacheRead, cacheWriteTok: u.usage.cache5m + u.usage.cache1h, cost,
           ...(u.modelProvider ? { provider: u.modelProvider } : {}), ...(priceKnown ? {} : { priceKnown: false }),
         });
@@ -503,10 +510,12 @@ export class Aggregator {
 
     const by = <T>(arr: T[], f: (x: T) => number) => arr.sort((a, b) => f(b) - f(a));
     const providerUsageSnapshot = providerUsage.snapshot();
+    const subagentSnapshot = subagents.snapshot();
     return {
       ...(this.period ? { period: { ...this.period } } : {}),
       tokenDays: tokenDays.snapshot(),
       ...(providerUsageSnapshot ? { providerUsage: providerUsageSnapshot } : {}),
+      ...(subagentSnapshot ? { subagents: subagentSnapshot } : {}),
       totalTokens,
       totalCost,
       apiCalls,

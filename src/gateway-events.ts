@@ -47,6 +47,8 @@ export function* eventsFor(vendor: GatewayVendor, account: string, rows: LedgerR
       costUsd,
       sidechain: false,
       ts: row.at,
+      // The rollout call standing on this row knew whether it ran in a subagent; the ledger row does not.
+      ...(row.holder?.agent ? { agent: row.holder.agent } : {}),
       ...gateway,
     };
   }

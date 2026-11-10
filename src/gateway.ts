@@ -29,6 +29,7 @@ import type { Event } from "./parse";
 import { providerMap, readGatewayConfig, resolveStateDirectory, type AuthDirectory, type GatewayVendor, type OpenRouterRoutes } from "./gateway-config";
 import { callKey, dedupe, GATEWAY_ORIGIN, isMarked, ledgerFiles, markerOf, MESSAGES_MARKER, readRows, RESPONSES_MARKER, TELEMETRY_ORIGIN, type LedgerRow, type RowHolder } from "./gateway-ledger-files";
 import { RowMatcher, stayOn } from "./gateway-match";
+import type { AgentTag } from "./subagents";
 import { billedRow, counts, eventsFor } from "./gateway-events";
 import { CLAIM_WINDOW_MS, type BilledCall, type ClaimOptions, type LedgerDecision } from "./gateway-decisions";
 
@@ -48,7 +49,7 @@ export interface GatewayIndex {
    * or the row is already some other call's and that call cannot be moved. `moved` is told the row's `callKey`, as for
    * a claim.
    */
-  vouch?(responseId: string, moved?: (key: string) => void): boolean;
+  vouch?(responseId: string, moved?: (key: string) => void, agent?: AgentTag): boolean;
   /**
    * True when this Mac's ledger holds the billed row of this marked response, whichever call stands on it. A record
    * that no row could be given still knows whether its own row is here: a row another call stands on bills that call.
@@ -286,7 +287,7 @@ export class GatewayLedger implements GatewayIndex {
    */
   claim(model: string, input: number, output: number, tsMs: number, options: ClaimOptions = {}): boolean {
     this.applyReplays();
-    return this.matcher.place({ kind: "claim", model, input, output, ts: tsMs, gatewayRows: !!options.gatewayRows, ...(options.onClaim ? { moved: options.onClaim } : {}) }, this.candidates);
+    return this.matcher.place({ kind: "claim", model, input, output, ts: tsMs, gatewayRows: !!options.gatewayRows, ...(options.onClaim ? { moved: options.onClaim } : {}), ...(options.agent ? { agent: options.agent } : {}) }, this.candidates);
   }
 
   /** The rows a call could stand on, nearest in time first (the oldest first among equals). */
@@ -322,13 +323,13 @@ export class GatewayLedger implements GatewayIndex {
     return this.billedIds.has(responseId);
   }
 
-  vouch(responseId: string, moved?: (key: string) => void): boolean {
+  vouch(responseId: string, moved?: (key: string) => void, agent?: AgentTag): boolean {
     this.applyReplays();
     const row = this.byResponse.get(responseId);
     if (!row) return false;
     // A record asked about again, as a call waiting for its row is, already stands on it.
     if (row.holder?.kind === "claim" && row.holder.responseId === responseId) return true;
-    return this.matcher.place({ kind: "claim", model: row.model, input: row.input, output: row.output, ts: row.at, gatewayRows: true, responseId, ...(moved ? { moved } : {}) }, this.candidates);
+    return this.matcher.place({ kind: "claim", model: row.model, input: row.input, output: row.output, ts: row.at, gatewayRows: true, responseId, ...(moved ? { moved } : {}), ...(agent ? { agent } : {}) }, this.candidates);
   }
 
   /**
@@ -386,8 +387,8 @@ export class GatewayLedger implements GatewayIndex {
     for (const decision of afresh) {
       if (decision.kind === "claimed") {
         const moved = (key: string): void => { decision.key = key; };
-        if (decision.responseId) this.vouch(decision.responseId, moved);
-        else this.claim(decision.model, decision.input, decision.output, decision.ts, { gatewayRows: decision.gatewayRows, onClaim: moved });
+        if (decision.responseId) this.vouch(decision.responseId, moved, decision.agent);
+        else this.claim(decision.model, decision.input, decision.output, decision.ts, { gatewayRows: decision.gatewayRows, onClaim: moved, ...(decision.agent ? { agent: decision.agent } : {}) });
       } else {
         this.adopt([decision]);
       }
