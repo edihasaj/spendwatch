@@ -195,3 +195,33 @@ describe("Codex gateway account attribution", () => {
     }
   });
 });
+
+describe("calls with no Codex account of their own", () => {
+  test("self-hosted Qwen is its own account, never an unknown Codex account", () => {
+    const agg = report([], [event("q1", "qwen/qwen3.8-flash-next", usage, "openai")]);
+    const out = agg.report();
+    expect(out.accounts.map((a) => a.account)).toEqual(["Local Qwen"]);
+    expect(out.accountAttribution).toMatchObject({ profile: 1, unknown: 0 });
+  });
+
+  test("a Claude model called through the Codex harness is labelled with its Claude route", () => {
+    const home = tempDir("spendwatch-claude-route-");
+    mkdirSync(join(home, ".claude-primary"), { recursive: true });
+    writeFileSync(join(home, ".claude-primary", ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "owner@example.com" } }));
+    const previous = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const out = report([], [event("c1", "claude-primary/claude-sonnet-5-5", usage, "openai")]).report();
+      expect(out.accounts.map((a) => a.account)).toEqual(["owner@example.com (claude-primary)"]);
+      expect(out.accountAttribution).toMatchObject({ profile: 1, unknown: 0 });
+    } finally {
+      if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
+    }
+  });
+
+  test("a bare model on the direct login stays unknown", () => {
+    const out = report([], [event("d1", "gpt-6.1-sol", usage, "openai")]).report();
+    expect(out.accounts.map((a) => a.account)).toEqual([UNKNOWN_CODEX_ACCOUNT]);
+    expect(out.accountAttribution).toMatchObject({ unknown: 1 });
+  });
+});

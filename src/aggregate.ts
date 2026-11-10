@@ -4,6 +4,10 @@ import type { Period } from "./periods";
 import { contextCost, estTokens, usagePriceFor, usageCost, type Usage } from "./pricing";
 import { mergeProjectRows } from "./projects";
 import {TokenDayAccumulator, type TokenDays} from "./token-days";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { isLocalQwenModel, LOCAL_QWEN_ACCOUNT } from "./local-qwen-model";
+import { claudeAccountIn } from "./sources";
 import { CODEX_ACCOUNT_ATTRIBUTION_VERSION, type AccountAttribution, type AccountAttributionBasis, type CodexAccountAttributor } from "./codex-account-attribution";
 import { ProviderUsageAccumulator, type ProviderUsage } from "./provider-usage-report";
 
@@ -162,6 +166,25 @@ export interface Report {
   accountAttribution?: { version: number; configuredRoute: number; profile: number; unknown: number };
   source: string;
   sinceTs: number;
+}
+
+const claudeRouteAccounts = new Map<string, string>();
+
+/**
+ * A Claude model called through a Codex harness (`claude-primary/claude-sonnet-5-5`). The gateway's Claude provider
+ * names its own auth directory (`~/.claude-<name>`), so the account signed in there owns the call. The label keeps the
+ * route, so it never merges with a Codex account of the same person.
+ */
+function claudeRouteAccount(model: string | undefined): string | undefined {
+  const route = /^claude-([A-Za-z0-9][A-Za-z0-9-]*)\//.exec(model ?? "")?.[1];
+  if (!route) return undefined;
+  let account = claudeRouteAccounts.get(route);
+  if (!account) {
+    const signedIn = claudeAccountIn(join(process.env.HOME ?? homedir(), `.claude-${route}`));
+    account = `${signedIn} (claude-${route})`;
+    claudeRouteAccounts.set(route, account);
+  }
+  return account;
 }
 
 export class Aggregator {
@@ -337,8 +360,11 @@ export class Aggregator {
           ? s.codexAttributor?.resolve(`${s.fileKey}\u0000${requestId}`, u.model, u.usage, u.lastTs, requestId, gatewayRoute)
           : undefined);
         if (resolved) u.accountAttribution = resolved;
-        const account = resolved?.account ?? s.account;
-        const basis = resolved?.basis ?? s.accountBasis;
+        // A self-hosted model has no Codex account; counting it as an unknown one hides real unknowns.
+        const selfHosted = !resolved && s.source === "codex" && isLocalQwenModel(u.model);
+        const claudeRoute = !resolved && !selfHosted && s.source === "codex" ? claudeRouteAccount(u.model) : undefined;
+        const account = resolved?.account ?? (selfHosted ? LOCAL_QWEN_ACCOUNT : claudeRoute ?? s.account);
+        const basis = resolved?.basis ?? (selfHosted || claudeRoute ? "profile" : s.accountBasis);
         // Resolve every call before deciding whether it is displayed: an
         // unselected call still reserves its unique ledger row, so it cannot
         // be claimed by a selected neighbour with the same vector.

@@ -45,3 +45,22 @@ public identity observer; account changes leave an unknown transition gap.
 A row outside one unambiguous dated binding stays unknown; Spendwatch never
 backdates the credential currently on disk. Spend detail discloses route-based,
 profile-based and unknown attribution separately.
+
+## Calls that have no Codex account
+
+Three kinds of call reach a Codex rollout without a gateway Codex ledger row, and
+they are labelled by what the evidence supports instead of all being unknown:
+
+- **Self-hosted Qwen** (`qwen3.8-flash-next`) has no Codex account. It is its own
+  `Local Qwen` account with profile basis.
+- **A Claude model called through the Codex harness** (`claude-primary/…`) is
+  labelled `<email> (claude-primary)`. The gateway's Claude provider names its own
+  auth directory (`~/.claude-<name>`), and the account signed in there owns the
+  call. The label keeps the route, so it never merges with a Codex account.
+- **A bare model on the direct login** (`gpt-6.1-sol`, no gateway) stays
+  `Unknown Codex account`. The default `~/.codex` login is overwritten by every
+  sign-in, so it cannot name past calls.
+
+The dated bindings only cover time the identity observer has actually seen.
+`spendwatch-refresh-capacity` runs the observer every five minutes; when it only ran
+with the daily export, every gateway call after its last run was unknown.
