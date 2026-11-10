@@ -201,9 +201,10 @@ function openRouterUsageSections(report: Report): string[] {
 }
 
 /** Subagent spend: overall, by role and by individual agent. A projection of calls already in the totals. */
-function subagentSections(usage: SubagentUsage | undefined): string[] {
+/** `total` is the report's own token total: sources that record no subagents would otherwise be missing from the base. */
+function subagentSections(usage: SubagentUsage | undefined, total?: number): string[] {
   if (!usage || usage.subagent.calls === 0) return [];
-  const all = usage.main.tokens + usage.subagent.tokens;
+  const all = Math.max(total ?? 0, usage.main.tokens + usage.subagent.tokens);
   const pct = (part: number, whole: number) => (whole > 0 ? `${Math.round((part / whole) * 100)}%` : "0%");
   const modelText = (models: Array<{ model: string; tokens: number }>, total: number) =>
     models.slice(0, 3).map((m) => `${m.model}${isLocalQwenModel(m.model) ? " (local)" : ""} ${pct(m.tokens, total)}`).join(" · ");
@@ -291,7 +292,7 @@ function agentPanel(
   const stats = `<div class="stats">${stat("tokens", fmtTok(r.totalTokens))}${stat("estimated spend", fmtUsd(r.totalCost))}${stat("API calls", r.apiCalls.toLocaleString())}${stat("sessions", String(r.sessions))}</div>`;
   const parts: string[] = [stats];
   parts.push(...openRouterUsageSections(r));
-  parts.push(...subagentSections(validateSubagentUsage(r.subagents)));
+  parts.push(...subagentSections(validateSubagentUsage(r.subagents), r.totalTokens));
   if (r.accounts.length > 1)
     parts.push(
       section(
@@ -403,7 +404,7 @@ export function renderHtml(
       breakdownTable(dimensions.accounts, totalTokens, accountNumbers),
     ),
     section("By agent", "same agent merged across machines", breakdownTable(dimensions.agents, totalTokens)),
-    ...subagentSections(mergeSubagentUsage(sources.map((r) => validateSubagentUsage(r.subagents)))),
+    ...subagentSections(mergeSubagentUsage(sources.map((r) => validateSubagentUsage(r.subagents))), totalTokens),
   ].join("");
 
   const tabs = live.map((r, i) => `<button class="tab${i === 0 ? " active" : ""}" data-tab="${esc(r.source)}">${esc(sourceLabel(r.source))} <em>${fmtTok(r.totalTokens)} tok</em><small>${fmtUsd(r.totalCost)}</small></button>`).join("");
