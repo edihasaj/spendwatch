@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { AccountRow, ModelRow, PromptRow, Report, SampleRow, TargetRow, ToolRow } from "./aggregate";
 import { mergeProjectRows } from "./projects";
 import type { TokenDays } from "./token-days";
+import { mergeSubagentUsage, validateSubagentUsage } from "./subagents";
 import { mergeProviderUsage, validateProviderUsage } from "./provider-usage-report";
 
 function isReport(value: unknown): value is Report {
@@ -41,6 +42,9 @@ function normalizeTokenTotals(report: Report): Report {
   // rather than letting it change trusted report totals or reach HTML.
   if (providerUsage) normalized.providerUsage = providerUsage;
   else delete normalized.providerUsage;
+  const subagents = validateSubagentUsage(report.subagents);
+  if (subagents) normalized.subagents = subagents;
+  else delete normalized.subagents;
   return normalized;
 }
 
@@ -286,10 +290,12 @@ export function mergeReports(
   const tokenDays = mergedTokenDays(reports, accountGrouping, preserveAccountLabels);
   const providerUsage = mergeProviderUsage(reports.map((report) =>
     validateProviderUsage(report.providerUsage, report)));
+  const subagents = mergeSubagentUsage(reports.map((report) => validateSubagentUsage(report.subagents)));
   const attributed = reports.filter((report) => report.accountAttribution);
   return {
     ...(tokenDays ? { tokenDays } : {}),
     ...(providerUsage ? { providerUsage } : {}),
+    ...(subagents ? { subagents } : {}),
     ...(reports.some((report) => report.lineageWarning)
       ? { lineageWarning: [...new Set(reports.flatMap((report) => report.lineageWarning ? [report.lineageWarning] : []))].join(" ") }
       : {}),

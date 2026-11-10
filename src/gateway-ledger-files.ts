@@ -1,6 +1,7 @@
 // Reading the gateway's month ledger files (`usage/usage-YYYY-MM.jsonl`) into rows. Only the fields below are read,
 // so a field the gateway adds later stays out of every report.
 import { closeSync, fstatSync, openSync, readdirSync, readSync } from "node:fs";
+import type { AgentTag } from "./subagents";
 import { join } from "node:path";
 import { PROVIDER_TYPES, vendorIn, type GatewayVendor, type OpenRouterRoutes } from "./gateway-config";
 
@@ -62,6 +63,8 @@ export interface RowHolder {
   responseId?: string;
   /** Told the `callKey` of the row the call stands on, and again whenever it moves to another. */
   moved?: (key: string) => void;
+  /** Set when the call ran in a subagent; the row that bills it then reports it as such (subagents.ts). */
+  agent?: AgentTag;
 }
 
 /** One call, however many rows record it. */

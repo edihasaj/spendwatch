@@ -4,6 +4,7 @@ import { cmdParts, type Event } from "./parse";
 import type { Usage } from "./pricing";
 import { projectFromCwd } from "./projects";
 import { CLAIM_WINDOW_MS, isMarked, markedId, nextDecisionSeq, type GatewayIndex, type LedgerDecision } from "./gateway";
+import { agentTag, type AgentTag } from "./subagents";
 // The label of a routed call no ledger here vouches for; the Claude Code parser (claude-routed.ts) shares it.
 import { UNCONFIRMED } from "./gateway-decisions";
 import { legacyTurnAdmission } from "./codex-legacy-forks";
@@ -11,6 +12,8 @@ import { legacyTurnAdmission } from "./codex-legacy-forks";
 export { UNCONFIRMED };
 
 export interface CodexCtx {
+  /** Set when this rollout's own session_meta says it is a subagent thread; every call it makes carries it. */
+  agent?: AgentTag;
   model?: string;
   /** Where session_meta says the turn was billed, e.g. "openai" or "subscription_gateway". */
   modelProvider?: string;
@@ -268,8 +271,8 @@ function ledgerBills(ctx: CodexCtx, call: PendingCall): boolean {
     if (!gateway.vouch) return !!gateway.covers?.(call.responseId);
     // The record is dropped on the strength of that row, which no other call may take: a token_count of the same size
     // and time would otherwise be dropped on it too.
-    const decision: LedgerDecision = { seq: nextDecisionSeq(), kind: "claimed", model: call.model, input: call.input, output: call.output, ts: call.ts, gatewayRows: true, responseId: call.responseId };
-    if (!gateway.vouch(call.responseId, (key) => { decision.key = key; })) return false;
+    const decision: LedgerDecision = { seq: nextDecisionSeq(), kind: "claimed", model: call.model, input: call.input, output: call.output, ts: call.ts, gatewayRows: true, responseId: call.responseId, ...(ctx.agent ? { agent: ctx.agent } : {}) };
+    if (!gateway.vouch(call.responseId, (key) => { decision.key = key; }, ctx.agent)) return false;
     (ctx.decisions ??= []).push(decision);
     return true;
   }
@@ -277,8 +280,8 @@ function ledgerBills(ctx: CodexCtx, call: PendingCall): boolean {
   const gatewayRows = call.responseId === undefined;
   // The decision keeps the row the claim stands on, and follows it if the ledger moves the claim to another alike row:
   // a reloaded ledger gives this call that very row back.
-  const decision: LedgerDecision = { seq: nextDecisionSeq(), kind: "claimed", model: call.model, input: call.input, output: call.output, ts: call.ts, gatewayRows };
-  if (!gateway.claim(call.model, call.input, call.output, call.ts, { gatewayRows, onClaim: (key) => { decision.key = key; } })) return false;
+  const decision: LedgerDecision = { seq: nextDecisionSeq(), kind: "claimed", model: call.model, input: call.input, output: call.output, ts: call.ts, gatewayRows, ...(ctx.agent ? { agent: ctx.agent } : {}) };
+  if (!gateway.claim(call.model, call.input, call.output, call.ts, { gatewayRows, onClaim: (key) => { decision.key = key; }, ...(ctx.agent ? { agent: ctx.agent } : {}) })) return false;
   (ctx.decisions ??= []).push(decision);
   return true;
 }
@@ -286,6 +289,7 @@ function ledgerBills(ctx: CodexCtx, call: PendingCall): boolean {
 function apiEvent(ctx: CodexCtx, requestId: string, model: string | undefined, usage: Usage, ts: number, gatewayId?: string): Event {
   return {
     t: "api", sessionId: ctx.sid, requestId, model, usage, sidechain: false, ts,
+    ...(ctx.agent ? { agent: ctx.agent } : {}),
     ...(ctx.modelProvider ? { modelProvider: ctx.modelProvider } : {}),
     ...(gatewayId ? { gateway: { id: gatewayId, role: "unconfirmed" as const } } : {}),
   };
@@ -376,6 +380,7 @@ export function* parseAdmittedCodexLine(admission: CodexHistoryAdmission, ctx: C
       if (p.model) ctx.model = p.model;
       if (p.model_provider) ctx.modelProvider = canonicalModelProvider(p.model_provider);
       if (p.id) ctx.sid = p.id;
+      if (p.thread_source === "subagent" || p.source?.subagent) ctx.agent = agentTag(p.agent_role, p.agent_nickname, p.agent_path);
       // The file header names the child even when native Codex stores it before
       // a copied parent prefix. It establishes state only; that prefix must not
       // create an event in this child's report.
