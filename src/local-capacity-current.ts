@@ -65,7 +65,7 @@ export function defaultLocalCapacityDeps(): LocalCapacityDeps {
     now: Date.now(),
     home,
     reports: (days) => {
-      const options = { top: 1 };
+      const options = { top: 1, tolerateDivergentCopies: true };
       return reportsFrom(build(options, [rollingDays(Date.now(), days)]), options);
     },
     run: async (command, args, env) => {

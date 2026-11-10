@@ -445,7 +445,7 @@ function collectPi(dir: string, agent: "pi" | "omp", account: string, sinceMs: n
   return files;
 }
 
-export function discover(opts: { sinceMs: number; project?: string; agents?: Set<string> }): SourceStatus[] {
+export function discover(opts: { sinceMs: number; project?: string; agents?: Set<string>; tolerateDivergentCopies?: boolean }): SourceStatus[] {
   const out: SourceStatus[] = [];
   const want = (id: string) => !opts.agents || opts.agents.has(id);
   const cfg = loadConfig();
@@ -525,7 +525,7 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
       isFreeCodexHome(r.path) || isLocalQwenWorkerRoot(r.path),
       codexAttributor,
     ).map((file) => ({ path: file.path, priority, value: file }))));
-    const files = selectCodexRolloutCopies(legacy.copies, { semanticDominance: codexSemanticDominance });
+    const files = selectCodexRolloutCopies(legacy.copies, { semanticDominance: codexSemanticDominance, tolerateDivergent: opts.tolerateDivergentCopies });
     const routerRows = claimOnly ? [] : gateway?.files("openrouter") ?? [];
     const forkNote = legacy.summary.unlinked
       ? `${legacy.summary.unlinked} older subagent rollouts have no readable parent rollout, so copied parent turns in them may be counted twice`

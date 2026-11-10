@@ -97,6 +97,19 @@ describe("Codex rollout copies", () => {
   });
 });
 
+describe("Codex rollout copies for tolerant readers", () => {
+  test("keeps one copy of a divergent group when the reader opts in", () => {
+    const home = tempDir("spendwatch-rollout-tolerant-");
+    const left = copy(join(home, ".codex", "sessions"), [json("one"), json("left")]);
+    const right = copy(join(home, ".codex-archive", "archived_sessions"), [json("one"), json("right"), json("more")]);
+
+    expect(selectCodexRolloutCopies([
+      { path: left, value: "left" },
+      { path: right, value: "right" },
+    ], { tolerateDivergent: true })).toEqual(["right"]);
+  });
+});
+
 describe("Codex rollout copies with an opt-in proof", () => {
   test("never consults the callback for identical or prefix-complete copies", () => {
     const home = tempDir("spendwatch-rollout-semantic-");

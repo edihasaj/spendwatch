@@ -12,6 +12,8 @@ export interface BuildOptions {
   project?: string;
   account?: string;
   top: number;
+  /** Read a divergent Codex rollout from its longest copy rather than failing the whole build. */
+  tolerateDivergentCopies?: boolean;
 }
 
 type Sink = Aggregator | MonthlyAggregator;
@@ -81,7 +83,7 @@ export function readerFor(st: SourceStatus, f: SourceFile, a: BuildOptions): "re
 export function build(a: BuildOptions, periods: Period[], { watching = false }: { watching?: boolean } = {}): Built {
   const sinceMs = Math.min(...periods.map((period) => period.from));
   // Codex project lives inside the file, so don't pre-filter codex by project name.
-  const statuses = discover({ sinceMs, agents: a.agents, project: undefined });
+  const statuses = discover({ sinceMs, agents: a.agents, project: undefined, tolerateDivergentCopies: a.tolerateDivergentCopies });
   const readers = new Map<string, Slot>();
   for (const st of statuses) readers.set(st.id, newSlot(st, periods));
   const claims = new IncrementalReader(new Aggregator());
