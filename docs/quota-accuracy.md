@@ -112,3 +112,9 @@ complete copy. Qwen figures cannot depend on which copy of a non-Qwen rollout
 wins, and one divergent file must not blank the card. Ordinary `report` builds
 still refuse divergent copies. The scheduled local refresh allows a 170 s cold
 read, because a month scan without cached totals can take about 100 s.
+
+`gatefox` is the renamed local subscription gateway. Codex rewrites an archived
+rollout's header to the current provider name, so the live copy says
+`subscription_gateway` and its archive says `gatefox`. The Codex parser treats
+both as one provider, so the two copies of a session agree and the strict
+duplicate proof accepts them instead of failing the whole report.

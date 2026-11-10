@@ -310,6 +310,24 @@ describe("Codex semantic duplicate dominance", () => {
     )).toThrow(CodexRolloutCopyError);
   });
 
+  test("treats the renamed gatefox provider as the same gateway route", () => {
+    const dominance = createCodexRolloutSemanticDominance();
+    const root = tempDir("spendwatch-sem-gatefox-");
+    const live = file(root, ".codex/sessions", [
+      J({ timestamp: iso(1000), type: "session_meta", payload: { id: "s", model: "gpt-5", model_provider: "subscription_gateway" } }),
+      record(1),
+    ]);
+    const archived = file(root, ".codex-archive/archived_sessions", [
+      J({ timestamp: iso(1000), type: "session_meta", payload: { id: "s", model: "gpt-5", model_provider: "gatefox" } }),
+      record(1),
+      J({ timestamp: iso(2000), type: "event_msg", payload: { type: "thread_settings_applied" } }),
+    ]);
+    expect(selectCodexRolloutCopies(
+      [{ path: live, value: live }, { path: archived, value: archived }],
+      { semanticDominance: dominance },
+    )).toEqual([archived]);
+  });
+
   test("rejects a file growth mutation during the proof", () => {
     const dominance = createCodexRolloutSemanticDominance();
     const root = tempDir("spendwatch-sem-mutate-");

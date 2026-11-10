@@ -140,12 +140,22 @@ function parentReference(payload: any): string | undefined {
   return refs[0];
 }
 
+/**
+ * The local subscription gateway was renamed from `subscription_gateway` to `gatefox` in Codex's configuration, and
+ * Codex rewrites an archived rollout's header to the current provider name. Both name the same route, so they are one
+ * provider; otherwise the live and archived copies of one session would disagree and the report would refuse them.
+ */
+export function canonicalModelProvider(value: unknown): string | undefined {
+  const provider = nonEmptyString(value);
+  return provider === "gatefox" ? "subscription_gateway" : provider;
+}
+
 function historyHeader(payload: any, boundary: number): CodexHistoryHeader {
   return {
     id: nonEmptyString(payload?.id) ?? "",
     cwd: nonEmptyString(payload?.cwd),
     model: nonEmptyString(payload?.model),
-    modelProvider: nonEmptyString(payload?.model_provider),
+    modelProvider: canonicalModelProvider(payload?.model_provider),
     historyMode: nonEmptyString(payload?.history_mode) ?? "",
     boundary,
     parent: parentReference(payload),
@@ -364,7 +374,7 @@ export function* parseAdmittedCodexLine(admission: CodexHistoryAdmission, ctx: C
       ctx.ownSession = id;
       if (p.cwd) ctx.project = projectFromCwd(p.cwd);
       if (p.model) ctx.model = p.model;
-      if (p.model_provider) ctx.modelProvider = p.model_provider;
+      if (p.model_provider) ctx.modelProvider = canonicalModelProvider(p.model_provider);
       if (p.id) ctx.sid = p.id;
       // The file header names the child even when native Codex stores it before
       // a copied parent prefix. It establishes state only; that prefix must not
