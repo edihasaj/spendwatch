@@ -105,3 +105,10 @@ minutes, so a frequent schedule normally pays only for the 1-day window. A
 cached sample from the future or with malformed fields is ignored, and the
 1-day figures are always read fresh. A scheduler must allow a cold read (no
 cache) to finish, or the cache never fills.
+
+The Local Qwen report build tolerates a divergent Codex rollout (for example an
+archive copy whose `model_provider` header was rewritten) by reading its longest
+complete copy. Qwen figures cannot depend on which copy of a non-Qwen rollout
+wins, and one divergent file must not blank the card. Ordinary `report` builds
+still refuse divergent copies. The scheduled local refresh allows a 170 s cold
+read, because a month scan without cached totals can take about 100 s.

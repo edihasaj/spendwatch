@@ -53,6 +53,11 @@ export type CodexRolloutSemanticDominance =
 
 export interface CodexRolloutCopyOptions<T> {
   semanticDominance?: CodexRolloutSemanticDominance;
+  /**
+   * Keep the preferred (longest complete) copy of a divergent group instead of failing. Only for readers
+   * whose figures cannot depend on which copy wins, e.g. the Local Qwen card.
+   */
+  tolerateDivergent?: boolean;
 }
 
 interface InspectedCopy<T> {
@@ -155,6 +160,7 @@ function selectOne<T>(name: string, copies: readonly CodexRolloutCopy<T>[], opti
       ? semanticSelection(name, valid, options.semanticDominance)
       : undefined;
     if (semantic) return semantic.value;
+    if (options?.tolerateDivergent) return winner.value;
     throw new CodexRolloutCopyError(
       `Codex rollout "${name}" has divergent complete copies; refusing a partial usage report.`,
       [winner.path, other.path],
