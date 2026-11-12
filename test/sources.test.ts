@@ -8,6 +8,9 @@ import { CodexCompressedRolloutError } from "../src/codex-compressed-rollouts";
 import { defaultCodexRoots, discover, pollOrder, type SourceFile } from "../src/sources";
 import { tempDir } from "./tmp";
 
+// The owner's real default-account file must not change what these tests expect.
+process.env.SPENDWATCH_DEFAULT_CODEX_ACCOUNT_FILE = "/nonexistent/default-codex-account.json";
+
 // Minimal unsigned JWT: Codex reads the payload of auth.json's id_token only.
 function idToken(email: string, plan: string): string {
   const payload = Buffer.from(

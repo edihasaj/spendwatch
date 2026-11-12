@@ -203,13 +203,25 @@ function isFreeCodexHome(sessionsDir: string): boolean {
 
 // Codex account: email tagged with the profile home it was read from, e.g.
 // "alex@example.com (secondary)".
+// The owner can state which account the default home always used (`~/.config/spendwatch/default-codex-account.json`,
+// `{"account":"name@example.com"}`). The login file cannot prove history, but the owner can.
+function ownerDefaultCodexAccount(): string | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(process.env.SPENDWATCH_DEFAULT_CODEX_ACCOUNT_FILE ?? join(process.env.HOME ?? "", ".config/spendwatch/default-codex-account.json"), "utf8"));
+    return typeof raw?.account === "string" && raw.account.trim() ? raw.account.trim() : undefined;
+  } catch { return undefined; }
+}
+
 function codexAccount(sessionsDir: string): { account: string; basis: AccountAttributionBasis } {
   const profile = codexProfile(sessionsDir);
   const { email } = codexClaims(sessionsDir);
   // The default home is continuously overwritten by Codex login. Its current
   // credential cannot prove historical calls, whereas a named profile is an
   // explicit local route and remains useful fallback evidence.
-  if (profile === "main") return { account: UNKNOWN_CODEX_ACCOUNT, basis: "unknown" };
+  if (profile === "main") {
+    const owner = ownerDefaultCodexAccount();
+    return owner ? { account: owner, basis: "profile" } : { account: UNKNOWN_CODEX_ACCOUNT, basis: "unknown" };
+  }
   return { account: email ? `${email} (${profile})` : profile, basis: "profile" };
 }
 
