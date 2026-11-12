@@ -141,7 +141,7 @@ describe("pi parser", () => {
     expect(r.source).toBe("omp");
     expect(r.apiCalls).toBe(2); // the assistant turn + the title side call
     expect(r.totalTokens).toBe(8000 + 120 + 400 + 10);
-    expect(r.totalCost).toBe(0); // self-hosted model
+    expect(r.totalCost).toBeGreaterThan(0); // self-hosted model, priced as an API-equivalent estimate
     expect(r.models[0].model).toBe("qwen3.8-flash-next");
 
     const read = r.tools.find((t) => t.name === "read")!;
@@ -159,8 +159,10 @@ describe("pi parser", () => {
 });
 
 describe("self-hosted pricing", () => {
-  test("the Spark model is free on purpose", () => {
-    expect(priceFor("qwen3.8-flash-next")).toEqual({ input: 0, output: 0 });
+  test("the Spark model is priced as an API-equivalent estimate", () => {
+    // Self-hosted, priced as an API-equivalent estimate so the spend stays visible.
+    expect(priceFor("qwen3.8-flash-next")).toEqual({ input: 0.14, output: 0.28, cachedInput: 0.0028 });
+    expect(priceFor("or-deepseek").input).toBe(0.14);
   });
 });
 
