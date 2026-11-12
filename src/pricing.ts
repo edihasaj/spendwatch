@@ -43,7 +43,8 @@ const PRICES: Array<[RegExp, ModelPrice]> = [
   [/gpt-5\.3-codex/, { input: 1.75, output: 14, cachedInput: 0.175 }],
   [/gpt-5\.2/, { input: 1.75, output: 14, cachedInput: 0.175 }],
   [/gpt-5\.1/, { input: 1.25, output: 10, cachedInput: 0.125 }],
-  [/gpt-5|gpt5|o[34]|codex/, { input: 1.25, output: 10, cachedInput: 0.125 }],
+  // Bare GPT-6 names (the ledger also records them without a `codex/` prefix) get the same generic rate as the prefixed ones.
+  [/gpt-5|gpt5|gpt-6|o[34]|codex/, { input: 1.25, output: 10, cachedInput: 0.125 }],
   [/gpt-4|gpt4/, { input: 2.5, output: 10 }],
   // DeepSeek direct API pricing. Routing execution is explicit and opt-in.
   [/deepseek-v4-flash/, { input: 0.14, output: 0.28, cachedInput: 0.0028 }],
