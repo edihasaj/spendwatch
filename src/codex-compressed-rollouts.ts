@@ -11,7 +11,8 @@ import { spawnSync } from "node:child_process";
 // Native Codex archives include verified sessions around 664 MiB decoded. Keep
 // an explicit per-file ceiling while admitting that real retained history.
 const MAX_DECODED_BYTES = 1024 * 1024 * 1024;
-const MAX_LINE_BYTES = 16 * 1024 * 1024;
+// Rows that embed screenshots reach 24 MB; a 16 MB cap made one session fail the whole 30-day report.
+const MAX_LINE_BYTES = 128 * 1024 * 1024;
 const DECODE_TIMEOUT_MS = 30_000;
 // The recovered corpus has 2,628 files; leave room for new archive moves in a
 // long-running watch without silently evicting a still-referenced snapshot.
