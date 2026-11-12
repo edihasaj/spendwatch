@@ -33,6 +33,12 @@ const PRICES: Array<[RegExp, ModelPrice]> = [
   [/grok/, { input: 2, output: 6, cachedInput: 0.5, cacheWrite5m: 2, longContextThreshold: 200_000, longContext: { input: 4, output: 12, cachedInput: 1, cacheWrite5m: 4 } }],
   // OpenAI direct API standard pricing. Codex subscription usage remains an
   // estimate, but preserving the model ratios makes comparisons meaningful.
+  // GPT-6 family, OpenAI API standard rates (developers.openai.com/api/docs/models, read 12 November 2026). Cache writes
+  // are 1.25x input. A prompt over 272K input tokens is billed at 2x input and cache rates and 1.5x output.
+  [/gpt-6(?:\.\d+)?-astra/, { input: 10, output: 50, cachedInput: 1, cacheWrite5m: 12.5, longContextThreshold: 272_000, longContext: { input: 20, output: 75, cachedInput: 2, cacheWrite5m: 25 } }],
+  [/gpt-6(?:\.\d+)?-sol/, { input: 2, output: 10, cachedInput: 0.1, cacheWrite5m: 2.5, longContextThreshold: 272_000, longContext: { input: 4, output: 15, cachedInput: 0.2, cacheWrite5m: 5 } }],
+  [/gpt-6(?:\.\d+)?-terra/, { input: 1, output: 5, cachedInput: 0.05, cacheWrite5m: 1.25, longContextThreshold: 272_000, longContext: { input: 2, output: 7.5, cachedInput: 0.1, cacheWrite5m: 2.5 } }],
+  [/gpt-6(?:\.\d+)?-luna/, { input: 0.1, output: 0.5, cachedInput: 0.01, cacheWrite5m: 0.125, longContextThreshold: 272_000, longContext: { input: 0.2, output: 0.75, cachedInput: 0.02, cacheWrite5m: 0.25 } }],
   [/gpt-5\.6-luna/, { input: 0.2, output: 1.2, cachedInput: 0.02, cacheWrite5m: 0.25, longContextThreshold: 272_000, longContext: { input: 0.4, output: 1.8, cachedInput: 0.04, cacheWrite5m: 0.5 } }],
   [/gpt-5\.6-terra/, { input: 2, output: 12, cachedInput: 0.2, cacheWrite5m: 2.5, longContextThreshold: 272_000, longContext: { input: 4, output: 18, cachedInput: 0.4, cacheWrite5m: 5 } }],
   [/gpt-5\.6(?:-sol)?(?:$|[^a-z])/, { input: 5, output: 30, cachedInput: 0.5, cacheWrite5m: 6.25, longContextThreshold: 272_000, longContext: { input: 10, output: 45, cachedInput: 1, cacheWrite5m: 12.5 } }],
@@ -43,8 +49,7 @@ const PRICES: Array<[RegExp, ModelPrice]> = [
   [/gpt-5\.3-codex/, { input: 1.75, output: 14, cachedInput: 0.175 }],
   [/gpt-5\.2/, { input: 1.75, output: 14, cachedInput: 0.175 }],
   [/gpt-5\.1/, { input: 1.25, output: 10, cachedInput: 0.125 }],
-  // Bare GPT-6 names (the ledger also records them without a `codex/` prefix) get the same generic rate as the prefixed ones.
-  [/gpt-5|gpt5|gpt-6|o[34]|codex/, { input: 1.25, output: 10, cachedInput: 0.125 }],
+  [/gpt-5|gpt5|o[34]|codex/, { input: 1.25, output: 10, cachedInput: 0.125 }],
   [/gpt-4|gpt4/, { input: 2.5, output: 10 }],
   // DeepSeek direct API pricing. Routing execution is explicit and opt-in.
   [/deepseek-v4-flash/, { input: 0.14, output: 0.28, cachedInput: 0.0028 }],
