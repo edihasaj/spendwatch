@@ -219,11 +219,9 @@ function subagentSections(usage: SubagentUsage | undefined, total?: number): str
     usage.agents.map((a) => a.tokens),
   ) : "";
   const local = Math.round(localShare(usage) * 100);
-  return [section(
-    "Subagents",
-    `${fmtTok(usage.subagent.tokens)} of ${fmtTok(all)} tokens (${pct(usage.subagent.tokens, all)}) · ${usage.subagent.calls.toLocaleString()} calls · ${fmtUsd(usage.subagent.cost)} est. · ${local}% on local models`,
-    `${roles}${agents ? `<details class="provider-history"><summary>By individual agent (largest ${usage.agents.length})</summary>${agents}</details>` : ""}`,
-  )];
+  // Collapsed by default: the role table is wide, and the headline already says what matters.
+  const headline = `${fmtTok(usage.subagent.tokens)} of ${fmtTok(all)} tokens (${pct(usage.subagent.tokens, all)}) · ${usage.subagent.calls.toLocaleString()} calls · ${fmtUsd(usage.subagent.cost)} est. · ${local}% on local models`;
+  return [`<details class="block subagents"><summary><strong>Subagents</strong><span class="sub">${esc(headline)}</span></summary><div class="section-body" tabindex="0" role="region" aria-label="Subagents">${roles}${agents ? `<details class="provider-history"><summary>By individual agent (largest ${usage.agents.length})</summary>${agents}</details>` : ""}</div></details>`];
 }
 
 function section(title: string, sub: string, body: string): string {
@@ -292,7 +290,7 @@ function agentPanel(
   const stats = `<div class="stats">${stat("tokens", fmtTok(r.totalTokens))}${stat("estimated spend", fmtUsd(r.totalCost))}${stat("API calls", r.apiCalls.toLocaleString())}${stat("sessions", String(r.sessions))}</div>`;
   const parts: string[] = [stats];
   parts.push(...openRouterUsageSections(r));
-  parts.push(...subagentSections(validateSubagentUsage(r.subagents), r.totalTokens));
+  // Subagents are shown once, merged across sources, at the bottom of the overview.
   if (r.accounts.length > 1)
     parts.push(
       section(
@@ -472,7 +470,7 @@ h1,h2,h3{font-family:"Manrope",sans-serif;letter-spacing:-.025em}
 .stat{flex:1;min-width:150px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
 .stat .n{display:block;font-family:"Fragment Mono";font-size:24px;font-weight:400}
 .stat .l{display:block;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.12em;margin-top:4px}
-.block{margin-top:26px;min-width:0;max-width:100%}
+.block{margin-top:26px;min-width:0;max-width:100%}.subagents{border:1px solid var(--line);border-radius:12px;padding:12px 16px}.subagents>summary{cursor:pointer;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;list-style:none}.subagents>summary::-webkit-details-marker{display:none}.subagents>summary::before{content:"▸";color:var(--amber)}.subagents[open]>summary::before{content:"▾"}.subagents .sub{color:var(--dim);font-size:12px}.subagents .section-body{margin-top:14px}.subagents td:last-child{white-space:normal;min-width:180px}
 .block h3{font-size:15px;margin:0 0 12px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
 .block h3 .sub{font-family:"Fragment Mono";font-size:10px;color:var(--dim);font-weight:400;letter-spacing:0}
 .section-body{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:var(--amber2) var(--track-bg,#0a0b0e);border-radius:12px;outline:none}
