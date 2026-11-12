@@ -124,7 +124,7 @@ function dataTable(cols: Col[], rows: string[][], barValues?: number[]): string 
           const c = cols[ci];
           const pct = c.bar && barValues ? Math.round((barValues[ri] / max) * 100) : 0;
           const bar = c.bar ? `<span class="bar" style="width:${pct}%"></span>` : "";
-          return `<td class="${c.num ? "num" : ""} ${c.bar ? "barcell" : ""}">${bar}<span class="v">${c.html ? cell : esc(cell)}</span></td>`;
+          return `<td data-l="${esc(c.head)}" class="${c.num ? "num" : ""} ${c.bar ? "barcell" : ""}">${bar}<span class="v">${c.html ? cell : esc(cell)}</span></td>`;
         })
         .join("");
       return `<tr style="--i:${ri}">${cells}</tr>`;
@@ -470,7 +470,7 @@ h1,h2,h3{font-family:"Manrope",sans-serif;letter-spacing:-.025em}
 .stat{flex:1;min-width:150px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
 .stat .n{display:block;font-family:"Fragment Mono";font-size:24px;font-weight:400}
 .stat .l{display:block;color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.12em;margin-top:4px}
-.block{margin-top:26px;min-width:0;max-width:100%}.subagents{border:1px solid var(--line);border-radius:12px;padding:12px 16px}.subagents>summary{cursor:pointer;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;list-style:none}.subagents>summary::-webkit-details-marker{display:none}.subagents>summary::before{content:"▸";color:var(--amber)}.subagents[open]>summary::before{content:"▾"}.subagents .sub{color:var(--dim);font-size:12px}.subagents .section-body{margin-top:14px}.subagents td:last-child{white-space:normal;min-width:180px}
+.block{margin-top:26px;min-width:0;max-width:100%}.subagents{border:1px solid var(--line);border-radius:12px;padding:12px 16px}.subagents>summary{cursor:pointer;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;list-style:none}.subagents>summary::-webkit-details-marker{display:none}.subagents>summary::before{content:"▸";color:var(--amber)}.subagents[open]>summary::before{content:"▾"}.subagents .sub{color:var(--dim);font-size:12px}.subagents .section-body{margin-top:14px}.subagents td:last-child{white-space:normal;min-width:180px}.subagents table{width:100%;table-layout:auto}.subagents td{white-space:normal;overflow-wrap:anywhere;vertical-align:top}.subagents .section-body{overflow-x:visible}.subagents .provider-history{margin-top:14px}.subagents .provider-history>summary{cursor:pointer;color:var(--dim);font-size:12px;padding:6px 0}
 .block h3{font-size:15px;margin:0 0 12px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
 .block h3 .sub{font-family:"Fragment Mono";font-size:10px;color:var(--dim);font-weight:400;letter-spacing:0}
 .section-body{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:var(--amber2) var(--track-bg,#0a0b0e);border-radius:12px;outline:none}
@@ -512,6 +512,7 @@ footer b{color:var(--amber)}
   td .account-identity{align-items:flex-start;flex-direction:column;gap:4px;min-width:140px}
   .drow{align-items:flex-start;flex-wrap:wrap;gap:4px 10px}.dcmd{flex-basis:100%}.dn,.dt{width:auto;text-align:left}
 }
+@media(max-width:760px){.subagents{padding:10px 12px}.subagents .section-body{margin-right:0;padding-right:0;border-radius:12px}.subagents table,.subagents thead,.subagents tbody,.subagents tr,.subagents td{display:block;width:100%;min-width:0}.subagents thead{position:absolute;left:-9999px}.subagents table{background:none;border:0}.subagents tr{border:1px solid var(--line);border-radius:10px;background:var(--panel);margin:0 0 10px;padding:6px 0}.subagents td{border:0;display:flex;justify-content:space-between;gap:12px;padding:4px 12px;text-align:right}.subagents td::before{content:attr(data-l);color:var(--dim);text-transform:uppercase;letter-spacing:.08em;font-size:10px;text-align:left;flex:none}.subagents td.barcell{font-weight:600;text-align:left;justify-content:flex-start}.subagents td.barcell::before{display:none}.subagents td:last-child{min-width:0}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 
 ${THEME_CSS}
