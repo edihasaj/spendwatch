@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { coordinatorAccessHeaders } from "../src/capacity-coordinator-client";
 import {
   CapacityPollStore, CLAUDE_POLL_INTERVAL_MS, CODEX_POLL_INTERVAL_MS, coordinatedCapacity, coordinatorRequest, handleCapacityPoll,
-  MAX_FUTURE_SNAPSHOT_SKEW_MS, POLL_INTERVAL_MS, pollIntervalMs, retryAfterMs, sanitizePollSnapshot,
+  MAX_FUTURE_SNAPSHOT_SKEW_MS, POLL_INTERVAL_MS, pollIntervalMs, ReconnectingPollStore, retryAfterMs, sanitizePollSnapshot,
 } from "../src/capacity-poll";
 import type { CapacityResult } from "../src/capacity-current";
 
@@ -370,4 +370,48 @@ test("Retry-After accepts seconds and HTTP dates", () => {
   expect(retryAfterMs("3600", 0)).toBe(3_600_000);
   expect(retryAfterMs("Thu, 01 Jan 1970 01:00:00 GMT", 0)).toBe(3_600_000);
   expect(retryAfterMs("garbage", 0)).toBeUndefined();
+});
+
+test("a failed database connection is replaced instead of failing every later poll request", async () => {
+  // A managed connection closes itself after a transport error and never
+  // reopens, so the server must open a fresh store for the next request.
+  const opened: CapacityPollStore[] = [];
+  const source = new ReconnectingPollStore(":memory:", (path) => {
+    const store = new CapacityPollStore(path);
+    if (opened.length === 0) {
+      store.claim = () => { throw new Error("PostgreSQL connection does not exist"); };
+    }
+    opened.push(store);
+    return store;
+  });
+  const post = (body: unknown) => handleCapacityPoll(new Request("https://spendwatch.test/api/capacity/poll/claim", {
+    method: "POST", body: JSON.stringify(body),
+  }), source);
+  const identity = { provider: "claude", account: "dev@example.com" };
+  try {
+    // The database failure is a server error, not a malformed request.
+    await expect(post(identity)).rejects.toThrow("connection does not exist");
+    const recovered = await post(identity);
+    expect(recovered.status).toBe(200);
+    expect(typeof (await recovered.json() as { lease?: string }).lease).toBe("string");
+    expect(opened).toHaveLength(2);
+    // A later request reuses the healthy replacement.
+    expect((await post(identity)).status).toBe(200);
+    expect(opened).toHaveLength(2);
+  } finally { source.close(); }
+});
+
+test("malformed poll requests stay client errors and keep the connection", async () => {
+  let opens = 0;
+  const source = new ReconnectingPollStore(":memory:", (path) => { opens++; return new CapacityPollStore(path); });
+  const post = (action: string, body: string) => handleCapacityPoll(new Request(`https://spendwatch.test/api/capacity/poll/${action}`, {
+    method: "POST", body,
+  }), source);
+  try {
+    expect((await post("claim", "not json")).status).toBe(400);
+    expect((await post("claim", JSON.stringify({ provider: "claude", account: "nobody" }))).status).toBe(400);
+    expect((await post("complete", JSON.stringify({ provider: "claude", account: "dev@example.com" }))).status).toBe(400);
+    expect((await post("claim", JSON.stringify({ provider: "claude", account: "dev@example.com" }))).status).toBe(200);
+    expect(opens).toBe(1);
+  } finally { source.close(); }
 });

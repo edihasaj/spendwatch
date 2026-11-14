@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fixed Claude and Codex quota cards staying "Not current" on the hosted
+  dashboard until the next daily sync. The managed server kept one database
+  connection for the shared poll coordinator and never replaced it after a
+  failure, so every collector claim returned HTTP 400 and the collectors served
+  their stale cache. The coordinator now opens a fresh connection after any
+  database failure, and reports database failures as HTTP 500 instead of
+  blaming the request. Malformed requests are still HTTP 400.
+
 - Removed the Grok capacity card and `spendwatch account add grok`. Stored Grok
   readings from older collectors are ignored. Past Grok spend in reports and
   session history is unchanged.

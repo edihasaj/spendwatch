@@ -302,16 +302,66 @@ export async function coordinatedCapacity<T extends PollSnapshot>(
   } finally { if (!options.store) local.close(); }
 }
 
-export async function handleCapacityPoll(request: Request, store: CapacityPollStore): Promise<Response> {
+/**
+ * Holds the shared poll store for a long-running server and replaces it after
+ * any failure. A managed PostgreSQL connection closes itself on a transport
+ * error and never reopens, so one timeout or dropped socket would otherwise
+ * make every later poll request fail until the process restarts. The failed
+ * statement is never replayed; the next request opens a fresh connection.
+ */
+export class ReconnectingPollStore {
+  private current?: CapacityPollStore;
+
+  constructor(
+    private readonly path: string,
+    private readonly open: (path: string) => CapacityPollStore = (value) => new CapacityPollStore(value),
+  ) {}
+
+  use<T>(run: (store: CapacityPollStore) => T): T {
+    try {
+      this.current ??= this.open(this.path);
+      return run(this.current);
+    } catch (error) {
+      if (!isCapacityValidationError(error)) this.close();
+      throw error;
+    }
+  }
+
+  close(): void {
+    const store = this.current;
+    this.current = undefined;
+    try { store?.close(); } catch { /* The connection is already gone. */ }
+  }
+}
+
+function isCapacityValidationError(error: unknown): boolean {
+  return error instanceof SyntaxError ||
+    (error instanceof Error && error.constructor === Error &&
+      /^(?:invalid|missing) (?:capacity|lease)\b/u.test(error.message));
+}
+
+export async function handleCapacityPoll(
+  request: Request,
+  source: CapacityPollStore | ReconnectingPollStore,
+): Promise<Response> {
   if (Number(request.headers.get("content-length") ?? 0) > 16_384) return Response.json({ error: "request too large" }, { status: 413 });
   const text = await request.text();
   if (text.length > 16_384) return Response.json({ error: "request too large" }, { status: 413 });
   try {
     const body = JSON.parse(text);
     pollKey(body.provider, body.account);
-    if (new URL(request.url).pathname.endsWith("/claim")) return Response.json(store.claim(body.provider, body.account));
+    const run = <T>(action: (store: CapacityPollStore) => T): T =>
+      source instanceof ReconnectingPollStore ? source.use(action) : action(source);
+    if (new URL(request.url).pathname.endsWith("/claim")) {
+      return Response.json(run((store) => store.claim(body.provider, body.account)));
+    }
     if (typeof body.lease !== "string" || body.lease.length > 100) throw new Error("invalid lease");
-    const ok = store.complete(body.provider, body.account, body.lease, body);
+    const ok = run((store) => store.complete(body.provider, body.account, body.lease, body));
     return Response.json({ ok }, { status: ok ? 200 : 409 });
-  } catch { return Response.json({ error: "invalid capacity poll" }, { status: 400 }); }
+  } catch (error) {
+    // Only a malformed request is the caller's fault. A database failure must
+    // surface as a server error so the collector and error reporting see it.
+    if (!isCapacityValidationError(error)) throw error;
+    return Response.json({ error: "invalid capacity poll" }, { status: 400 });
+  }
 }
