@@ -39,6 +39,14 @@ cooldown. When the coordinator is unavailable, a source can display only its
 validated locally cached shared result; it does not issue a provider fallback
 read or alter the remote lease or cooldown.
 
+The server holds the poll store through `ReconnectingPollStore`. A managed
+PostgreSQL connection closes itself after a transport error and never reopens, so
+the store is discarded after any non-validation failure and the next request opens
+a fresh connection; the failed statement is never replayed. Database failures
+return HTTP 500, and only a malformed request returns HTTP 400. If every claim
+returns 400 and collectors show only cached data, the server predates this
+behavior: restart the container, then publish a release that includes it.
+
 Snapshots more than five minutes ahead of local time are rejected. Smaller
 clock skew can be stored so a source is not needlessly discarded, but it stays
 stale until local time reaches its sample timestamp.
