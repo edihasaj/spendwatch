@@ -114,6 +114,12 @@ cached sample from the future or with malformed fields is ignored, and the
 1-day figures are always read fresh. A scheduler must allow a cold read (no
 cache) to finish, or the cache never fills.
 
+A report build reads compressed Codex archives through the persistent decoded
+cache described in `docs/codex-compressed-rollouts.md`. A warm 30-day refresh
+reads the cached files and writes no transcript data. The first refresh on a
+Mac fills the cache at a capped rate. It may take more than one scheduled run
+to finish, and every completed entry is kept between runs.
+
 The Local Qwen report build tolerates a divergent Codex rollout (for example an
 archive copy whose `model_provider` header was rewritten) by reading its longest
 complete copy. Qwen figures cannot depend on which copy of a non-Qwen rollout
