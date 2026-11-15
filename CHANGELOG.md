@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fixed Spendwatch freezing a Mac. Each report and Local Qwen 30-day refresh
+  decoded every compressed Codex archive into a new temporary folder and then
+  deleted it. On Studio that was about 20 GB written per refresh, every 30
+  minutes, which stalled the disk until macOS's logging watchdog restarted the
+  Mac. Archives are now decoded once into a private cache at a capped write
+  rate. Later runs reuse the cache without writing.
+
 - Fixed Claude and Codex quota cards staying "Not current" on the hosted
   dashboard until the next daily sync. The managed server kept one database
   connection for the shared poll coordinator and never replaced it after a

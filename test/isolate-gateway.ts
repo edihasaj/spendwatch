@@ -21,5 +21,8 @@ process.env.SPENDWATCH_CLAUDE_ACCOUNT = "test-claude@example.com";
 process.env.SPENDWATCH_COPILOT_ACCOUNT = "test-copilot";
 for (const key of ["SPENDWATCH_GATEWAY_STATE", "SPENDWATCH_GATEWAY_SOURCE", "SPENDWATCH_GATEWAY_PROVIDER_MAP"]) delete process.env[key];
 
+// Decoded Codex archives are cached across runs; no test may read or fill the real ~/.cache copy.
+process.env.SPENDWATCH_CODEX_DECODED_CACHE = tempDir("spendwatch-codex-decoded-");
+
 // In a preload, afterAll runs once after the last test file: every directory the tests made goes then.
 afterAll(removeTempDirs);
