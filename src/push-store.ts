@@ -1,6 +1,7 @@
 import { Database } from "./database";
 import { crossedWeeklyThreshold, type WeeklyAlertThreshold } from "./capacity-alerts";
 import type { CodexLimitAccount } from "./limits";
+import { ManagedDatabaseError } from "./managed/libpq";
 
 const PUSH_SCHEMA = `
 CREATE TABLE IF NOT EXISTS push_config (
@@ -67,6 +68,49 @@ export interface PendingPushDelivery extends StoredPushSubscription {
 interface AccountStateRow { lastLeft: number }
 interface EventRow { id: number }
 export interface PushSubscriptionStatus { enabled: boolean; verified: boolean }
+
+/**
+ * True only when the managed PostgreSQL connection itself failed. The managed
+ * layer closes its connection after a transport error and never reopens it, so
+ * every later call on the same store throws the same transport error.
+ * Ordinary failures (constraints, bad input, SQLite contention) are not a
+ * reason to reconnect, which keeps a persistent logic error from reopening the
+ * connection and re-running its setup statements on every monitor tick.
+ */
+export function isDeadConnectionError(error: unknown): boolean {
+  return error instanceof ManagedDatabaseError && error.transport;
+}
+
+/**
+ * Holds the shared push store for a long-running server and replaces it after
+ * its connection died. The failed statement is never replayed: the caller sees
+ * the error and the next call opens a fresh store. A notification sent before
+ * a failed `markSent` is sent again on the next monitor tick (at least once).
+ */
+export class ReconnectingPushStore {
+  private current?: PushStore;
+
+  constructor(
+    private readonly path: string,
+    private readonly open: (path: string) => PushStore = (value) => new PushStore(value),
+  ) {}
+
+  use<T>(run: (store: PushStore) => T): T {
+    try {
+      this.current ??= this.open(this.path);
+      return run(this.current);
+    } catch (error) {
+      if (isDeadConnectionError(error)) this.close();
+      throw error;
+    }
+  }
+
+  close(): void {
+    const store = this.current;
+    this.current = undefined;
+    try { store?.close(); } catch { /* The connection is already gone. */ }
+  }
+}
 
 export class PushStore {
   readonly db: Database;

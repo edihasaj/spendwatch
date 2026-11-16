@@ -4,7 +4,9 @@ import { NOTIFICATION_BADGE, NOTIFICATION_ICON } from "./branding";
 import { loadCapacityDashboard } from "./capacity-dashboard";
 import { createCapacityPageRenderer } from "./capacity-page";
 import { handleCapacityPoll, ReconnectingPollStore } from "./capacity-poll";
-import { PushStore, type PendingPushDelivery, type StoredPushSubscription } from "./push-store";
+import {
+  PushStore, ReconnectingPushStore, type PendingPushDelivery, type StoredPushSubscription,
+} from "./push-store";
 import { SERVICE_WORKER_SOURCE } from "./service-worker";
 import { reportOperationalError } from "./telemetry";
 import { managedDeploymentMode } from "./database";
@@ -131,9 +133,9 @@ export async function testBackgroundPush(databasePath: string, vapidSubject: str
 }
 
 export async function serveDashboard(options: DashboardServerOptions): Promise<never> {
-  const store = new PushStore(options.databasePath);
+  const pushes = new ReconnectingPushStore(options.databasePath);
   const capacityPolls = new ReconnectingPollStore(options.databasePath);
-  const { publicKey } = configureVapid(store, options.vapidSubject);
+  const { publicKey } = pushes.use((store) => configureVapid(store, options.vapidSubject));
   let monitoring = false;
   let consecutiveSqliteBusy = 0;
 
@@ -145,7 +147,7 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
         notificationPayload(delivery),
         { TTL: 3600, urgency: delivery.threshold <= 5 ? "high" : "normal" },
       );
-      store.markSent(delivery.eventId, delivery.endpoint, Date.now());
+      pushes.use((store) => store.markSent(delivery.eventId, delivery.endpoint, Date.now()));
     } catch (error) {
       const statusCode = Number((error as { statusCode?: unknown }).statusCode);
       if (statusCode !== 404 && statusCode !== 410) {
@@ -154,7 +156,9 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
           status: Number.isFinite(statusCode) ? String(statusCode) : "unknown",
         });
       }
-      store.markFailed(delivery.eventId, delivery.endpoint, String(error), statusCode === 404 || statusCode === 410, Date.now());
+      pushes.use((store) => store.markFailed(
+        delivery.eventId, delivery.endpoint, String(error), statusCode === 404 || statusCode === 410, Date.now(),
+      ));
     }
   };
 
@@ -163,8 +167,9 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
     if (monitoring) return;
     monitoring = true;
     try {
-      store.observe(loadCapacityDashboard([options.capacityPath]).accounts, Date.now());
-      await Promise.allSettled(store.pendingDeliveries().map(send));
+      const accounts = loadCapacityDashboard([options.capacityPath]).accounts;
+      pushes.use((store) => store.observe(accounts, Date.now()));
+      await Promise.allSettled(pushes.use((store) => store.pendingDeliveries()).map(send));
       consecutiveSqliteBusy = 0;
     } catch (error) {
       const decision = monitorFailureDecision(error, consecutiveSqliteBusy);
@@ -215,18 +220,21 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
         if (Number(request.headers.get("content-length") ?? 0) > 8192) return json({ error: "request too large" }, 413);
         const body = await request.json().catch(() => undefined) as { subscription?: unknown } | undefined;
         if (!validSubscription(body?.subscription)) return json({ error: "invalid push subscription" }, 400);
+        const subscription = body.subscription;
         if (url.pathname.endsWith("status")) {
-          const status = store.subscriptionStatus(body.subscription.endpoint);
+          const status = pushes.use((store) => store.subscriptionStatus(subscription.endpoint));
           return json({ subscribed: Boolean(status?.enabled), verified: Boolean(status?.enabled && status.verified) });
         }
         if (url.pathname.endsWith("unsubscribe")) {
-          store.disableSubscription(body.subscription.endpoint, Date.now());
+          pushes.use((store) => store.disableSubscription(subscription.endpoint, Date.now()));
           return json({ ok: true });
         }
         if (managedDeploymentMode() === "staging") return json({ error: "Notifications are disabled in staging" }, 503);
-        store.upsertSubscription(body.subscription, request.headers.get("user-agent") ?? undefined, Date.now());
+        pushes.use((store) => store.upsertSubscription(
+          subscription, request.headers.get("user-agent") ?? undefined, Date.now(),
+        ));
         try {
-          await webpush.sendNotification(body.subscription, JSON.stringify({
+          await webpush.sendNotification(subscription, JSON.stringify({
             title: "Spendwatch alerts ready",
             body: "Background alerts work even while the dashboard is closed.",
             tag: "spendwatch:ready",
@@ -234,7 +242,7 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
             icon: NOTIFICATION_ICON,
             badge: NOTIFICATION_BADGE,
           }), { TTL: 60, urgency: "normal" });
-          store.markSubscriptionVerified(body.subscription.endpoint, Date.now());
+          pushes.use((store) => store.markSubscriptionVerified(subscription.endpoint, Date.now()));
           return json({ ok: true, testSent: true });
         } catch (error) {
           void reportOperationalError("spendwatch.push.test-failure", error, {
