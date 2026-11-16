@@ -53,6 +53,15 @@ any DDL statement, failed or not. `test/managed-gateway-archive.test.ts` holds
 the month take-over, a refused take-over, an archive from before the columns
 and the concurrent migration to identical results on both engines.
 
+The long-running server holds its alert push store and its quota poll store
+through `ReconnectingPushStore` and `ReconnectingPollStore`. The managed layer
+closes a connection after a transport error and never reopens it, so each
+holder discards its store and opens a fresh one on the next call; the failed
+statement is never replayed. The push store reconnects only when
+`isDeadConnectionError` is true (a `ManagedDatabaseError` with `transport`), so
+ordinary failures do not reopen the connection every monitor tick. Native
+SQLite never matches that check.
+
 The ordinary CLI must retain native `bun:sqlite`, including its self-contained
 build and local history archives. The managed server will select PostgreSQL
 only for its exact configured application database path. Other local SQLite
