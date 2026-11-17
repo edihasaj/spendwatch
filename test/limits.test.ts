@@ -859,6 +859,16 @@ describe("Claude profiles name and order accounts", () => {
     ]);
   });
 
+  test("the tertiary Claude card comes after every other provider", () => {
+    const codex = { account: "c@example.com", provider: "codex", usage: { accountEmail: "c@example.com", loginMethod: "pro",
+      primary: { usedPercent: 1, windowMinutes: 300 }, secondary: null, tertiary: null, updatedAt: "2026-11-17T20:00:00Z" } };
+    const order = normalizeCodexLimits([claude("work@example.com", "tertiary"), codex, claude("personal@example.com", "secondary"),
+      claude("owner@example.com", "primary")]).map((account) => account.name);
+    expect(order.slice(0, 2)).toEqual(["Claude Primary", "Claude Secondary"]);
+    expect(order.at(-1)).toBe("Claude Tertiary");
+    expect(order.indexOf("Codex")).toBeLessThan(order.indexOf("Claude Tertiary"));
+  });
+
   test("a newer snapshot without a profile keeps the profile another collector reported", () => {
     const older = claude("work@example.com", "tertiary");
     const newer = claude("work@example.com");
