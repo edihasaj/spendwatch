@@ -410,3 +410,11 @@ describe("Claude profile names", () => {
     expect(claudeProfileName("/Users/edi/other")).toBeUndefined();
   });
 });
+
+test("a shared snapshot without a profile is labelled with this Mac's profile", async () => {
+  const { withProfile, claudeCapacityFromUsage } = await import("../src/claude-capacity");
+  const shared = claudeCapacityFromUsage({ five_hour: { utilization: 1, resets_at: null }, seven_day: { utilization: 2, resets_at: null } }, { email: "edi@joinfella.com" });
+  expect(shared?.usage.profile).toBeUndefined();
+  expect(withProfile(shared, "tertiary")?.usage.profile).toBe("tertiary");
+  expect(withProfile(undefined, "tertiary")).toBeUndefined();
+});

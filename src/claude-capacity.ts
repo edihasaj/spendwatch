@@ -573,6 +573,12 @@ async function profileCapacity(profile: ClaudeProfile, now: number): Promise<Cla
   return claudeCapacityFromUsage(await response.json(), profile.identity, now);
 }
 
+/** Labels a capacity result with the profile that holds its login, whichever collector produced it. */
+export function withProfile(result: ClaudeCapacityResult | undefined, profile: string | undefined): ClaudeCapacityResult | undefined {
+  if (!result || !profile) return result;
+  return { ...result, usage: { ...result.usage, profile } };
+}
+
 export async function currentClaudeCapacity(
   now = Date.now(),
   onFailure?: (failure: ClaudeReadFailure) => void,
@@ -589,7 +595,10 @@ export async function currentClaudeCapacity(
     profiles.set(key, chosen);
   }
   const settled = await Promise.allSettled(
-    [...profiles.values()].map((profile) => coordinatedCapacity("claude", profile.identity.email, () => profileCapacity(profile, now))),
+    // The profile name is this Mac's own knowledge, so it is added after the read: a snapshot shared through
+    // the poll coordinator may come from a collector or server that does not carry it.
+    [...profiles.values()].map(async (profile) => withProfile(
+      await coordinatedCapacity("claude", profile.identity.email, () => profileCapacity(profile, now)), profile.identity.profile)),
   );
   const byAccount = new Map<string, ClaudeCapacityResult>();
   for (const item of settled) {
