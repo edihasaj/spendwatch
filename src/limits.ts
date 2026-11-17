@@ -583,7 +583,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
     if (account.provider === "lokai") account.name = account.email;
   }
   return normalized.sort((a, b) =>
-    PROVIDER_ORDER.indexOf(a.provider) - PROVIDER_ORDER.indexOf(b.provider)
+    placement(a) - placement(b)
     || (a.order ?? 0) - (b.order ?? 0)
     || (a.name ?? a.email).localeCompare(b.name ?? b.email)
     || a.email.localeCompare(b.email));
@@ -612,6 +612,15 @@ function profileRank(profile: string | undefined): number {
   if (profile === undefined) return PROFILE_RANK.length + 1;
   const rank = PROFILE_RANK.indexOf(profile);
   return rank === -1 ? PROFILE_RANK.length : rank;
+}
+
+// A Claude account kept in a named profile past `secondary` (the team plan in `~/.claude-tertiary`) is a
+// spare; its card goes after every other provider's. Primary, secondary and unnamed accounts stay with Claude.
+function placement(account: CodexLimitAccount): number {
+  if (account.provider === "claude" && account.profile !== undefined && profileRank(account.profile) >= 2) {
+    return PROVIDER_ORDER.length;
+  }
+  return PROVIDER_ORDER.indexOf(account.provider);
 }
 
 function providerLabel(provider: CapacityProvider): string {
