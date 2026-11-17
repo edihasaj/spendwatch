@@ -45,6 +45,8 @@ export interface ClaudeCapacityResult {
     accountEmail: string;
     accountOrganization?: string;
     loginMethod?: string;
+    /** The `~/.claude-<name>` profile that holds this login, so the dashboard can name and order accounts by it. */
+    profile?: string;
     primary: CapacityWindow | null;
     secondary: CapacityWindow | null;
     tertiary: CapacityWindow | null;
@@ -63,6 +65,8 @@ export interface ClaudeCapacityResult {
 
 export interface ClaudeIdentity {
   email: string;
+  /** `tertiary` for `~/.claude-tertiary`; absent for the default `~/.claude` home. */
+  profile?: string;
   organization?: string;
   plan?: string;
 }
@@ -171,6 +175,7 @@ export function claudeCapacityFromUsage(
       accountEmail: identity.email,
       accountOrganization: identity.organization,
       loginMethod: identity.plan,
+      ...(identity.profile ? { profile: identity.profile } : {}),
       primary,
       secondary,
       tertiary,
@@ -438,6 +443,11 @@ export function preferUsableCredentials(fileCredentials: unknown, fromKeychain: 
   return fromKeychain() ?? fileCredentials;
 }
 
+/** `tertiary` for `~/.claude-tertiary`; undefined for the default `~/.claude` home or any other directory. */
+export function claudeProfileName(home: string): string | undefined {
+  return /(?:^|\/)\.claude-([a-z0-9][a-z0-9-]{0,31})$/.exec(home.toLowerCase())?.[1];
+}
+
 export function claudeProfileFrom(
   home: string,
   metadataPath: string,
@@ -475,6 +485,7 @@ export function claudeProfileFrom(
     keychainCredential: credentials === fromKeychain?.oauth ? fromKeychain.credential : undefined,
     identity: {
       email,
+      ...(claudeProfileName(home) ? { profile: claudeProfileName(home) } : {}),
       organization: stringField(oauthAccount, "organizationName") ?? "Personal",
       plan: stringField(credentials, "subscriptionType")
         ?? organizationType?.replace(/^claude_/, "")
@@ -570,7 +581,12 @@ export async function currentClaudeCapacity(
   for (const profile of discoverClaudeProfiles()) {
     const key = profile.identity.email.toLowerCase();
     const previous = profiles.get(key);
-    if (!previous || (profile.expiresAt ?? 0) > (previous.expiresAt ?? 0)) profiles.set(key, profile);
+    // The default home and a named profile can hold the same login. Read whichever token is freshest,
+    // but keep the named profile's name so the dashboard can still place the account.
+    const name = previous?.identity.profile ?? profile.identity.profile;
+    const chosen = !previous || (profile.expiresAt ?? 0) > (previous.expiresAt ?? 0) ? profile : previous;
+    if (name && !chosen.identity.profile) chosen.identity = { ...chosen.identity, profile: name };
+    profiles.set(key, chosen);
   }
   const settled = await Promise.allSettled(
     [...profiles.values()].map((profile) => coordinatedCapacity("claude", profile.identity.email, () => profileCapacity(profile, now))),

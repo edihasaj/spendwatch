@@ -75,6 +75,7 @@ export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now
   };
   const usage: CapacityResult["usage"] & {
     accountOrganization?: string;
+    profile?: string;
     cloudCredits?: CapacityCloudCredits;
     extraUsage?: CapacityExtraUsage;
   } = {
@@ -90,6 +91,9 @@ export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now
     const claudeUsage = input.usage;
     usage.accountOrganization = typeof claudeUsage.accountOrganization === "string"
       ? claudeUsage.accountOrganization.slice(0, 320) : undefined;
+    // The profile name orders and labels the account; anything but a plain directory suffix is dropped.
+    const profile = (claudeUsage as { profile?: unknown }).profile;
+    if (typeof profile === "string" && /^[a-z0-9][a-z0-9-]{0,31}$/.test(profile)) usage.profile = profile;
     // Malformed credit blocks are advisory next to the quota windows: drop them
     // rather than rejecting a snapshot whose windows are valid.
     const cloud = claudeUsage.cloudCredits;
