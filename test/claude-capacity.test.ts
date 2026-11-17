@@ -401,3 +401,12 @@ describe("capacity freshness", () => {
     expect(windowFreshness({ ...session, resetsAt: "2026-08-18T15:29:59Z" }, "2026-08-18T15:29:00Z", now)).toBe("expired");
   });
 });
+
+describe("Claude profile names", () => {
+  test("a ~/.claude-<name> home reports its name; the default home reports none", async () => {
+    const { claudeProfileName } = await import("../src/claude-capacity");
+    expect(claudeProfileName("/Users/example/.claude-tertiary")).toBe("tertiary");
+    expect(claudeProfileName("/Users/example/.claude")).toBeUndefined();
+    expect(claudeProfileName("/Users/example/other")).toBeUndefined();
+  });
+});

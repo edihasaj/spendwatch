@@ -75,6 +75,10 @@ export interface CodexLimitAccount {
   provider: CapacityProvider;
   name?: string;
   email: string;
+  /** Claude only: the `~/.claude-<name>` profile holding this login. Names and orders the account. */
+  profile?: string;
+  /** Position within its provider; set during normalization. */
+  order?: number;
   plan: string;
   organization?: string;
   /** Official Codex quota pool, retained for accurate cross-machine attribution. */
@@ -131,6 +135,7 @@ interface RawCodexUsage {
   accountEmail?: unknown;
   accountOrganization?: unknown;
   loginMethod?: unknown;
+  profile?: unknown;
   quotaPool?: unknown;
   primary?: RawWindow | null;
   secondary?: RawWindow | null;
@@ -502,6 +507,8 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
       email: emailValue.trim(),
       plan: titleCase(typeof usage.loginMethod === "string" ? usage.loginMethod : "unknown"),
       organization: typeof usage.accountOrganization === "string" ? usage.accountOrganization : undefined,
+      profile: provider === "claude" && typeof usage.profile === "string" && /^[a-z0-9][a-z0-9-]{0,31}$/.test(usage.profile)
+        ? usage.profile : undefined,
       quotaPool: provider === "codex" ? normalizeQuotaPool(usage.quotaPool) : undefined,
       updatedAt,
       session,
@@ -546,9 +553,12 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
     const devices = [...new Set([...(current?.devices ?? []), ...account.devices])].sort();
     if (!current || incomingTime >= currentTime) {
       account.devices = devices;
+      // A collector that does not report profiles yet must not erase one another collector reported.
+      account.profile ??= current?.profile;
       accounts.set(key, account);
     } else {
       current.devices = devices;
+      current.profile ??= account.profile;
     }
   }
 
@@ -556,9 +566,16 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
   for (const provider of ["codex", "claude", "openrouter"] as const) {
     const group = normalized
       .filter((account) => account.provider === provider)
-      .sort((a, b) => a.email.localeCompare(b.email));
+      .sort((a, b) => profileRank(a.profile) - profileRank(b.profile)
+        || (a.profile ?? "").localeCompare(b.profile ?? "")
+        || a.email.localeCompare(b.email));
     for (const [index, account] of group.entries()) {
-      const suffix = group.length === 1 ? "" : index === 0 ? " Primary" : index === 1 ? " Secondary" : ` ${index + 1}`;
+      account.order = index;
+      // A named Claude profile is its own label (`~/.claude-tertiary` → "Claude Tertiary"), so adding an
+      // account never renumbers the others. Accounts without one keep the positional label.
+      const suffix = account.profile
+        ? ` ${titleCase(account.profile.replace(/-/g, " "))}`
+        : group.length === 1 ? "" : index === 0 ? " Primary" : index === 1 ? " Secondary" : ` ${index + 1}`;
       account.name = `${providerLabel(provider)}${suffix}`;
     }
   }
@@ -567,6 +584,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
   }
   return normalized.sort((a, b) =>
     PROVIDER_ORDER.indexOf(a.provider) - PROVIDER_ORDER.indexOf(b.provider)
+    || (a.order ?? 0) - (b.order ?? 0)
     || (a.name ?? a.email).localeCompare(b.name ?? b.email)
     || a.email.localeCompare(b.email));
 }
@@ -585,6 +603,15 @@ export function loadCodexLimits(paths: string[]): CodexLimitAccount[] {
 
 function leftPercent(window?: LimitWindow): number | undefined {
   return window ? Math.round(100 - window.usedPercent) : undefined;
+}
+
+// Claude profiles named after their position sort in that order; any other named profile follows them,
+// and an account whose collector reported no profile comes last.
+const PROFILE_RANK = ["primary", "secondary", "tertiary"];
+function profileRank(profile: string | undefined): number {
+  if (profile === undefined) return PROFILE_RANK.length + 1;
+  const rank = PROFILE_RANK.indexOf(profile);
+  return rank === -1 ? PROFILE_RANK.length : rank;
 }
 
 function providerLabel(provider: CapacityProvider): string {

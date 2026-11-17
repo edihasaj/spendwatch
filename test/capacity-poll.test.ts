@@ -415,3 +415,11 @@ test("malformed poll requests stay client errors and keep the connection", async
     expect(opens).toBe(1);
   } finally { source.close(); }
 });
+
+test("a Claude snapshot keeps a plain profile name and drops anything else", () => {
+  const now = Date.parse("2026-11-17T20:00:00Z");
+  const base = (profile: unknown) => ({ provider: "claude", account: "work@example.com",
+    usage: { accountEmail: "work@example.com", profile, primary: { usedPercent: 1, windowMinutes: 300 }, secondary: null, tertiary: null, updatedAt: "2026-11-17T19:59:00Z" } });
+  expect((sanitizePollSnapshot(base("tertiary"), "claude:work@example.com", now).usage as { profile?: string }).profile).toBe("tertiary");
+  expect((sanitizePollSnapshot(base("../x"), "claude:work@example.com", now).usage as { profile?: string }).profile).toBeUndefined();
+});

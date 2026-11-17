@@ -841,3 +841,34 @@ describe("compact capacity cards", () => {
     expect(html).toContain('<span class="provider-label">Codex</span><h2>&lt;Work &amp; friends&gt;</h2>');
   });
 });
+
+describe("Claude profiles name and order accounts", () => {
+  const claude = (email: string, profile?: string) => ({
+    account: email, provider: "claude",
+    usage: { accountEmail: email, loginMethod: "max", ...(profile ? { profile } : {}),
+      primary: { usedPercent: 10, windowMinutes: 300 }, secondary: { usedPercent: 20, windowMinutes: 10080 }, tertiary: null,
+      updatedAt: "2026-11-17T20:00:00Z" },
+  });
+
+  test("a named profile is its label and primary, secondary, tertiary keep that order", () => {
+    const accounts = normalizeCodexLimits([
+      claude("work@example.com", "tertiary"), claude("personal@example.com", "secondary"), claude("owner@example.com", "primary"),
+    ]).filter((account) => account.provider === "claude");
+    expect(accounts.map((account) => [account.name, account.email])).toEqual([
+      ["Claude Primary", "owner@example.com"], ["Claude Secondary", "personal@example.com"], ["Claude Tertiary", "work@example.com"],
+    ]);
+  });
+
+  test("a newer snapshot without a profile keeps the profile another collector reported", () => {
+    const older = claude("work@example.com", "tertiary");
+    const newer = claude("work@example.com");
+    newer.usage.updatedAt = "2026-11-17T21:00:00Z";
+    const [account] = normalizeCodexLimits([older, newer]).filter((item) => item.provider === "claude");
+    expect(account!.profile).toBe("tertiary");
+  });
+
+  test("snapshots without profiles keep the positional labels", () => {
+    const accounts = normalizeCodexLimits([claude("b@example.com"), claude("a@example.com")]).filter((account) => account.provider === "claude");
+    expect(accounts.map((account) => account.name)).toEqual(["Claude Primary", "Claude Secondary"]);
+  });
+});
