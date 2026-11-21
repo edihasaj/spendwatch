@@ -161,8 +161,8 @@ describe("Claude capacity", () => {
 describe("named Claude Keychain discovery", () => {
   test("matches Claude Code's profile service names", () => {
     expect(claudeKeychainService()).toBe("Claude Code-credentials");
-    expect(claudeKeychainService("/Users/example/.claude-secondary")).toBe("Claude Code-credentials-f9e9397a");
-    expect(claudeKeychainService("/Users/example/.claude-primary")).toBe("Claude Code-credentials-5c1b72f1");
+    expect(claudeKeychainService("/Users/example/.claude-secondary")).toBe("Claude Code-credentials-ffea7840");
+    expect(claudeKeychainService("/Users/example/.claude-primary")).toBe("Claude Code-credentials-4635cdf2");
   });
 
   test("discovers a named Keychain login and retains its exact refresh locator", () => {
