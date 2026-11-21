@@ -281,7 +281,8 @@ function normalizeHistoricalRecord(value: unknown): {
   const record = value as HistoricalRecordInput;
   // Qwen is self-hosted unlimited capacity, not a quota-history provider.
   if (record.provider === "qwen") return undefined;
-  if (record.provider !== "codex" && record.provider !== "claude" && record.provider !== "copilot"
+  if (record.provider !== "codex" && record.provider !== "claude" && record.provider !== "gemini"
+    && record.provider !== "copilot"
     && record.provider !== "openrouter" && record.provider !== "lokai" && record.provider !== "grok") return undefined;
   if (typeof record.account !== "string" || !record.account.trim()) return undefined;
   const sampledAt = parsedTime(record.sampledAt);

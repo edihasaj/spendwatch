@@ -14,9 +14,10 @@ import { newCodexCtx, parseCodexLine, settleRouted, type CodexCtx } from "./code
 import { claudeGatewayWarning, type ClaudeCtx } from "./claude-routed";
 import { carryLedger, claudeFile, gatewayWarning } from "./gateway-sources";
 import { grokProjectFromDir, newGrokCtx, parseGrokLine } from "./grok";
+import { collectGemini } from "./gemini";
 import { newPiCtx, parsePiLine } from "./pi";
 import { humanProject } from "./projects";
-import { walkCodexJsonl, walkJsonl } from "./scan";
+import { walkCodexJsonl } from "./scan";
 import { assertSafeCodexCompressedRollout, codexRolloutSnapshot } from "./codex-compressed-rollouts";
 import { collectCopilot, defaultCopilotRoots } from "./copilot";
 import { defaultMissionRoots, readMission } from "./mission";
@@ -601,14 +602,17 @@ export function discover(opts: { sinceMs: number; project?: string; agents?: Set
     }
   }
 
-  // Gemini CLI — ~/.gemini (logs/telemetry); structure TBD. Like every other agent, an explicit config names where
-  // its logs live, so a run with one never looks in the home directory for it.
+  // Gemini CLI — its own sessions under ~/.gemini, plus the turns this Mac's gateway billed on a
+  // `gemini-subscription` provider. A conversation the gateway ran is recorded in a disposable home that
+  // is deleted with the session, so the ledger is the only record of those (see gemini.ts for the rest).
   if (want("gemini")) {
     const roots: RootCfg[] = cfg ? cfg.filter((r) => r.agent === "gemini") : [{ agent: "gemini", path: join(homedir(), ".gemini") }];
-    const present = roots.some((r) => existsSync(r.path));
-    const files = roots.flatMap((r) => existsSync(r.path) ? [...walkJsonl(r.path)].filter((p) => mtimeOk(p, opts.sinceMs)) : [])
-      .map((path): SourceFile => ({ path, project: "?", source: "gemini", account: "default", parse: () => [], ctx: null }));
-    out.push({ id: "gemini", present, parseable: present, note: present ? undefined : "not installed", files });
+    const files = roots.flatMap((r) => collectGemini(r.path, r.account ?? "", opts.sinceMs));
+    const rows = gateway?.files("gemini") ?? [];
+    const all = [...files, ...rows];
+    const present = roots.some((r) => existsSync(r.path)) || rows.length > 0;
+    out.push({ id: "gemini", present, parseable: true, ledger, files: all,
+      note: !present ? "not installed" : all.length ? undefined : "no readable sessions for this period" });
   }
 
   return out;

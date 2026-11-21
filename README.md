@@ -9,9 +9,11 @@ Parses each agent's local transcripts. Zero runtime deps, Bun. Agents are split 
 > **Privacy:** report and capacity rendering read local files and make no network
 > calls. `capacity-current` is the one exception: it asks your own provider
 > account for its current quota (Codex through the official app-server, Claude
-> through Anthropic's OAuth usage endpoint) using credentials those tools already
-> store locally. Optional background alerts send only the displayed account label
-> and crossed percentage through the browser's encrypted Web Push service.
+> through Anthropic's OAuth usage endpoint, Gemini through Google's Code Assist
+> quota API) using credentials those tools already store locally. The Gemini read
+> borrows the sign-in the gateway or the Gemini CLI keeps in `~/.gemini` and
+> never writes it back. Optional background alerts send only the displayed account
+> label and crossed percentage through the browser's encrypted Web Push service.
 
 ## Install
 
@@ -59,6 +61,7 @@ bin/spendwatch limits --input limits.json --sqlite spendwatch.db --history-html 
 bin/spendwatch guard --input limits.json --account work --window weekly --min-remaining 15
 bin/spendwatch server --input limits.json --sqlite spendwatch.db --public-dir public
 bin/spendwatch capacity-current --provider claude   # live Claude 5h/weekly windows
+bin/spendwatch capacity-current --provider gemini   # live Gemini Pro/Flash allowance
 bin/spendwatch capacity-current --provider local    # Local Qwen card (or qwen)
 bin/spendwatch capacity-history-export --label studio > capacity-history.jsonl
 bin/spendwatch report                       # compiled binary (bun run build)
@@ -601,7 +604,7 @@ service account across machines. Filter with `--account <substr>`.
 | Copilot CLI | `~/.copilot/session-store.db` | ✓ per-request token usage and reported AI-credit value |
 | Mission Runtime | `~/Projects/mission-runtime/.mission-runtime/authority.sqlite` (or `$MISSION_RUNTIME_DB_PATH`) | ✓ per attempt and model, from its own usage records |
 | AutoReview | a job-ledger JSONL named by an `autoreview` config root | ✓ per attempt and model, from its own usage records |
-| Gemini CLI  | `~/.gemini` | ✓ when present |
+| Gemini CLI  | `~/.gemini/tmp/*/chats/session-*.jsonl` and their subagent transcripts, plus gateway `gemini-subscription` rows | ✓ (list-price estimate) |
 | Subscription gateway | `<state>/usage/usage-YYYY-MM.jsonl` | ✓ per-call tokens, plus AI credits for Copilot rows |
 
 Copilot reads the local `assistant_usage_events` ledger in read-only mode. It
@@ -609,7 +612,15 @@ keeps each request in its actual calendar month, separates cached input from
 uncached input, and uses reported nano-AI-credit charges when available instead
 of estimating them from a model list. Compatible Copilot Chat stores in Code,
 Code Insiders and Cursor are detected too. Copies of the same session are
-counted once. Legacy stores without this ledger and Gemini logs remain footnotes. Adding a new agent = one parser emitting the shared `Event` model + a `sources.ts` entry.
+counted once. Legacy stores without this ledger remain footnotes. Adding a new agent = one parser emitting the shared `Event` model + a `sources.ts` entry.
+
+Gemini is recorded by two distinct records, each the whole record of its kind:
+the CLI's own sessions under `~/.gemini`, and the gateway ledger's rows for
+turns a `gemini-subscription` provider served (the CLI home for those is
+disposable, so the ledger is their only record, and the proxied rollout copy
+is deduped against it). A subscription is not billed per token, so Gemini
+cost is an estimate at Google's current list rates; `docs/gemini.md` covers
+the record format, the `geminiHome` key and the account naming.
 
 Mission Runtime and AutoReview leave no transcripts, so Spendwatch reads the
 `agent-usage.v1` records they write about their own usage. Mission Runtime is

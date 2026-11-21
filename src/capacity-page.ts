@@ -38,7 +38,7 @@ function overlayFreshPollSnapshots(accounts: CodexLimitAccount[], db: Database, 
   let changed = false;
   for (const snapshot of freshPollSnapshots(db, nowMs)) {
     for (const incoming of normalizeCodexLimits([snapshot])) {
-      if (incoming.provider !== "codex" && incoming.provider !== "claude") continue;
+      if (incoming.provider !== "codex" && incoming.provider !== "claude" && incoming.provider !== "gemini") continue;
       const index = positions.get(`${incoming.provider}:${incoming.email.toLowerCase()}`);
       if (index === undefined) continue;
       const current = accounts[index]!;

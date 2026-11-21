@@ -575,9 +575,14 @@ describe("gateway source", () => {
 describe("Gemini discovery", () => {
   test("follows an explicit config, as for every other agent: named roots are read, and the home directory is not looked in", () => {
     const root = tempDir("spendwatch-gemini-");
-    const log = join(root, "logs", "session.jsonl");
+    // The CLI keeps its sessions under `tmp/<project>/chats/`; anything else it leaves in the home
+    // (its logs, its history) is not a transcript and must not be folded as one.
+    const chats = join(root, "tmp", "alpha", "chats");
+    mkdirSync(chats, { recursive: true });
+    const session = join(chats, "session-2026-11-20T09-30-ab12cd34.jsonl");
+    writeFileSync(session, "");
     mkdirSync(join(root, "logs"), { recursive: true });
-    writeFileSync(log, "");
+    writeFileSync(join(root, "logs", "session.jsonl"), "");
     const config = join(root, "config.json");
     const previous = process.env.SPENDWATCH_CONFIG;
     process.env.SPENDWATCH_CONFIG = config;
@@ -585,7 +590,7 @@ describe("Gemini discovery", () => {
       writeFileSync(config, JSON.stringify([{ agent: "gemini", path: root }]));
       const named = discover({ sinceMs: 0, agents: new Set(["gemini"]) }).find((s) => s.id === "gemini");
       expect(named?.present).toBe(true);
-      expect(named?.files.map((f) => f.path)).toEqual([log]);
+      expect(named?.files.map((f) => f.path)).toEqual([session]);
 
       // A config that names no Gemini root says there is none, whatever the home directory holds.
       writeFileSync(config, JSON.stringify([{ agent: "claude", path: join(root, "none") }]));

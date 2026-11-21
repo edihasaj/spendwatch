@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Bill Gemini. Turns a gateway `gemini-subscription` provider served are now
+  their own agent, counted once from the gateway's month ledger — credited to
+  the active Google account of the provider's `geminiHome`, and deduped against
+  the Codex rollout that proxied the same turn by its marked response id. The
+  CLI's own sessions under `~/.gemini` are read directly (its re-appended
+  messages count once per call id, its thinking tokens are billed with its
+  answer, a subagent's own transcript is collected once and shown as delegated
+  work, and the older whole-document `.json` session is read too), since a
+  gateway-routed session leaves no home behind to read. A subscription is not
+  billed per token, so the current Gemini models carry Google's public list
+  rates as an API-equivalent estimate; `docs/gemini.md` covers the record
+  format and the account naming.
+
+- Show the Gemini quota. `capacity-current --provider gemini` asks a signed-in
+  account for its own allowance through the same Code Assist call the official
+  Gemini CLI makes, and the capacity dashboard renders one row per model
+  allowance under a Pro-versus-Flash headline. Collection is opt-in by presence:
+  no stored sign-in means no card and no request, a credential file that is a
+  link, foreign-owned or group-readable is refused at open rather than read, and a
+  refreshed token lives in that one call's memory alone because the gateway
+  keeps ownership of the file. Only the model aliases the CLI itself folds collapse
+  onto one allowance, so two Pro versions stay two rows, and a stored snapshot is
+  re-checked on every read so a figure or a label from another machine cannot reach
+  the card. `docs/quota-accuracy.md` covers the nominal cycle and the polling.
+
 - Fixed Spendwatch freezing a Mac. Each report and Local Qwen 30-day refresh
   decoded every compressed Codex archive into a new temporary folder and then
   deleted it. On Studio that was about 20 GB written per refresh, every 30
