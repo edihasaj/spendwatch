@@ -2,6 +2,7 @@ import { Database } from "./database";
 import { crossedWeeklyThreshold, type WeeklyAlertThreshold } from "./capacity-alerts";
 import type { CodexLimitAccount } from "./limits";
 import { ManagedDatabaseError } from "./managed/libpq";
+import { ManagedPostgresDatabase } from "./managed/postgres-db";
 
 const PUSH_SCHEMA = `
 CREATE TABLE IF NOT EXISTS push_config (
@@ -173,7 +174,7 @@ export class PushStore {
 
   observe(accounts: CodexLimitAccount[], nowMs: number): number {
     let created = 0;
-    const transaction = this.db.transaction(() => {
+    const body = () => {
       for (const account of accounts) {
         const watched = account.weekly;
         if (!watched) continue;
@@ -215,8 +216,20 @@ export class PushStore {
           WHERE provider=? AND account_key=? AND reset_key=?
         `).run(account.email, remaining, nowMs, account.provider, accountKey, resetKey);
       }
-    });
-    transaction();
+    };
+    if (this.db instanceof ManagedPostgresDatabase) {
+      // The monitor must never stall the Bun event loop behind another
+      // managed writer: the shared writer lock is taken without waiting, so
+      // a busy writer defers this tick instead of holding it for the full
+      // ten-second lock timeout. The deferral reports PostgreSQL's own
+      // lock_not_available code, which the monitor already treats as
+      // contention and retries on the next tick; the statements are never
+      // replayed here (see ReconnectingPushStore) and no transaction or
+      // mutation was started. Native SQLite keeps the blocking path.
+      if (!this.db.tryTransactionNonblocking(body)) throw new ManagedDatabaseError("55P03");
+      return created;
+    }
+    this.db.transaction(body)();
     return created;
   }
 

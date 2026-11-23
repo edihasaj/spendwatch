@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- Keep the capacity monitor responsive when another PostgreSQL writer holds the
+  shared advisory lock. The monitor defers observation until its next poll
+  and leaves alert state intact. During a failure episode, each stage reports
+  its first failure, with contention escalating after four observations of
+  that stage and one reminder per 30 minutes of continued failure. Reports
+  identify the stage, error class and safe code without exposing raw errors.
 
 - Stop paging on a briefly unreachable managed archive. A `report --sqlite` (and the
   other managed archive writers) that could not reach PostgreSQL reported

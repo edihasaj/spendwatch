@@ -10,6 +10,12 @@ import {
 import { SERVICE_WORKER_SOURCE } from "./service-worker";
 import { reportOperationalError } from "./telemetry";
 import { managedDeploymentMode } from "./database";
+import {
+  MonitorFailurePolicy,
+  monitorFailureLine,
+  type MonitorFailureDecision,
+  type MonitorStage,
+} from "./monitor-failure-policy";
 
 export interface DashboardServerOptions {
   host: string;
@@ -19,27 +25,6 @@ export interface DashboardServerOptions {
   databasePath: string;
   vapidSubject: string;
   pollMs?: number;
-}
-
-const SQLITE_BUSY_ESCALATION_THRESHOLD = 4;
-
-export function monitorFailureDecision(
-  error: unknown,
-  consecutiveSqliteBusy: number,
-): { report: boolean; consecutiveSqliteBusy: number } {
-  const sqliteBusy =
-    error instanceof Error &&
-    error.name === "SQLiteError" &&
-    /(?:database is locked|database is busy)/iu.test(error.message);
-  if (!sqliteBusy) return { report: true, consecutiveSqliteBusy: 0 };
-  const next = Math.min(
-    consecutiveSqliteBusy + 1,
-    SQLITE_BUSY_ESCALATION_THRESHOLD,
-  );
-  return {
-    report: next === SQLITE_BUSY_ESCALATION_THRESHOLD && next > consecutiveSqliteBusy,
-    consecutiveSqliteBusy: next,
-  };
 }
 
 function validSubscription(value: unknown): value is StoredPushSubscription {
@@ -132,12 +117,73 @@ export async function testBackgroundPush(databasePath: string, vapidSubject: str
   }
 }
 
+export interface CapacityMonitorOptions {
+  capacityPath: string;
+  store: Pick<ReconnectingPushStore, "use">;
+  /** Hands the pending alert deliveries to Web Push. Must settle: it never rejects. */
+  deliver?: (deliveries: PendingPushDelivery[]) => Promise<unknown>;
+  policy?: MonitorFailurePolicy;
+  reportFailure?: (error: unknown, decision: MonitorFailureDecision) => unknown;
+  log?: (line: string) => void;
+}
+
+/**
+ * One capacity check: read the published capacity file, record what it says, then hand any
+ * pending alert to `deliver`. It is called on a timer and on start by `serveDashboard`, and
+ * directly by tests that drive a real tick.
+ *
+ * Nothing here retries or replays a failed statement: the next tick issues it again and the
+ * managed store reopens a fresh connection on its next call. What a failure costs is decided
+ * by `MonitorFailurePolicy`, so a persistent fault reports once per stage plus a periodic
+ * reminder instead of once per tick.
+ */
+export function createCapacityMonitor(
+  options: CapacityMonitorOptions,
+): { tick: () => Promise<void>; policy: MonitorFailurePolicy } {
+  const policy = options.policy ?? new MonitorFailurePolicy();
+  const reportFailure = options.reportFailure ?? ((error, decision) => void reportOperationalError(
+    "spendwatch.monitor.failure",
+    error,
+    {
+      component: "capacity",
+      stage: decision.stage,
+      category: decision.category,
+      ...(decision.code ? { code: decision.code } : {}),
+    },
+  ));
+  const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
+  let monitoring = false;
+
+  const tick = async (): Promise<void> => {
+    if (managedDeploymentMode() === "staging") return;
+    if (monitoring) return;
+    monitoring = true;
+    let stage: MonitorStage = "load-capacity";
+    try {
+      const accounts = loadCapacityDashboard([options.capacityPath]).accounts;
+      stage = "observe";
+      options.store.use((store) => store.observe(accounts, Date.now()));
+      stage = "pending-deliveries";
+      const deliveries = options.store.use((store) => store.pendingDeliveries());
+      // The monitor's own work is done; a delivery failure reports under its own event.
+      policy.succeeded();
+      await (options.deliver?.(deliveries) ?? Promise.resolve());
+    } catch (error) {
+      const decision = policy.note(stage, error);
+      if (decision.report) reportFailure(error, decision);
+      if (decision.log) log(monitorFailureLine(decision));
+    } finally {
+      monitoring = false;
+    }
+  };
+
+  return { tick, policy };
+}
+
 export async function serveDashboard(options: DashboardServerOptions): Promise<never> {
   const pushes = new ReconnectingPushStore(options.databasePath);
   const capacityPolls = new ReconnectingPollStore(options.databasePath);
   const { publicKey } = pushes.use((store) => configureVapid(store, options.vapidSubject));
-  let monitoring = false;
-  let consecutiveSqliteBusy = 0;
 
   const send = async (delivery: PendingPushDelivery): Promise<void> => {
     if (managedDeploymentMode() === "staging") throw new Error("Notifications are disabled in staging");
@@ -162,31 +208,11 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
     }
   };
 
-  const monitor = async (): Promise<void> => {
-    if (managedDeploymentMode() === "staging") return;
-    if (monitoring) return;
-    monitoring = true;
-    try {
-      const accounts = loadCapacityDashboard([options.capacityPath]).accounts;
-      pushes.use((store) => store.observe(accounts, Date.now()));
-      await Promise.allSettled(pushes.use((store) => store.pendingDeliveries()).map(send));
-      consecutiveSqliteBusy = 0;
-    } catch (error) {
-      const decision = monitorFailureDecision(error, consecutiveSqliteBusy);
-      consecutiveSqliteBusy = decision.consecutiveSqliteBusy;
-      if (decision.report) {
-        void reportOperationalError("spendwatch.monitor.failure", error, {
-          component: "capacity",
-        });
-      }
-      const contention = consecutiveSqliteBusy > 0
-        ? ` (contention ${String(consecutiveSqliteBusy)}/${String(SQLITE_BUSY_ESCALATION_THRESHOLD)}; retrying next poll)`
-        : "";
-      process.stderr.write(`push monitor: ${String(error)}${contention}\n`);
-    } finally {
-      monitoring = false;
-    }
-  };
+  const capacityMonitor = createCapacityMonitor({
+    capacityPath: options.capacityPath,
+    store: pushes,
+    deliver: async (deliveries) => { await Promise.allSettled(deliveries.map(send)); },
+  });
 
   const publicRoot = resolve(options.publicDir);
   const renderCapacityPage = createCapacityPageRenderer(options.capacityPath, options.databasePath);
@@ -282,7 +308,7 @@ export async function serveDashboard(options: DashboardServerOptions): Promise<n
     },
   });
   process.stdout.write(`Spendwatch server listening on http://${options.host}:${options.port}\n`);
-  await monitor();
-  setInterval(() => void monitor(), options.pollMs ?? 15_000);
+  await capacityMonitor.tick();
+  setInterval(() => void capacityMonitor.tick(), options.pollMs ?? 15_000);
   return await new Promise<never>(() => {});
 }

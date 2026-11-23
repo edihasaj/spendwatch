@@ -62,6 +62,34 @@ statement is never replayed. The push store reconnects only when
 ordinary failures do not reopen the connection every monitor tick. Native
 SQLite never matches that check.
 
+The capacity monitor on that server reports per failure episode, not per tick. Before, any
+failure outside native SQLite's `database is locked` produced a `spendwatch.monitor.failure`
+report and a stderr line on every poll, and the SQLite rule itself went permanently silent
+after its fourth consecutive poll. Now the first failure of a
+tick stage reports once, a contended failure — native `database is locked`/`is busy` or the
+managed backend's `55P03` — waits for the fourth consecutive contended poll in that stage,
+and an episode that is still failing emits one reminder per 30 minutes rather than nothing.
+A tick that completes its own work ends the episode, so the next occurrence is reported again;
+a process restart begins a fresh episode. Nothing is retried or replayed: the failed statement
+is still never re-run on the dead connection, the next tick issues it again, and
+`ReconnectingPushStore` still discards and reopens only on a transport death.
+
+What a report and the log line may carry is bounded to a failure identity: the fixed stage
+(`load-capacity`, `observe` or `pending-deliveries`), a category from a closed list, and an
+exact five-character SQLSTATE or fixed errno name. Error messages, file paths, endpoints and
+driver diagnostics are matched against fixed patterns and discarded, so the recurring
+`ManagedDatabaseError` is now diagnosable from its code without any of its text being sent.
+
+`observe` is where managed contention is expected. `PushStore.observe` takes the shared
+per-database advisory lock with `pg_try_advisory_lock` before `BEGIN`: when another managed
+writer holds it, it defers with no transaction, no mutation and no replay, and throws a typed
+`ManagedDatabaseError('55P03')` that the next tick simply tries again. So a `55P03` at
+`observe` means the monitor was locked out by that writer — which specific lock is still
+suspected until timestamps are matched. A `55P03` at another stage, or outside the defer path,
+is PostgreSQL's own `lock_not_available` from a genuine lock wait. Both are contention and
+share the fourth-consecutive-poll gate; an ordinary managed failure keeps its immediate first
+report.
+
 The ordinary CLI must retain native `bun:sqlite`, including its self-contained
 build and local history archives. The managed server will select PostgreSQL
 only for its exact configured application database path. Other local SQLite

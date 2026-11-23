@@ -32,6 +32,10 @@ LEFT JOIN information_schema.key_column_usage k
  AND k.constraint_name IN (SELECT constraint_name FROM information_schema.table_constraints
  WHERE table_schema=current_schema() AND table_name=$1 AND constraint_type='PRIMARY KEY')
 WHERE c.table_schema=current_schema() AND c.table_name=$1 ORDER BY c.ordinal_position`;
+const ADVISORY_KEY = "hashtextextended(current_database(),193764)";
+const WRITER_LOCK = "SELECT pg_advisory_lock(" + ADVISORY_KEY + ")";
+const WRITER_TRY_LOCK = "SELECT pg_try_advisory_lock(" + ADVISORY_KEY + ") AS acquired";
+const WRITER_UNLOCK = "SELECT pg_advisory_unlock(" + ADVISORY_KEY + ")";
 
 function compatible(value: unknown, safeIntegers: boolean): unknown {
   if (typeof value === "bigint") return safeIntegers ? value : Number(value);
@@ -217,26 +221,46 @@ export class ManagedPostgresDatabase {
   }
 
   begin(): void {
+    this.beginWriter(true);
+  }
+
+  /**
+   * Starts a transaction with the shared writer lock taken before BEGIN, so
+   * the repeatable-read snapshot follows the prior writer's commit. In
+   * nonblocking mode a busy lock releases any attempt before BEGIN: no
+   * transaction, no mutation, and no unlock is attempted because this
+   * connection never acquired the lock.
+   */
+  private beginWriter(blocking: boolean): boolean {
     if (this.depth) {
       this.connection.query("SAVEPOINT spendwatch_nested_" + this.depth);
       this.depth++;
-      return;
+      return true;
     }
     // Acquire before BEGIN so the repeatable-read snapshot follows the prior
     // writer's commit. Taking an xact lock inside BEGIN could freeze an older snapshot.
     if (!this.readonly) {
-      this.connection.query("SELECT pg_advisory_lock(hashtextextended(current_database(),193764))");
-      this.ownsWriterLock = true;
+      if (blocking) {
+        this.connection.query(WRITER_LOCK);
+        this.ownsWriterLock = true;
+      } else {
+        // libpq decodes the bool natively (type 16), so `false` below is the
+        // server's own answer that another writer holds the lock.
+        const row = this.connection.query(WRITER_TRY_LOCK).rows[0]!;
+        this.ownsWriterLock = row.acquired === true;
+        if (!this.ownsWriterLock) return false;
+      }
     }
     try {
       this.connection.query("BEGIN ISOLATION LEVEL REPEATABLE READ" + (this.readonly ? " READ ONLY" : ""));
       this.depth = 1;
+      return true;
     } catch (error) { this.unlock(); throw error; }
   }
   private unlock(): void {
     if (!this.ownsWriterLock) return;
     this.ownsWriterLock = false;
-    this.connection.query("SELECT pg_advisory_unlock(hashtextextended(current_database(),193764))");
+    this.connection.query(WRITER_UNLOCK);
   }
   commit(): void {
     if (!this.depth) throw new Error("No managed transaction is active");
@@ -258,21 +282,39 @@ export class ManagedPostgresDatabase {
     try { this.connection.query("ROLLBACK"); }
     finally { this.depth = 0; this.unlock(); }
   }
+  private runInTransaction<A extends unknown[], T>(callback: (...args: A) => T, args: A): T {
+    try {
+      const result = callback(...args);
+      if (result && typeof (result as { then?: unknown }).then === "function") {
+        throw new Error("Managed transactions require a synchronous callback");
+      }
+      this.commit(); return result;
+    } catch (error) {
+      try { this.rollback(); } catch { this.close(); }
+      throw error;
+    }
+  }
   transaction<A extends unknown[], T>(callback: (...args: A) => T) {
     const wrapped = (...args: A): T => {
       this.begin();
-      try {
-        const result = callback(...args);
-        if (result && typeof (result as { then?: unknown }).then === "function") {
-          throw new Error("Managed transactions require a synchronous callback");
-        }
-        this.commit(); return result;
-      } catch (error) {
-        try { this.rollback(); } catch { this.close(); }
-        throw error;
-      }
+      return this.runInTransaction(callback, args);
     };
     return Object.assign(wrapped, { deferred: wrapped, immediate: wrapped, exclusive: wrapped });
+  }
+  /**
+   * Like `transaction`, but the shared writer lock is taken with
+   * `pg_try_advisory_lock` instead of waiting up to the session lock timeout.
+   * When another managed writer holds the lock, no transaction and no
+   * mutation is started and the call returns false, so a cadence-driven
+   * caller can report the skip and retry on its next tick. Once the lock is
+   * held, acquisition and snapshot ordering are identical to `begin`. Nested
+   * calls keep the ordinary savepoint path because this connection already
+   * holds the lock. Errors roll back and release exactly as in `transaction`.
+   */
+  tryTransactionNonblocking(callback: () => unknown): boolean {
+    if (!this.beginWriter(false)) return false;
+    this.runInTransaction(callback, []);
+    return true;
   }
   close(): void { this.connection.close(); this.depth = 0; this.ownsWriterLock = false; }
 }
