@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Stop paging on a briefly unreachable managed archive. A `report --sqlite` (and the
+  other managed archive writers) that could not reach PostgreSQL reported
+  `spendwatch.cli.failure` and rethrew a raw crash, so a routine reconnect looked like
+  a production defect. The CLI now degrades only what the managed layer can *affirm* —
+  a bounded connect or query wait that elapsed, a send or consume that died on an
+  already authenticated connection, or a connect libpq's own diagnostic reports as
+  refused or reset against the configured endpoint. That run writes one line carrying
+  only the SQLSTATE, keeps one `spendwatch.cli.archive-unavailable` warning visible, and
+  exits 69 so the next scheduled run retries. A wrong credential, a missing password, a
+  refused SSL policy, an unverified certificate or an untranslated host is a real
+  configuration error and still pages exactly as before, and native SQLite is unchanged.
+
 - Bill Gemini. Turns a gateway `gemini-subscription` provider served are now
   their own agent, counted once from the gateway's month ledger — credited to
   the active Google account of the provider's `geminiHome`, and deduped against

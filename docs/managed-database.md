@@ -68,6 +68,32 @@ only for its exact configured application database path. Other local SQLite
 files, including provider caches and independently restored archives, retain
 their existing behavior.
 
+A CLI command that writes to the managed archive (a `report --sqlite`, and the
+other archive writers) may find PostgreSQL briefly unreachable. When the managed
+layer can affirm that, it marks the error `transient` in addition to
+`transport`: a bounded connect or query wait elapsed, a send or consume died on
+an already authenticated connection, or `PQconnectPoll` failed and libpq's own
+diagnostic — read once, bounded, matched on its host/location line only and then
+discarded — reports a socket-level refusal or reset. The entrypoint treats those
+as a retryable condition rather than a defect: instead of reporting
+`spendwatch.cli.failure` and rethrowing a raw crash, it writes one line carrying
+only the SQLSTATE the managed layer chose, reports a single
+`spendwatch.cli.archive-unavailable` event at `warning`, and exits 69
+(`EX_UNAVAILABLE`) so the next scheduled run retries. The supervisor bounds how
+often that run happens and the reporter groups the event into one issue, so a
+prolonged outage keeps reporting instead of going quiet.
+
+That classification is affirmative and never the default, because
+`PQconnectPoll` reports every connect-phase failure the same generic way. A wrong
+credential, a missing password, a refused SSL policy, an unverified certificate
+or an untranslated host is a configuration error, is not marked `transient`, and
+still reports `spendwatch.cli.failure` and propagates unchanged. Ordinary SQL
+errors carry no transport flag at all, native SQLite never produces these errors,
+and neither one degrades this way. `transport` itself keeps its upstream meaning
+for `isDeadConnectionError`, so a misconfigured connection still discards the
+socket instead of being replayed. The driver's own diagnostic text names the host
+and can quote the user, so it is never stored on the error, printed or reported.
+
 The native libpq transport uses Bun FFI and PostgreSQL's verified TLS protocol.
 Socket polling bounds connect and query waits. Parameters use libpq bindings,
 with binary transport for blobs and explicit signed 64-bit result decoding.

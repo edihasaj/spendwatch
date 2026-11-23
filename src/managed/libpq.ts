@@ -17,6 +17,9 @@ function loadLibraries() {
     PQconnectPoll: { args: [t.ptr], returns: t.i32 },
     PQstatus: { args: [t.ptr], returns: t.i32 },
     PQsocket: { args: [t.ptr], returns: t.i32 },
+    // Read only to classify a failed connect. Its text is never stored, thrown,
+    // logged or reported: it names the host and can quote the user.
+    PQerrorMessage: { args: [t.ptr], returns: t.ptr },
     PQsetnonblocking: { args: [t.ptr, t.i32], returns: t.i32 },
     PQsendQueryParams: { args: [t.ptr, t.ptr, t.i32, t.ptr, t.ptr, t.ptr, t.ptr, t.i32], returns: t.i32 },
     PQflush: { args: [t.ptr], returns: t.i32 },
@@ -47,11 +50,63 @@ let loaded: ReturnType<typeof loadLibraries> | undefined;
 function library() { return loaded ??= loadLibraries(); }
 
 export class ManagedDatabaseError extends Error {
-  constructor(readonly code: string, readonly transport = false) {
+  /**
+   * `transport` keeps its upstream meaning: the socket could not be opened or died, so a
+   * long-lived holder must discard this connection (`isDeadConnectionError` in the push
+   * and poll stores). `transient` is deliberately narrower and affirmative: the managed
+   * archive is known to be briefly unreachable and a later run may simply retry. It is
+   * set only where a typed failure or libpq's own bounded diagnostic proves a socket-level
+   * loss — never by default — so a wrong password, an unverified certificate, a refused
+   * SSL policy or an unresolved host stays an ordinary reported configuration error.
+   */
+  constructor(readonly code: string, readonly transport = false, readonly transient = false) {
     // Server DETAIL and bound data may contain private account information.
     super(`Managed database operation failed (${code})`);
     this.name = "ManagedDatabaseError";
   }
+}
+
+/**
+ * The reasons libpq reports when the peer is unreachable at the socket level before any
+ * protocol state is reached. Each is the whole reason on the location line, matched
+ * exactly: the bare errno when nothing ever answered the connect, and the two socket
+ * forms libpq reports when the listener disappeared mid-handshake — which is what a
+ * restarting or dying archive looks like. Anything else, and in particular a
+ * server-side rejection — `FATAL: password authentication failed for user`,
+ * `fe_sendauth: no password supplied`, `server does not support SSL, but SSL was
+ * required`, a certificate verification failure or an untranslated host — is not a
+ * transport death and stays a reported failure.
+ */
+const REFUSAL_DIAGNOSTICS = [
+  "connection refused", "connection reset by peer",
+  "could not connect to server: connection refused",
+  "could not connect to server: connection reset by peer",
+  "could not receive data from server: connection refused",
+  "could not receive data from server: connection reset by peer",
+] as const;
+/** The one explanatory line libpq may add beneath a bare refusal, and nothing else. */
+const REFUSAL_HINT = "is the server running on that host and accepting tcp/ip connections?";
+/** Anything longer is ambiguous, so it is discarded rather than matched at all. */
+const MAX_DIAGNOSTIC_CHARACTERS = 512;
+
+/**
+ * True only when libpq's own diagnostic is exactly a refusal or reset against `location`,
+ * which the caller pins to this connection's single configured endpoint. `diagnostic` is
+ * raw driver text: callers may derive a boolean from it and must then discard it, never
+ * store, print or report it.
+ */
+export function isRefusalDiagnostic(diagnostic: string, location: string): boolean {
+  if (!diagnostic || diagnostic.length > MAX_DIAGNOSTIC_CHARACTERS) return false;
+  const lines = diagnostic.split("\n").map((line) => line.trim().toLowerCase()).filter(Boolean);
+  const first = lines.shift();
+  if (!first) return false;
+  const head = location.trim().toLowerCase();
+  if (!head || !first.startsWith(head)) return false;
+  // Only the canonical trailing explanation may follow. A second, different line means the
+  // driver reported more than one thing, which is ambiguous and stays a reported failure.
+  if (lines.length > 1 || (lines.length === 1 && lines[0] !== REFUSAL_HINT)) return false;
+  const reason = first.slice(head.length).trim();
+  return (REFUSAL_DIAGNOSTICS as readonly string[]).includes(reason);
 }
 export interface PgResult {
   rows: Record<string, unknown>[];
@@ -78,6 +133,10 @@ export class PgConnection {
 
   constructor(options: Record<string, string>, private readonly timeoutMs = 20_000) {
     const input = connectionString(options);
+    // libpq names the endpoint it tried on the first line of the diagnostic. Pinning the
+    // configured host and port here means only a refusal against this command's own
+    // managed archive can classify, never text about some other address.
+    const location = `connection to server at "${options.host ?? ""}", port ${options.port ?? ""} failed:`;
     this.connection = this.api.pq.PQconnectStart(this.api.ffi.ptr(input));
     if (!this.connection) throw new ManagedDatabaseError("08001", true);
     const deadline = performance.now() + 5_000;
@@ -85,29 +144,49 @@ export class PgConnection {
       for (;;) {
         const state = this.api.pq.PQconnectPoll(this.connection);
         if (state === 3) break;
-        if (state !== 1 && state !== 2) throw new ManagedDatabaseError("08001", true);
+        // `PQconnectPoll` reports every connect-phase failure the same generic way, so
+        // only libpq's own diagnostic can tell a dead archive from a bad credential.
+        if (state !== 1 && state !== 2) throw new ManagedDatabaseError("08001", true, this.refusedToConnect(location));
         this.wait(state === 1 ? 1 : 4, deadline);
       }
       if (this.api.pq.PQstatus(this.connection) !== 0 ||
           this.api.pq.PQsetnonblocking(this.connection, 1) !== 0) {
-        throw new ManagedDatabaseError("08001", true);
+        throw new ManagedDatabaseError("08001", true, this.refusedToConnect(location));
       }
     } catch (error) { this.close(); throw error; }
     // Keep the connect option memory alive through the native start call.
     void input.byteLength;
   }
 
+  /**
+   * One read of libpq's connect diagnostic as its documented NUL-terminated C string, so
+   * no readable buffer length is ever assumed; the decoded string is then length-checked
+   * before any parsing. It returns a boolean: the diagnostic text is dropped here and
+   * never leaves this file.
+   */
+  private refusedToConnect(location: string): boolean {
+    const connection = this.connection;
+    if (!connection) return false;
+    const pointer = this.api.pq.PQerrorMessage(connection);
+    if (!pointer) return false;
+    return isRefusalDiagnostic(String(new this.api.ffi.CString(pointer)), location);
+  }
+
   private wait(events: number, deadline: number): void {
     const connection = this.connection;
     if (!connection) throw new ManagedDatabaseError("08003", true);
     const remaining = Math.ceil(deadline - performance.now());
-    if (remaining <= 0) throw new ManagedDatabaseError("57014", true);
+    // The bounded socket wait elapsed: the peer is not answering within the window the
+    // caller allowed. Retryable by definition, and typed without consulting any driver text.
+    if (remaining <= 0) throw new ManagedDatabaseError("57014", true, true);
     const descriptor = new ArrayBuffer(8), view = new DataView(descriptor);
     const fd = this.api.pq.PQsocket(connection);
     if (fd < 0) throw new ManagedDatabaseError("08006", true);
     view.setInt32(0, fd, true);
     view.setInt16(4, events, true);
     const result = this.api.poll(this.api.ffi.ptr(new Uint8Array(descriptor)), 1, Math.min(remaining, 1_000));
+    // A failed `poll` call or an invalid descriptor is an error in our own wait, not
+    // proof the archive is down, so it discards the connection without claiming retry.
     if (result < 0) throw new ManagedDatabaseError("08006", true);
     if (view.getInt16(6, true) & 0x20) throw new ManagedDatabaseError("08006", true);
   }
@@ -157,12 +236,12 @@ export class PgConnection {
       if (pq.PQsendQueryParams(connection, ffi.ptr(statement), count,
           count ? ffi.ptr(types) : null, count ? ffi.ptr(values) : null,
           count ? ffi.ptr(lengths) : null, count ? ffi.ptr(formats) : null, 0) !== 1) {
-        throw new ManagedDatabaseError("08006", true);
+        throw new ManagedDatabaseError("08006", true, true);
       }
       for (;;) {
         const pending = pq.PQflush(connection);
         if (pending === 0) break;
-        if (pending < 0) throw new ManagedDatabaseError("08006", true);
+        if (pending < 0) throw new ManagedDatabaseError("08006", true, true);
         this.wait(4, deadline);
       }
       let result: PgResult = { rows: [], changes: 0, columns: [] };
@@ -170,7 +249,7 @@ export class PgConnection {
       for (;;) {
         while (pq.PQisBusy(connection)) {
           this.wait(1, deadline);
-          if (pq.PQconsumeInput(connection) !== 1) throw new ManagedDatabaseError("08006", true);
+          if (pq.PQconsumeInput(connection) !== 1) throw new ManagedDatabaseError("08006", true, true);
         }
         const native = pq.PQgetResult(connection);
         if (!native) break;

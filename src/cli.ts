@@ -41,6 +41,7 @@ import { build, pollWatched, reportsByPeriod, reportsFrom, watchPeriod } from ".
 import { discover } from "./sources";
 import { configuredCaptureDir, historyCoverageOptions, publishCaptures, captureRefsForReports } from "./capture-cli";
 import { reportOperationalError } from "./telemetry";
+import { handleCliFailure } from "./cli-failure";
 
 interface Args {
   cmd: "report" | "watch" | "limits" | "guard" | "server" | "push-test" | "capacity-history-export" | "capacity-current";
@@ -601,8 +602,18 @@ const argv = process.argv.slice(2);
 try {
   await runCli(argv);
 } catch (error) {
-  await reportOperationalError("spendwatch.cli.failure", error, {
-    command: argv[0] ?? "report",
+  // The managed layer affirmed the archive is briefly unreachable: write one sanitized
+  // line, keep a bounded warning visible to the operator, and exit for the next scheduled
+  // run to retry, instead of reporting an incident and rethrowing a raw crash. Every
+  // other error — including a wrong credential or an unverified certificate — keeps the
+  // existing report-then-rethrow behaviour.
+  const temporaryExit = await handleCliFailure(error, argv, {
+    report: reportOperationalError,
+    writeStderr: (line) => process.stderr.write(line),
   });
-  throw error;
+  if (temporaryExit !== undefined) {
+    process.exitCode = temporaryExit;
+  } else {
+    throw error;
+  }
 }

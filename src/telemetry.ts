@@ -11,7 +11,16 @@ export interface TelemetryOptions {
   release?: string;
   transport?: TelemetryTransport;
   timeoutMs?: number;
+  /**
+   * Reported severity. Omitting it keeps the existing behaviour (`error`); a condition the
+   * operator should see but that is not a defect — a managed archive that is briefly
+   * unreachable, say — says so here instead of pretending to be a crash.
+   */
+  level?: TelemetryLevel;
 }
+export type TelemetryLevel = "error" | "warning";
+/** Anything outside this set reports as `error`, the level every caller used before. */
+const LEVELS = new Set<TelemetryLevel>(["error", "warning"]);
 
 const SAFE_TAGS = new Set(["command", "component", "method", "status"]);
 const SAFE_VALUE = /^[a-z0-9_.:@-]{1,80}$/iu;
@@ -48,7 +57,7 @@ export async function reportOperationalError(
         event_id: randomUUID().replaceAll("-", ""),
         timestamp: Date.now() / 1_000,
         platform: "javascript",
-        level: "error",
+        level: LEVELS.has(options.level as TelemetryLevel) ? options.level : "error",
         logger: "spendwatch",
         message: event,
         fingerprint: ["spendwatch", event, errorType],
