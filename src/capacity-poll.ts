@@ -4,23 +4,17 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CapacityCloudCredits, CapacityExtraUsage, CapacityResult, CapacityWindow } from "./capacity-current";
 import type { ClaudeCapacityResult } from "./claude-capacity";
-import type { GeminiCapacityResult } from "./gemini-capacity";
-import { normalizeGeminiRows } from "./gemini-quota";
 import {
   CapacityCoordinatorUnavailableError,
   coordinatorAccessHeaders,
 } from "./capacity-coordinator-client";
 
-export type PollProvider = "claude" | "codex" | "gemini";
-export type PollSnapshot = CapacityResult | ClaudeCapacityResult | GeminiCapacityResult;
+export type PollProvider = "claude" | "codex";
+export type PollSnapshot = CapacityResult | ClaudeCapacityResult;
 // Keep the established Claude failure-backoff floor and exported timing base.
 export const POLL_INTERVAL_MS = 5 * 60_000;
 export const CODEX_POLL_INTERVAL_MS = 60_000;
 export const CLAUDE_POLL_INTERVAL_MS = 2 * 60_000;
-// Google meters this quota per account rather than per request, and the CLI
-// itself only re-reads it every 30 seconds while a session is open. Five
-// minutes keeps a shared collector well clear of the rate limit.
-export const GEMINI_POLL_INTERVAL_MS = 5 * 60_000;
 export const MAX_FUTURE_SNAPSHOT_SKEW_MS = 5 * 60_000;
 const RATE_LIMIT_COOLDOWN_MS = 60 * 60_000;
 
@@ -38,9 +32,7 @@ export interface PollClaim {
 }
 
 export function pollIntervalMs(provider: PollProvider): number {
-  if (provider === "codex") return CODEX_POLL_INTERVAL_MS;
-  if (provider === "gemini") return GEMINI_POLL_INTERVAL_MS;
-  return CLAUDE_POLL_INTERVAL_MS;
+  return provider === "codex" ? CODEX_POLL_INTERVAL_MS : CLAUDE_POLL_INTERVAL_MS;
 }
 
 export function retryAfterMs(value: string | null, now = Date.now()): number | undefined {
@@ -51,7 +43,7 @@ export function retryAfterMs(value: string | null, now = Date.now()): number | u
 }
 
 export function pollKey(provider: unknown, account: unknown): string {
-  if ((provider !== "claude" && provider !== "codex" && provider !== "gemini") || typeof account !== "string" ||
+  if ((provider !== "claude" && provider !== "codex") || typeof account !== "string" ||
       account.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(account.trim())) {
     throw new Error("invalid capacity account");
   }
@@ -86,7 +78,6 @@ export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now
     profile?: string;
     cloudCredits?: CapacityCloudCredits;
     extraUsage?: CapacityExtraUsage;
-    buckets?: ReturnType<typeof normalizeGeminiRows>;
   } = {
     accountEmail: input.account,
     loginMethod: typeof input.usage.loginMethod === "string" ? input.usage.loginMethod.slice(0, 100) : undefined,
@@ -141,16 +132,6 @@ export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now
       throw new Error("invalid capacity quota pool");
     }
     usage.quotaPool = input.usage.quotaPool;
-  }
-  if (input.provider === "gemini") {
-    // A Gemini reading is per model, so the rows are the reading. They are
-    // re-validated rather than copied: a cached snapshot arrives from another
-    // machine's collector, and only these whitelisted fields may reach the
-    // dashboard. A bad row is dropped; a snapshot with no usable row is rejected
-    // outright, because rendering an empty quota card would be a false reading.
-    const rows = normalizeGeminiRows((input.usage as { buckets?: unknown }).buckets);
-    if (!rows) throw new Error("invalid capacity buckets");
-    usage.buckets = rows;
   }
   return { provider: input.provider, account: input.account, usage, pace: null } as PollSnapshot;
 }
@@ -213,8 +194,7 @@ export class CapacityPollStore {
       const failures = snapshot ? 0 : Math.min(row.failures + 1, 8);
       const backoff = snapshot ? 0 : result.status === 429
         ? RATE_LIMIT_COOLDOWN_MS * 2 ** Math.min(failures - 1, 2)
-        : (provider === "gemini" ? GEMINI_POLL_INTERVAL_MS
-          : provider === "claude" ? POLL_INTERVAL_MS : CODEX_POLL_INTERVAL_MS) * 2 ** Math.min(failures - 1, 3);
+        : (provider === "claude" ? POLL_INTERVAL_MS : CODEX_POLL_INTERVAL_MS) * 2 ** Math.min(failures - 1, 3);
       const retry = Number.isFinite(result.retryAfterMs) && result.retryAfterMs! > 0 ? result.retryAfterMs! : 0;
       this.db.query("UPDATE capacity_poll SET next_at=?,lease='',failures=?,snapshot=? WHERE account_key=?")
         .run(Math.max(row.next_at, now + backoff, now + retry), failures,

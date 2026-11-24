@@ -2,7 +2,6 @@
 summary: "Quota readings preserve one provider pool, real timestamps, and coordinator-owned polling state."
 read_when:
   - Changing Codex or Claude capacity collection.
-  - Changing Gemini capacity collection or the Gemini quota card.
   - Investigating a mismatch between Spendwatch and a provider quota page.
   - Changing capacity poll coordination or snapshot persistence.
   - Changing the Local Qwen capacity card.
@@ -91,74 +90,6 @@ credential. A live file credential still takes precedence. An expired file can
 fall back to a newer login in that profile's exact Keychain service; an absent
 or older Keychain login leaves the file available for renewal. Keychain
 refreshes retain the exact original service, account and Keychain path.
-
-## Gemini card
-
-Gemini publishes neither a 5-hour window nor a weekly one. `capacity-current
---provider gemini` reads the same `retrieveUserQuota` call the official Gemini
-CLI makes, so it gets one bucket per model id: a fraction left, sometimes an
-absolute amount, and the instant that allowance refills. The shared coordinator
-reserves one attempt per account every five minutes, and collection is opt-in by
-presence — a machine with no signed-in
-`.gemini/oauth_creds.json` produces no card and sends no request, and a
-credential file that is a link, owned by somebody else, or readable by the
-group is refused with a fixed reason rather than a read.
-The judgement and the read share one descriptor — opened `O_NOFOLLOW`, judged by
-its `fstat`, read from that same fd — so the file cannot be swapped for another
-account's grant in between, and `O_NONBLOCK` stops a planted pipe from hanging the
-collect. Only the grant file is held to 0600: the CLI writes the account label with
-no mode at all (chunk-37D3S3FZ.js:284911) and it holds no secret, so demanding a
-private label would lose the account and the card with it.
-
-Because the API reports a reset instant and never a cycle length, the row's
-`windowMinutes` is a nominal 24 hours used only by the pace and burn maths;
-`resetsAt` is the figure to act on. A reset already behind us is carried rather
-than dropped, which is what lets the card say "Cycle ended" instead of showing a
-percentage from a cycle that no longer exists, and what makes the burn forecast
-decline to say anything rather than project a window through a closed cycle.
-
-Only the aliases the CLI itself folds are merged: `gemini-3-flash`, `-3.5-flash`
-and `-3.8-flash` share one Flash allowance and the two flash-lite ids share one of
-theirs (chunk-37D3S3FZ.js:406024-406032), so they collapse to one row and the
-tightest bucket wins it. Every other reported id keeps its own row, because two Pro
-versions are two allowances and merging them would report one averaged figure for a
-quota that is really two. Where a family does hold several rows, the card and the
-text output name each row by the ids it reports rather than by the family heading
-they all share. A bucket that reported no fraction at all is dropped rather than
-read as a spent one: `Number(null)` is 0, and a coerced zero is not a measurement.
-The headline is the most constrained Pro bucket — the allowance an agent
-hits first — falling back to the tightest row at all, and the top three rows
-also fill the shared `primary`/`secondary`/`tertiary` windows, so a consumer that
-already reads Codex or Claude capacity reads Gemini the same way.
-
-One collect spends at most one OAuth refresh grant per account. Google can
-rotate a refresh grant when it issues a new access token, and this collector may
-never write the rotated grant back: the gateway owns that file and its lock, so
-a second exchange in the same read could strand the stored login. Both Code
-Assist calls therefore share the one token the session obtained. A refused
-`invalid_grant` is reported as a sign-in problem, the same class as a 401, and
-never as a retry.
-
-The refresh uses the official CLI's own installed-app OAuth client. Spendwatch
-keeps no copy of it in source: `src/gemini-oauth-client.ts` reads the pair from
-the installed `@google/gemini-cli` bundle (the `gemini` on PATH, then the npm,
-Homebrew and `~/.local/bin` locations a launchd PATH lacks). Without an installed
-CLI an expired token cannot be refreshed, and the read reports `unavailable`
-without contacting Google; a still-valid access token keeps working.
-
-A stored Gemini snapshot keeps its per-model rows, because those rows are the
-reading. A snapshot arrives from another machine's collector, so on every read
-each figure is checked again and the card's label is always re-derived from the
-family and the validated model ids — never taken from the stored string. A row
-that fails validation is dropped, and a snapshot with no usable row is rejected
-outright rather than rendered as an empty quota card.
-
-A failure leaves this collector as one of a fixed set of sentences. A message from
-SQLite, a coordinator transport or a fetch can quote a file path, a URL or part of
-a request, and a caller prints those lines on a terminal, so an unknown fault is
-reported as an unknown fault and nothing more. The account label that travels with
-a failure is held to an address shape first, since it also keys history and a poll
-reservation.
 
 ## Local Qwen card
 

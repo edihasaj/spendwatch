@@ -44,15 +44,5 @@ export const CAPACITY_CARD_CSS = `
 .plan-target{display:flex;flex-wrap:wrap;gap:4px 8px;font:9px/1.5 "Fragment Mono",monospace}
 .plan-target strong{color:var(--ink);font-weight:400;margin-left:auto}
 .plan-body p{margin:8px 0 0}
-/* Gemini lists one row per model allowance under its Pro/Flash group label.
- * A stale row keeps its figure but loses the live ink colour, so a row that is
- * no longer a current reading never reads as one. */
-.gemini-group{display:grid;grid-template-columns:1fr;gap:5px;padding-top:8px;border-top:1px dashed var(--line)}
-.gemini-group-label{color:var(--accent);font:9px "Fragment Mono",monospace;text-transform:uppercase;letter-spacing:.09em}
-.gemini-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;gap:8px;align-items:baseline;color:var(--muted);font:10px/1.4 "Fragment Mono",monospace}
-.gemini-row span{overflow-wrap:anywhere}
-.gemini-row strong{color:var(--ink);font-weight:400}
-.gemini-row[data-freshness="stale"] strong,.gemini-row[data-freshness="expired"] strong{color:var(--muted)}
-.gemini-row .reset{color:var(--subtle,#6e7881)}
 @media(max-width:640px){.capacity-plan>summary{min-height:44px}}
 `;

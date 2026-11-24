@@ -193,9 +193,8 @@ function parseArgs(argv: string[]): Args {
       const provider = rest.shift();
       if (provider === "local") a.localCapacity = true;
       else {
-        if (provider !== "codex" && provider !== "claude" && provider !== "gemini"
-          && provider !== "lokai"
-          && provider !== "openrouter" && provider !== "qwen") throw new Error("--provider must be codex, claude, gemini, openrouter, lokai, qwen, or local");
+        if (provider !== "codex" && provider !== "claude" && provider !== "lokai"
+          && provider !== "openrouter" && provider !== "qwen") throw new Error("--provider must be codex, claude, openrouter, lokai, qwen, or local");
         a.provider = provider;
       }
     }
@@ -218,7 +217,7 @@ usage: spendwatch [report|watch|limits|guard|route|run|eval|capacity|capacity-cu
   run TASK          execute, verify, record, and escalate a routed task
   eval [JSONL]      replay tasks through the routing policy without model calls
   capacity          archive or restore old capacity history safely
-  capacity-current  read live Codex, Claude, Gemini, or OpenRouter capacity from the official account API
+  capacity-current  read live Codex, Claude, or OpenRouter capacity from the official account API
   server            serve the dashboard and deliver background Web Push alerts
   push-test         send a background test to every enrolled browser
   capacity-history-export
@@ -491,14 +490,6 @@ async function currentCapacity(provider: CapacityProvider | undefined, local = f
       process.stderr.write(`claude capacity ${failure.reason}${who}: ${failure.message}\n`);
     });
   }
-  if (provider === "gemini") {
-    // Opt-in by presence: with no signed-in Gemini credential this returns an
-    // empty array without ever contacting Google.
-    // The line itself is written by the collector's reporter, whose every part is
-    // a fixed class, so the terminal never prints text this repo did not choose.
-    const { currentGeminiCapacity, reportGeminiFailure } = await import("./gemini-capacity");
-    return currentGeminiCapacity(Date.now(), reportGeminiFailure);
-  }
   if (local || provider === "qwen") {
     const { collectLocalCapacity, LOCAL_PROVIDERS } = await import("./local-capacity-current");
     return collectLocalCapacity(local ? LOCAL_PROVIDERS : ["qwen"], undefined,
@@ -509,7 +500,7 @@ async function currentCapacity(provider: CapacityProvider | undefined, local = f
     const result = await collectOpenRouterCapacity();
     return result ? [result] : [];
   }
-  if (provider && provider !== "codex") throw new Error("capacity-current supports codex, claude, gemini, openrouter, qwen, or local");
+  if (provider && provider !== "codex") throw new Error("capacity-current supports codex, claude, openrouter, qwen, or local");
   return currentCodexCapacity(Date.now(), (failure) => {
     const who = failure.email ? ` for ${failure.email}` : "";
     process.stderr.write(`codex capacity ${failure.reason}${who}: ${failure.message}\n`);

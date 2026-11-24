@@ -25,7 +25,6 @@ import { join } from "node:path";
 import { accountLabel, copilotAccountIn } from "./copilot";
 import { claudeAccount, claudeAccountIn, type SourceFile } from "./sources";
 import { claudeProviderAccounts } from "./claude-provider-accounts";
-import { geminiAccountIn } from "./gemini";
 import type { Event } from "./parse";
 import { providerMap, readGatewayConfig, resolveStateDirectory, type AuthDirectory, type GatewayVendor, type OpenRouterRoutes } from "./gateway-config";
 import { callKey, dedupe, GATEWAY_ORIGIN, isMarked, ledgerFiles, markerOf, MESSAGES_MARKER, readRows, RESPONSES_MARKER, TELEMETRY_ORIGIN, type LedgerRow, type RowHolder } from "./gateway-ledger-files";
@@ -129,10 +128,6 @@ export class GatewayLedger implements GatewayIndex {
   /** Whether this Mac has a ledger at all (a `usage` directory). Without one nothing is counted or dropped. */
   readonly present: boolean;
   private readonly authDirectories: ReadonlyMap<string, AuthDirectory>;
-  /** Gemini provider id → the private home it ran the CLI in, which holds the sign-in its rows were billed to. */
-  private readonly geminiHomes: ReadonlyMap<string, string>;
-  /** The home a Gemini provider that names none used: the gateway's own, beside its state. */
-  private readonly geminiHome: string;
   /** Rows a transcript can match, by model and token counts, each list oldest first. */
   private readonly buckets = new Map<string, LedgerRow[]>();
   /** Billed rows by their marked response id. */
@@ -163,13 +158,10 @@ export class GatewayLedger implements GatewayIndex {
   private replays: LedgerDecision[] = [];
   private lastRead = Date.now();
 
-  private constructor(rows: LedgerRow[], stateDir: string, present: boolean, authDirectories: ReadonlyMap<string, AuthDirectory> = new Map(),
-    geminiHomes: ReadonlyMap<string, string> = new Map(), private readonly source?: LedgerSource) {
+  private constructor(rows: LedgerRow[], stateDir: string, present: boolean, authDirectories: ReadonlyMap<string, AuthDirectory> = new Map(), private readonly source?: LedgerSource) {
     this.stateDir = stateDir;
     this.present = present;
     this.authDirectories = authDirectories;
-    this.geminiHomes = geminiHomes;
-    this.geminiHome = join(stateDir, "gemini-home");
     this.rows = rows.sort((a, b) => a.at - b.at); // oldest first, like a transcript
     for (const row of this.rows) {
       this.index(row);
@@ -452,13 +444,11 @@ export class GatewayLedger implements GatewayIndex {
    * — a `CLAUDE_CONFIG_DIR` or a `COPILOT_HOME` — bills its turns to that account. Next, a Claude provider
    * the operator declared an account for (claude-provider-accounts.ts) keeps the rows it billed even after
    * the signed-in login changes. Every other row goes to the account signed in now, as it always has;
-   * Copilot has no second step. A Gemini row names the Google account active in the provider's own
-   * `geminiHome` — the gateway keeps no `authDirectory` for Gemini, because the CLI signs in under that home.
+   * Copilot has no second step.
    */
   private accountFor(row: LedgerRow): string {
     const auth = this.authDirectories.get(row.provider);
     if (auth?.vendor === row.vendor) return this.label(row.vendor, auth.directory);
-    if (row.vendor === "gemini") return this.label("gemini", this.geminiHomes.get(row.provider) ?? this.geminiHome);
     // No login directory of its own: for Claude, an operator's declaration of that provider id pins
     // the account, so a retired provider's rows do not follow a later change of the signed-in login.
     // It is more specific than `SPENDWATCH_CLAUDE_ACCOUNT`, which names whatever the fallback reads.
@@ -474,10 +464,7 @@ export class GatewayLedger implements GatewayIndex {
     const key = `${vendor}\u0000${directory ?? ""}`;
     let label = this.labels.get(key);
     if (label === undefined) {
-      // A Gemini row's account is always read from a home: the provider's own when it names one, this
-      // gateway's otherwise. Whoever is signed in there now is who the rows of a load belong to.
-      if (vendor === "gemini") label = geminiAccountIn(directory ?? this.geminiHome);
-      else label = directory
+      label = directory
         ? vendor === "copilot" ? copilotAccountIn(directory) : claudeAccountIn(directory)
         : vendor === "copilot" ? accountLabel() : claudeAccount();
       this.labels.set(key, label);
@@ -493,7 +480,7 @@ export class GatewayLedger implements GatewayIndex {
     const config = readGatewayConfig();
     const dir = resolveStateDirectory(config, opts.stateDir);
     const usage = dir ? join(dir, "usage") : "";
-    if (!dir || !isDirectory(usage)) return new GatewayLedger([], dir ?? config.directory, false, config.authDirectories, config.geminiHomes);
+    if (!dir || !isDirectory(usage)) return new GatewayLedger([], dir ?? config.directory, false, config.authDirectories);
     const map = providerMap();
     const source: LedgerSource = { usage, sinceMs: opts.sinceMs, map, openrouter: config.openrouter, read: new Map(), mtimes: new Map() };
     const rows = ledgerFiles(usage, opts.sinceMs - CLAIM_WINDOW_MS).flatMap((file) => {
@@ -502,7 +489,7 @@ export class GatewayLedger implements GatewayIndex {
       if (mtime !== undefined) source.mtimes.set(file, mtime);
       return rows;
     });
-    return new GatewayLedger(dedupe(rows), dir, true, config.authDirectories, config.geminiHomes, source);
+    return new GatewayLedger(dedupe(rows), dir, true, config.authDirectories, source);
   }
 
   /** Whether any telemetry row is waiting for a rollout to claim it, so reading rollouts can change a report. */

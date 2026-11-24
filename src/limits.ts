@@ -11,8 +11,6 @@ import { CAPACITY_CARD_CSS } from "./capacity-card-styles";
 import { compactDuration } from "./duration";
 import { normalizeLocalQwenCapacity } from "./local-capacity";
 import type { CapacityCloudCredits, CapacityExtraUsage } from "./capacity-current";
-import { geminiLimits } from "./gemini-capacity-card";
-import { geminiQuotaFromRows, geminiRowName, type GeminiQuota } from "./gemini-quota";
 import type {
   OpenRouterCapacity,
   OpenRouterHistory,
@@ -37,11 +35,11 @@ export interface CapacityPrediction {
   source: "reported" | "linear";
 }
 
-export type CapacityProvider = "codex" | "claude" | "gemini" | "openrouter" | "lokai" | "qwen";
+export type CapacityProvider = "codex" | "claude" | "openrouter" | "lokai" | "qwen";
 
 // Cards render in this order, so a provider without an allowance sits after
 // the metered ones instead of interleaving by name.
-const PROVIDER_ORDER: CapacityProvider[] = ["claude", "gemini", "codex", "openrouter", "lokai", "qwen"];
+const PROVIDER_ORDER: CapacityProvider[] = ["claude", "codex", "openrouter", "lokai", "qwen"];
 
 export interface CloudRouteCapacity {
   ready: boolean;
@@ -97,8 +95,6 @@ export interface CodexLimitAccount {
   extraUsage?: CapacityExtraUsage;
   /** Account balance and retained completed-day usage for OpenRouter. */
   openrouter?: OpenRouterCapacity;
-  /** Gemini: one collapsed row per model allowance, plus the Pro headline. */
-  gemini?: GeminiQuota;
   /** Spend for a plan-covered agent with no quota to report. */
   spend?: AgentSpendSummary;
   /** Self-hosted local capacity, distinct from subscription quotas and API balances. */
@@ -182,7 +178,6 @@ interface RawCodexResult {
     monthDays?: unknown;
   };
   openrouter?: unknown;
-  buckets?: unknown;
   pace?: RawProviderPace | null;
   devices?: unknown;
   sourceDevice?: unknown;
@@ -478,8 +473,8 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
     if (!item || typeof item !== "object") continue;
     const result = item as RawCodexResult;
     const provider = result.provider;
-    if (provider !== "codex" && provider !== "claude" && provider !== "gemini"
-      && provider !== "lokai" && provider !== "openrouter") continue;
+    if (provider !== "codex" && provider !== "claude" && provider !== "lokai"
+      && provider !== "openrouter") continue;
     const usage = result.usage;
     if (!usage || typeof usage !== "object") continue;
     // A free Codex plan carries no capacity worth planning against. Filtering at
@@ -535,14 +530,6 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
     if (cloudCredits) account.cloudCredits = cloudCredits;
     const extraUsage = normalizeExtraUsage(usage.extraUsage);
     if (extraUsage) account.extraUsage = extraUsage;
-    // Gemini's reading *is* its per-model rows, so a row set that fails
-    // validation leaves no quota to show and the account is skipped rather than
-    // rendered with a headline nothing backs.
-    if (provider === "gemini") {
-      const gemini = geminiQuotaFromRows(usage.buckets);
-      if (!gemini) continue;
-      account.gemini = gemini;
-    }
     if (provider === "openrouter") {
       const openrouter = normalizeOpenRouter(result.openrouter);
       if (!openrouter) continue;
@@ -576,7 +563,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
   }
 
   const normalized = [...accounts.values()];
-  for (const provider of ["codex", "claude", "gemini", "openrouter"] as const) {
+  for (const provider of ["codex", "claude", "openrouter"] as const) {
     const group = normalized
       .filter((account) => account.provider === provider)
       .sort((a, b) => profileRank(a.profile) - profileRank(b.profile)
@@ -637,13 +624,11 @@ function placement(account: CodexLimitAccount): number {
 }
 
 function providerLabel(provider: CapacityProvider): string {
-  return ({ codex: "Codex", claude: "Claude", gemini: "Gemini", openrouter: "OpenRouter", lokai: "Lokai", qwen: "Qwen" })[provider];
+  return ({ codex: "Codex", claude: "Claude", openrouter: "OpenRouter", lokai: "Lokai", qwen: "Qwen" })[provider];
 }
 
 function providerAccent(provider: CapacityProvider): string {
-  // A cool blue reads as Google's own family and keeps Gemini distinct from the
-  // warm Claude/Codex accents it sits beside.
-  return ({ codex: "#68d5dc", claude: "#e69a73", gemini: "#8ab4f8", openrouter: "#f5a623", lokai: "#b8d96b", qwen: "#e6bf66" })[provider];
+  return ({ codex: "#68d5dc", claude: "#e69a73", openrouter: "#f5a623", lokai: "#b8d96b", qwen: "#e6bf66" })[provider];
 }
 
 function formatBalance(balance: ApiCreditBalance): string {
@@ -829,9 +814,6 @@ function providerLimits(account: CodexLimitAccount, nowMs: number): string {
   if (account.provider === "openrouter" && account.openrouter) {
     return openRouterLimits(account);
   }
-  if (account.provider === "gemini" && account.gemini) {
-    return geminiLimits(account, nowMs);
-  }
   if (account.provider === "lokai" && account.route) {
     return routeBalanceBlock(account.route);
   }
@@ -921,16 +903,6 @@ export function renderLimitsText(accounts: CodexLimitAccount[], nowMs = Date.now
         : "";
       return `OpenRouter · ${account.email}\t${formatUsd(capacity.balanceUsd, 4)} left\t${formatUsd(capacity.totalUsageUsd, 4)} account billed\t${usage}${history}`;
     }
-    if (account.provider === "gemini" && account.gemini) {
-      const gemini = account.gemini;
-      const headline = gemini.headline;
-      const rows = gemini.rows
-        .map((row) => `${geminiRowName(gemini.rows, row)} ${Math.round(100 - row.usedPercent)}% left`)
-        .join(" · ");
-      return `Gemini · ${account.email}\t${headline
-        ? `${geminiRowName(gemini.rows, headline)} ${Math.round(100 - headline.usedPercent)}% left`
-        : "quota unavailable"}\t${rows}`;
-    }
     if (account.provider === "qwen" && account.local) {
       const usage = account.spend
         ? `Measured ${Math.round(account.spend.recentHours)}h ${formatTokens(account.spend.recentTokens)} tokens\tMeasured ${Math.round(account.spend.monthDays)}d ${formatTokens(account.spend.monthTokens)} tokens`
@@ -972,8 +944,7 @@ export function renderLimitsHtml(
   const authenticationHtml = (opts.authentication ?? []).map((item) => {
     const provider = providerLabel(item.provider);
     const label = item.account ? `${provider} · ${item.account}` : provider;
-    const signIn = item.provider === "codex" ? "ChatGPT" : item.provider === "gemini" ? "Google" : "Claude";
-    return `<section class="auth-required" data-auth-provider="${item.provider}" data-auth-profile="${esc(item.profile ?? "default")}"><div><strong>Authentication required</strong><span>${esc(label)} on ${esc(item.device)}</span></div><a href="#setup">Sign in with ${esc(signIn)}</a></section>`;
+    return `<section class="auth-required" data-auth-provider="${item.provider}" data-auth-profile="${esc(item.profile ?? "default")}"><div><strong>Authentication required</strong><span>${esc(label)} on ${esc(item.device)}</span></div><a href="#setup">Sign in with ${esc(item.provider === "codex" ? "ChatGPT" : "Claude")}</a></section>`;
   }).join("");
 
   return `<!doctype html>

@@ -59,25 +59,7 @@ const PRICES: Array<[RegExp, ModelPrice]> = [
   // Self-hosted Qwen has no bill, but the owner wants the spend visible: it is priced as the
   // API-equivalent of a comparable hosted Flash model (DeepSeek V4 Flash rates). An estimate, not a charge.
   [/qwen3\.8-flash-next/, { input: 0.14, output: 0.28, cachedInput: 0.0028 }],
-  // Google (Gemini), Google's public Gemini API list prices at the Standard tier, per 1M tokens
-  // (ai.google.dev/gemini-api/docs/pricing, read 21 November 2026; the retired endpoints and their
-  // replacements from ai.google.dev/gemini-api/docs/deprecations, same date). A Google AI Ultra
-  // subscription is not billed per token, so for a `gemini-subscription` turn these are
-  // API-equivalent estimates that keep the models comparable, exactly as the other subscriptions here are.
-  // Google's context caching has no write premium — it bills storage per hour — so cache creation is free.
-  [/gemini-3\.1-pro/, { input: 2, output: 12, cachedInput: 0.2, cacheWrite5m: 0, longContextThreshold: 200_000, longContext: { input: 4, output: 18, cachedInput: 0.4, cacheWrite5m: 0 } }],
-  // `gemini-3-pro-preview` shut down on 9 March 2026 and its endpoint routes to 3.1 Pro, so it is that price.
-  [/gemini-3-pro/, { input: 2, output: 12, cachedInput: 0.2, cacheWrite5m: 0, longContextThreshold: 200_000, longContext: { input: 4, output: 18, cachedInput: 0.4, cacheWrite5m: 0 } }],
-  // Deprecated: from 1 December 2026 its requests are billed at Gemini 3.8 Flash rates. The published
-  // 2.5 Pro tier stays until then, and keeps old calls priced as they were billed.
-  [/gemini-2\.5-pro/, { input: 1.25, output: 10, cachedInput: 0.125, cacheWrite5m: 0, longContextThreshold: 200_000, longContext: { input: 2.5, output: 15, cachedInput: 0.25, cacheWrite5m: 0 } }],
-  // $0.75 / $3.75 / $0.075 hold through 31 December 2026; Google lists $1.50 / $7.50 / $0.15 from 1 January 2027.
-  [/gemini-3\.8-flash(?!-lite)/, { input: 0.75, output: 3.75, cachedInput: 0.075, cacheWrite5m: 0 }],
-  // Retired 19 May 2026: its endpoint routes to Gemini 3.6 Flash, whose published rate is the same $0.75 / $3.75.
-  [/gemini-3\.5-flash(?!-lite)/, { input: 0.75, output: 3.75, cachedInput: 0.075, cacheWrite5m: 0 }],
-  [/gemini-3\.5-flash-lite/, { input: 0.3, output: 2.5, cachedInput: 0.03, cacheWrite5m: 0 }],
-  [/gemini-3-flash-preview/, { input: 0.5, output: 3, cachedInput: 0.05, cacheWrite5m: 0 }],
-  // Any other Gemini model (a Flash-Lite or Live tier, or a name the list above does not carry).
+  // Google (Gemini), best-effort 2.5-pro tier.
   [/gemini.*pro/, { input: 1.25, output: 10 }],
   [/gemini/, { input: 0.3, output: 2.5 }],
 ];
@@ -162,9 +144,7 @@ function openRouterUsagePrice(price: OpenRouterModelPrice, usage: Usage, timesta
 export function priceFor(model: string | undefined, provider?: string, timestamp?: PriceTimestamp): ModelPrice {
   if (!model) return { input: 0, output: 0 };
   if (provider?.toLowerCase() === "openrouter") return openRouterPrice(model, timestamp).price!;
-  // A managed gateway alias names its provider first (`gemini/gemini-3.1-pro-preview`); the model behind
-  // it is what Google prices, so the alias prefix never hides a price from the table above.
-  const m = model.toLowerCase().replace(/^gemini\//, "");
+  const m = model.toLowerCase();
   for (const [re, p] of PRICES) if (re.test(m)) return p;
   return { input: 0, output: 0 }; // <synthetic>, unknown
 }

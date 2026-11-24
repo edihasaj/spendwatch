@@ -6,6 +6,27 @@ import type { EventSink } from "./monthly";
 import type { Event } from "./parse";
 import type { SourceFile } from "./sources";
 
+// Recursively yield every *.jsonl under a directory.
+export function* walkJsonl(dir: string): Generator<string> {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    const p = join(dir, e);
+    let st;
+    try {
+      st = statSync(p);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) yield* walkJsonl(p);
+    else if (e.endsWith(".jsonl")) yield p;
+  }
+}
+
 /**
  * Codex retains archived sessions as `.jsonl.zst`; other collectors must not
  * mistake compressed bytes for JSONL, so keep its discovery separate.

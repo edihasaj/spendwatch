@@ -1,21 +1,19 @@
 // Where the subscription gateway keeps its files, read the way the gateway reads them.
 //
-// Spendwatch only ever reads three kinds of thing from the gateway's own config: the state directory that holds
-// the usage ledger, the `authDirectory` of each Claude or Copilot subscription provider, and the `geminiHome` of a
-// Gemini one (each names the account a turn was billed to). Everything else in that file is ignored, and nothing
-// from it is ever logged.
+// Spendwatch only ever reads two kinds of thing from the gateway's own config: the state directory that holds
+// the usage ledger, and the `authDirectory` of each Claude or Copilot subscription provider (the account a
+// turn was billed to). Everything else in that file is ignored, and nothing from it is ever logged.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir, platform } from "node:os";
 
-export type GatewayVendor = "claude" | "copilot" | "gemini" | "openrouter";
+export type GatewayVendor = "claude" | "copilot" | "openrouter";
 export type OpenRouterRoutes = ReadonlyMap<string, ReadonlyMap<string, string>>;
 
 /** Gateway provider kinds this ledger can bill. */
 export const PROVIDER_TYPES: Record<string, GatewayVendor> = {
   "copilot-subscription": "copilot",
   "claude-subscription": "claude",
-  "gemini-subscription": "gemini",
 };
 
 /** The vendor a name stands for in one of these tables; a name an object inherits (`toString`) is not one. */
@@ -59,12 +57,6 @@ export interface GatewayConfigView {
    * a `CLAUDE_CONFIG_DIR` for Claude, a `COPILOT_HOME` for Copilot. Resolved as the gateway resolves it.
    */
   authDirectories: Map<string, AuthDirectory>;
-  /**
-   * Gemini provider id → the private home it runs the Gemini CLI in, for providers that set `geminiHome`.
-   * The gateway keeps no `authDirectory` for Gemini: its sign-in lives under this home's `.gemini`.
-   * Absent for a caller that reads only the state directory.
-   */
-  geminiHomes?: Map<string, string>;
   /** Verified OpenRouter route id -> exact public alias/model mapping only. */
   openrouter?: OpenRouterRoutes;
 }
@@ -77,7 +69,7 @@ export interface AuthDirectory {
 export function readGatewayConfig(): GatewayConfigView {
   const file = gatewayConfigFile();
   const directory = dirname(file);
-  const none: GatewayConfigView = { directory, found: false, stateDirectory: "", authDirectories: new Map(), geminiHomes: new Map() };
+  const none: GatewayConfigView = { directory, found: false, stateDirectory: "", authDirectories: new Map() };
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(file, "utf8"));
@@ -87,7 +79,6 @@ export function readGatewayConfig(): GatewayConfigView {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return none;
   const config = raw as Record<string, unknown>;
   const authDirectories = new Map<string, AuthDirectory>();
-  const geminiHomes = new Map<string, string>();
   const openrouter = new Map<string, ReadonlyMap<string, string>>();
   if (Array.isArray(config.providers)) {
     for (const provider of config.providers as unknown[]) {
@@ -103,15 +94,13 @@ export function readGatewayConfig(): GatewayConfigView {
         }
         openrouter.set(id, models);
       }
+      const authDirectory = str(entry.authDirectory);
       // Only a subscription this ledger bills names an account; any other provider's login is not ours to read.
       const vendor = vendorIn(PROVIDER_TYPES, str(entry.type));
-      const authDirectory = str(entry.authDirectory);
       if (id && authDirectory && vendor) authDirectories.set(id, { vendor, directory: resolve(directory, authDirectory) });
-      const geminiHome = str(entry.geminiHome);
-      if (id && geminiHome && vendor === "gemini") geminiHomes.set(id, resolve(directory, geminiHome));
     }
   }
-  return { directory, found: true, stateDirectory: str(config.stateDirectory), authDirectories, geminiHomes, openrouter };
+  return { directory, found: true, stateDirectory: str(config.stateDirectory), authDirectories, openrouter };
 }
 
 function isOpenRouterUrl(value: unknown): boolean {
@@ -140,7 +129,7 @@ export function resolveStateDirectory(config: GatewayConfigView, override?: stri
 
 /** `SPENDWATCH_GATEWAY_PROVIDER_MAP` retargets the provider names telemetry rows carry. */
 export function providerMap(): Record<string, GatewayVendor> {
-  const map: Record<string, GatewayVendor> = { copilot: "copilot", claude: "claude", gemini: "gemini" };
+  const map: Record<string, GatewayVendor> = { copilot: "copilot", claude: "claude" };
   const raw = process.env.SPENDWATCH_GATEWAY_PROVIDER_MAP?.trim();
   if (!raw) return map;
   let pairs: Array<[string, unknown]>;
@@ -157,7 +146,7 @@ export function providerMap(): Record<string, GatewayVendor> {
   for (const [key, value] of pairs) {
     const vendor = str(value);
     if (!key) continue;
-    if (vendor === "claude" || vendor === "copilot" || vendor === "gemini") map[key] = vendor;
+    if (vendor === "claude" || vendor === "copilot") map[key] = vendor;
     else delete map[key];
   }
   return map;

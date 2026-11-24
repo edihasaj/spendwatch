@@ -50,7 +50,7 @@ export function tokenSummary(path: string, options: {
     const key = normalize(model);
     if (local.has(key)) return "local";
     // Open-weight models and unknown routes need an explicit operator mapping.
-    if (cloud.has(key) || /^(gpt-|claude-|gemini[-/]|grok-)/.test(key)) return "cloud";
+    if (cloud.has(key) || /^(gpt-|claude-|gemini-|grok-)/.test(key)) return "cloud";
     return "unclassified";
   };
   const modelCounts = (rows: Array<{model: string; tokens: number}>): TokenCounts => {
