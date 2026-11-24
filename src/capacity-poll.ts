@@ -2,7 +2,7 @@ import { Database } from "./database";
 import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { CapacityCloudCredits, CapacityExtraUsage, CapacityResult, CapacityWindow } from "./capacity-current";
+import type { CapacityCloudCredits, CapacityExtraUsage, CapacityLastKnownCredits, CapacityResult, CapacityWindow } from "./capacity-current";
 import type { ClaudeCapacityResult } from "./claude-capacity";
 import type { GeminiCapacityResult } from "./gemini-capacity";
 import { normalizeGeminiRows } from "./gemini-quota";
@@ -62,6 +62,56 @@ function money(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+// Credit blocks are advisory next to the quota windows, so a malformed one is dropped rather than rejected.
+function sanitizeCloudCredits(cloud: unknown): CapacityCloudCredits | undefined {
+  if (!cloud || typeof cloud !== "object") return undefined;
+  const { limitUsd: limit, remainingUsd: remaining, expiresAt: expiry, locked } = cloud as CapacityCloudCredits;
+  const expiresAt = typeof expiry === "string" && Number.isFinite(Date.parse(expiry)) ? expiry : undefined;
+  if (!money(limit) || limit <= 0 || !money(remaining) || remaining > limit) return undefined;
+  return { limitUsd: limit, remainingUsd: remaining, ...(expiresAt ? { expiresAt } : {}), ...(locked === true ? { locked: true } : {}) };
+}
+
+function sanitizeExtraUsage(extra: unknown): CapacityExtraUsage | undefined {
+  if (!extra || typeof extra !== "object") return undefined;
+  const { usedAmount: used, limitAmount: limit, currency } = extra as CapacityExtraUsage;
+  if (!money(used) || !money(limit) || typeof currency !== "string" || !/^[A-Z]{3}$/.test(currency)) return undefined;
+  return { usedAmount: used, limitAmount: limit, currency };
+}
+
+function sanitizeLastKnown(value: unknown, now: number): CapacityLastKnownCredits | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as CapacityLastKnownCredits;
+  const observed = typeof raw.observedAt === "string" ? Date.parse(raw.observedAt) : Number.NaN;
+  if (!Number.isFinite(observed) || observed > now + MAX_FUTURE_SNAPSHOT_SKEW_MS) return undefined;
+  const cloudCredits = sanitizeCloudCredits(raw.cloudCredits);
+  const extraUsage = sanitizeExtraUsage(raw.extraUsage);
+  if (!cloudCredits && !extraUsage) return undefined;
+  return { observedAt: raw.observedAt, ...(cloudCredits ? { cloudCredits } : {}), ...(extraUsage ? { extraUsage } : {}) };
+}
+
+/**
+ * Keeps the last credit figures a provider reported once it stops reporting them. A new Claude reading that
+ * carries live credit figures replaces what was kept; one that carries none inherits the previous reading's
+ * live figures, or the figures it was already holding, together with the time they were last seen. The
+ * snapshot store keeps one row per account and overwrites it on every poll, so without this the figures of
+ * an exhausted allowance would vanish with the first reading that omits them.
+ */
+export function carryLastKnownCredits<T extends PollSnapshot>(previous: PollSnapshot | undefined, next: T): T {
+  if (next.provider !== "claude" || previous?.provider !== "claude") return next;
+  const usage = next.usage;
+  if (usage.cloudCredits || usage.extraUsage) {
+    if (!usage.lastKnownCredits) return next;
+    const { lastKnownCredits: _dropped, ...rest } = usage;
+    return { ...next, usage: rest } as T;
+  }
+  const prior = previous.usage;
+  const kept: CapacityLastKnownCredits | undefined = prior.cloudCredits || prior.extraUsage
+    ? { observedAt: prior.updatedAt, ...(prior.cloudCredits ? { cloudCredits: prior.cloudCredits } : {}), ...(prior.extraUsage ? { extraUsage: prior.extraUsage } : {}) }
+    : prior.lastKnownCredits;
+  if (!kept || usage.lastKnownCredits) return next;
+  return { ...next, usage: { ...usage, lastKnownCredits: kept } } as T;
+}
+
 // Allowlist the projection before persisting anything supplied by a collector.
 // Tokens, provider responses and exception messages must never enter this table.
 export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now()): PollSnapshot {
@@ -86,6 +136,8 @@ export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now
     profile?: string;
     cloudCredits?: CapacityCloudCredits;
     extraUsage?: CapacityExtraUsage;
+    creditsExhausted?: true;
+    lastKnownCredits?: CapacityLastKnownCredits;
     buckets?: ReturnType<typeof normalizeGeminiRows>;
   } = {
     accountEmail: input.account,
@@ -103,32 +155,14 @@ export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now
     // The profile name orders and labels the account; anything but a plain directory suffix is dropped.
     const profile = (claudeUsage as { profile?: unknown }).profile;
     if (typeof profile === "string" && /^[a-z0-9][a-z0-9-]{0,31}$/.test(profile)) usage.profile = profile;
-    // Malformed credit blocks are advisory next to the quota windows: drop them
-    // rather than rejecting a snapshot whose windows are valid.
-    const cloud = claudeUsage.cloudCredits;
-    if (cloud && typeof cloud === "object") {
-      const limit = cloud.limitUsd;
-      const remaining = cloud.remainingUsd;
-      const expiresAt = typeof cloud.expiresAt === "string" && Number.isFinite(Date.parse(cloud.expiresAt))
-        ? cloud.expiresAt
-        : undefined;
-      if (money(limit) && limit > 0 && money(remaining) && remaining <= limit) {
-        usage.cloudCredits = {
-          limitUsd: limit,
-          remainingUsd: remaining,
-          ...(expiresAt ? { expiresAt } : {}),
-          ...(cloud.locked === true ? { locked: true } : {}),
-        };
-      }
-    }
-    const extra = claudeUsage.extraUsage;
-    if (extra && typeof extra === "object") {
-      const used = extra.usedAmount;
-      const limit = extra.limitAmount;
-      if (money(used) && money(limit) && typeof extra.currency === "string" && /^[A-Z]{3}$/.test(extra.currency)) {
-        usage.extraUsage = { usedAmount: used, limitAmount: limit, currency: extra.currency };
-      }
-    }
+    const cloudCredits = sanitizeCloudCredits(claudeUsage.cloudCredits);
+    if (cloudCredits) usage.cloudCredits = cloudCredits;
+    const extraUsage = sanitizeExtraUsage(claudeUsage.extraUsage);
+    if (extraUsage) usage.extraUsage = extraUsage;
+    if (claudeUsage.creditsExhausted === true) usage.creditsExhausted = true;
+    const lastKnown = sanitizeLastKnown(claudeUsage.lastKnownCredits, now);
+    // Figures are kept only while nothing live replaces them.
+    if (lastKnown && !usage.cloudCredits && !usage.extraUsage) usage.lastKnownCredits = lastKnown;
   } else if (input.usage.credits) {
     const { balance, unlimited } = input.usage.credits;
     if (typeof balance !== "string" || !/^\d+(?:\.\d+)?$/.test(balance) || balance.length > 100 ||
@@ -153,6 +187,11 @@ export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now
     usage.buckets = rows;
   }
   return { provider: input.provider, account: input.account, usage, pace: null } as PollSnapshot;
+}
+
+function parseSnapshot(text: string | null | undefined): PollSnapshot | undefined {
+  if (!text) return undefined;
+  try { return JSON.parse(text) as PollSnapshot; } catch { return undefined; }
 }
 
 export class CapacityPollStore {
@@ -195,8 +234,10 @@ export class CapacityPollStore {
   // the validated fallback value, so it cannot steal or extend local state.
   cacheSnapshot(provider: PollProvider, account: string, value: unknown): void {
     const key = pollKey(provider, account);
-    const snapshot = sanitizePollSnapshot(value, key);
+    const fresh = sanitizePollSnapshot(value, key);
     this.db.transaction(() => {
+      const row = this.db.query<PollRow, [string]>("SELECT * FROM capacity_poll WHERE account_key=?").get(key);
+      const snapshot = carryLastKnownCredits(parseSnapshot(row?.snapshot), fresh);
       this.db.query(`INSERT INTO capacity_poll(account_key,next_at,lease,failures,snapshot) VALUES(?,?, '',0,?)
         ON CONFLICT(account_key) DO UPDATE SET snapshot=excluded.snapshot`)
         .run(key, 0, JSON.stringify(snapshot));
@@ -206,10 +247,11 @@ export class CapacityPollStore {
   complete(provider: PollProvider, account: string, lease: string,
     result: { snapshot?: unknown; status?: number; retryAfterMs?: number }, now = Date.now()): boolean {
     const key = pollKey(provider, account);
-    const snapshot = result.snapshot === undefined ? undefined : sanitizePollSnapshot(result.snapshot, key);
+    const fresh = result.snapshot === undefined ? undefined : sanitizePollSnapshot(result.snapshot, key);
     return this.db.transaction(() => {
       const row = this.db.query<PollRow, [string]>("SELECT * FROM capacity_poll WHERE account_key=?").get(key);
       if (!row || row.lease !== lease) return false;
+      const snapshot = fresh ? carryLastKnownCredits(parseSnapshot(row.snapshot), fresh) : undefined;
       const failures = snapshot ? 0 : Math.min(row.failures + 1, 8);
       const backoff = snapshot ? 0 : result.status === 429
         ? RATE_LIMIT_COOLDOWN_MS * 2 ** Math.min(failures - 1, 2)
@@ -303,7 +345,11 @@ export async function coordinatedCapacity<T extends PollSnapshot>(
     let failure: unknown;
     try {
       snapshot = await read();
-      if (snapshot) sanitizePollSnapshot(snapshot, key);
+      if (snapshot) {
+        // The local cache holds the figures kept so far; a shared snapshot from a server without them must not erase them.
+        snapshot = carryLastKnownCredits(local.cached(provider, account) ?? claim.snapshot, snapshot);
+        sanitizePollSnapshot(snapshot, key);
+      }
     } catch (error) { failure = error; }
     const error = failure as { status?: number; retryAfterMs?: number; message?: string } | undefined;
     const result = {
