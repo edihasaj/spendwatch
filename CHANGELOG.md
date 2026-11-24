@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- Name Codex accounts by their profile instead of their position. With three signed-in
+  Codex accounts, the card order followed email, so the Business account became
+  "Codex Secondary" and the personal account "Codex 3". The collector now reads the
+  `~/.codex-<name>` directory and sends it as the account's profile, so `~/.codex-secondary`
+  is "Codex Secondary" and `~/.codex-tertiary` is "Codex Tertiary", as Claude cards already were.
+
 - Keep a Claude account's credit figures visible after its allowance runs out. When
   extra usage is exhausted, Anthropic's usage endpoint stops returning the credit
   blocks, and the card lost its credit line entirely. The collector now marks that

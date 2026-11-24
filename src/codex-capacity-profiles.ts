@@ -12,7 +12,7 @@
 // with `codexClaims` and the native `account/read`.
 import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 /** The default home plus named profiles, in the same scope history discovery uses. */
 const CODEX_DEFAULT = ".codex";
@@ -61,6 +61,16 @@ function realpathOf(path: string): string | undefined {
  * argument that this function neither requires nor creates. A profile with no
  * session directory at all is still a signed-in profile with a real quota.
  */
+/**
+ * The profile name a home carries in its directory: `~/.codex-tertiary` is `tertiary`. The default `~/.codex`
+ * has none, and neither does a home whose suffix is not a plain name, so it can never name or order a card.
+ */
+export function codexProfileName(home: string): string | undefined {
+  const name = basename(home);
+  const suffix = name.startsWith(CODEX_PREFIX) ? name.slice(CODEX_PREFIX.length) : "";
+  return /^[a-z0-9][a-z0-9-]{0,31}$/.test(suffix) ? suffix : undefined;
+}
+
 export function codexCapacityProfileHomes(home = homedir()): string[] {
   const names = safeReaddir(home)
     .filter((name) => name === CODEX_DEFAULT || name.startsWith(CODEX_PREFIX))

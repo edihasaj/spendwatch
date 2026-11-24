@@ -882,6 +882,21 @@ describe("Claude profiles name and order accounts", () => {
     ]);
   });
 
+  test("a named Codex profile is its label, not its position among the signed-in accounts", () => {
+    const codex = (email: string, profile?: string) => ({ account: email, provider: "codex", usage: { accountEmail: email, loginMethod: "pro",
+      ...(profile ? { profile } : {}), primary: { usedPercent: 1, windowMinutes: 300 }, secondary: null, tertiary: null, updatedAt: "2026-11-24T20:00:00Z" } });
+    // Alphabetical email order puts the Business account between the other two; the profile names decide instead.
+    const accounts = normalizeCodexLimits([
+      codex("edihasaj@example.com", "secondary"), codex("edi@example.org", "tertiary"), codex("edi.hasaj@example.com", "primary"),
+    ]);
+    expect(accounts.map((account) => [account.name, account.email])).toEqual([
+      ["Codex Primary", "edi.hasaj@example.com"], ["Codex Secondary", "edihasaj@example.com"], ["Codex Tertiary", "edi@example.org"],
+    ]);
+    // A collector with no profile for the account keeps the profile another collector reported.
+    const merged = normalizeCodexLimits([codex("edi@example.org", "tertiary"), { ...codex("edi@example.org"), usage: { ...codex("edi@example.org").usage, updatedAt: "2026-11-24T21:00:00Z" } }]);
+    expect(merged[0]!.profile).toBe("tertiary");
+  });
+
   test("the tertiary Claude card comes after every other provider", () => {
     const codex = { account: "c@example.com", provider: "codex", usage: { accountEmail: "c@example.com", loginMethod: "pro",
       primary: { usedPercent: 1, windowMinutes: 300 }, secondary: null, tertiary: null, updatedAt: "2026-11-17T20:00:00Z" } };
