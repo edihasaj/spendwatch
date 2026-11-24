@@ -148,13 +148,15 @@ export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now
     updatedAt: input.usage.updatedAt,
   };
   if (!usage.primary && !usage.secondary && !usage.tertiary) throw new Error("missing capacity windows");
+  if (input.provider === "claude" || input.provider === "codex") {
+    // The profile name orders and labels the account; anything but a plain directory suffix is dropped.
+    const profile = (input.usage as { profile?: unknown }).profile;
+    if (typeof profile === "string" && /^[a-z0-9][a-z0-9-]{0,31}$/.test(profile)) usage.profile = profile;
+  }
   if (input.provider === "claude") {
     const claudeUsage = input.usage;
     usage.accountOrganization = typeof claudeUsage.accountOrganization === "string"
       ? claudeUsage.accountOrganization.slice(0, 320) : undefined;
-    // The profile name orders and labels the account; anything but a plain directory suffix is dropped.
-    const profile = (claudeUsage as { profile?: unknown }).profile;
-    if (typeof profile === "string" && /^[a-z0-9][a-z0-9-]{0,31}$/.test(profile)) usage.profile = profile;
     const cloudCredits = sanitizeCloudCredits(claudeUsage.cloudCredits);
     if (cloudCredits) usage.cloudCredits = cloudCredits;
     const extraUsage = sanitizeExtraUsage(claudeUsage.extraUsage);

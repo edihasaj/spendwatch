@@ -462,3 +462,10 @@ test("keeps the last Claude credit figures when the provider stops returning the
   expect(forged.usage).not.toHaveProperty("lastKnownCredits");
   store.close();
 });
+
+test("keeps a Codex profile name through the poll snapshot allowlist and drops a malformed one", () => {
+  const withProfile = (profile: unknown) => sanitizePollSnapshot({ ...snapshot, usage: { ...snapshot.usage, profile } }, "codex:dev@example.com", Date.parse("2026-10-14T10:01:00Z"));
+  expect(withProfile("tertiary").usage.profile).toBe("tertiary");
+  expect(withProfile("../x").usage).not.toHaveProperty("profile");
+  expect(withProfile(7).usage).not.toHaveProperty("profile");
+});

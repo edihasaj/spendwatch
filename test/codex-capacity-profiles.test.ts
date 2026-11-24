@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { codexCapacityProfileHomes } from "../src/codex-capacity-profiles";
+import { codexCapacityProfileHomes, codexProfileName } from "../src/codex-capacity-profiles";
 import { codexClaims, defaultCodexRoots } from "../src/sources";
 
 // A home qualifies on the login it already owns, so the stub carries only the shape
@@ -78,4 +78,13 @@ test("leaves history discovery unchanged: a session-less home is still not a rol
   const home = tempHome();
   stubHome(home, ".codex-secondary", "alex@example.com");
   expect(defaultCodexRoots(home).filter((root) => root.agent === "codex")).toEqual([]);
+});
+
+test("a Codex home names its profile only from a plain .codex-<name> directory", () => {
+  expect(codexProfileName("/Users/dev/.codex-tertiary")).toBe("tertiary");
+  expect(codexProfileName("/Users/dev/.codex-work-2")).toBe("work-2");
+  expect(codexProfileName("/Users/dev/.codex")).toBeUndefined();
+  expect(codexProfileName("/Users/dev/.codex-Bad Name")).toBeUndefined();
+  expect(codexProfileName("/Users/dev/.codex-")).toBeUndefined();
+  expect(codexProfileName("/Users/dev/other")).toBeUndefined();
 });

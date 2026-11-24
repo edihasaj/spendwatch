@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { codexClaims, defaultCodexRoots } from "./sources";
-import { codexCapacityProfileHomes } from "./codex-capacity-profiles";
+import { codexCapacityProfileHomes, codexProfileName } from "./codex-capacity-profiles";
 import { coordinatedCapacity } from "./capacity-poll";
 import { CapacityCoordinatorUnavailableError } from "./capacity-coordinator-client";
 
@@ -66,6 +66,8 @@ export interface CapacityResult {
   usage: {
     accountEmail: string;
     loginMethod?: string;
+    /** The `~/.codex-<name>` profile that holds this login, so the dashboard can name and order accounts by it. */
+    profile?: string;
     primary: CapacityWindow | null;
     secondary: CapacityWindow | null;
     tertiary: CapacityWindow | null;
@@ -334,9 +336,13 @@ export async function currentCodexCapacity(
   // their own `auth.json` first. Feeding `codexClaims` a synthetic `<home>/sessions`
   // path asks it for exactly the file it already reads, without creating a directory
   // or writing any credential.
+  // A login held by the default home and by a named profile keeps the profile's name for its label.
+  const profileNames = new Map<string, string>();
   for (const home of codexCapacityProfileHomes()) {
     const { email } = codexClaims(join(home, "sessions"));
     if (email && !profiles.has(email.toLowerCase())) profiles.set(email.toLowerCase(), home);
+    const name = codexProfileName(home);
+    if (email && name && !profileNames.has(email.toLowerCase())) profileNames.set(email.toLowerCase(), name);
   }
   // History roots remain as well: they carry the Qwen worker homes and any archived
   // home whose live `sessions` directory a worker pruned, and they still win for the
@@ -366,7 +372,10 @@ export async function currentCodexCapacity(
     }
     // A free plan carries no subscription capacity worth planning against.
     if (item.value.usage?.loginMethod === "free" && process.env.SPENDWATCH_INCLUDE_FREE !== "1") continue;
-    byAccount.set(item.value.account.toLowerCase(), item.value);
+    // Attached here, after the coordinator, so a cached shared snapshot from a server without profiles still carries it.
+    const profile = profileNames.get(item.value.account.toLowerCase());
+    byAccount.set(item.value.account.toLowerCase(),
+      profile && item.value.usage.profile !== profile ? { ...item.value, usage: { ...item.value.usage, profile } } : item.value);
   }
   return [...byAccount.values()].sort((a, b) => a.account.localeCompare(b.account));
 }

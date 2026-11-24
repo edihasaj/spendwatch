@@ -34,6 +34,15 @@ account. Discovery only proposes homes: the native `account/read` decides whethe
 a home is a ChatGPT subscription account, and an API-key mode, a free plan, or a
 missing quota window contributes no capacity rather than an estimate.
 
+A Codex card is named by its profile, like a Claude card: `~/.codex-secondary` is
+"Codex Secondary", and `primary`, `secondary` and `tertiary` keep that order. The
+collector reads the name from the home's directory, only from a plain `.codex-<name>`
+suffix, and attaches it to the result after the coordinator step, so a shared snapshot
+from a server that predates profiles still carries it. When the default `~/.codex` and a
+named home hold the same login, the named home gives the label. An account with no
+profile keeps the positional label, which orders by email, so a new login could take
+another account's "Secondary" until it is added under a named profile.
+
 The shared coordinator owns quota attempt timing: Codex may read once a minute,
 Claude once every two minutes, and a rate limit has at least a one-hour
 cooldown. When the coordinator is unavailable, a source can display only its

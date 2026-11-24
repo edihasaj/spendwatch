@@ -77,7 +77,7 @@ export interface CodexLimitAccount {
   provider: CapacityProvider;
   name?: string;
   email: string;
-  /** Claude only: the `~/.claude-<name>` profile holding this login. Names and orders the account. */
+  /** Claude and Codex: the `~/.claude-<name>` or `~/.codex-<name>` profile holding this login. Names and orders the account. */
   profile?: string;
   /** Position within its provider; set during normalization. */
   order?: number;
@@ -552,7 +552,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
       email: emailValue.trim(),
       plan: titleCase(typeof usage.loginMethod === "string" ? usage.loginMethod : "unknown"),
       organization: typeof usage.accountOrganization === "string" ? usage.accountOrganization : undefined,
-      profile: provider === "claude" && typeof usage.profile === "string" && /^[a-z0-9][a-z0-9-]{0,31}$/.test(usage.profile)
+      profile: (provider === "claude" || provider === "codex") && typeof usage.profile === "string" && /^[a-z0-9][a-z0-9-]{0,31}$/.test(usage.profile)
         ? usage.profile : undefined,
       quotaPool: provider === "codex" ? normalizeQuotaPool(usage.quotaPool) : undefined,
       updatedAt,
@@ -629,7 +629,7 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
         || a.email.localeCompare(b.email));
     for (const [index, account] of group.entries()) {
       account.order = index;
-      // A named Claude profile is its own label (`~/.claude-tertiary` → "Claude Tertiary"), so adding an
+      // A named profile is its own label (`~/.claude-tertiary` → "Claude Tertiary", `~/.codex-secondary` → "Codex Secondary"), so adding an
       // account never renumbers the others. Accounts without one keep the positional label.
       const suffix = account.profile
         ? ` ${titleCase(account.profile.replace(/-/g, " "))}`
