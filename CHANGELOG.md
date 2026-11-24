@@ -1,6 +1,22 @@
 # Changelog
 
 ## Unreleased
+- Name Codex accounts by their profile instead of their position. With three signed-in
+  Codex accounts, the card order followed email, so the Business account became
+  "Codex Secondary" and the personal account "Codex 3". The collector now reads the
+  `~/.codex-<name>` directory and sends it as the account's profile, so `~/.codex-secondary`
+  is "Codex Secondary" and `~/.codex-tertiary` is "Codex Tertiary", as Claude cards already were.
+
+- Keep a Claude account's credit figures visible after its allowance runs out. When
+  extra usage is exhausted, Anthropic's usage endpoint stops returning the credit
+  blocks, and the card lost its credit line entirely. The collector now marks that
+  reading exhausted, the poll store carries the last known cloud-credit and extra-usage
+  figures forward with the time they were read, and the card shows them as exhausted
+  ("Extra usage exhausted: $1,500.00 / $1,500.00 used, last seen 2026-11-24"), or
+  "Credits exhausted" when no earlier figure was recorded. Live figures always replace
+  the kept ones. A shared coordinator must be redeployed to carry the figures across
+  Macs; a Mac that has not seen them before the block disappeared cannot recover them.
+
 - Keep the capacity monitor responsive when another PostgreSQL writer holds the
   shared advisory lock. The monitor defers observation until its next poll
   and leaves alert state intact. During a failure episode, each stage reports

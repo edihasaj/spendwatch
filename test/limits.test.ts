@@ -602,6 +602,29 @@ describe("Codex limits", () => {
     expect(text).toContain("\tunlimited credits");
   });
 
+  test("shows an exhausted Claude allowance with its last known figures instead of hiding it", () => {
+    const now = Date.parse("2026-11-24T21:00:00Z");
+    const claude = (extra: object) => normalizeCodexLimits([{
+      provider: "claude",
+      account: "team@example.com",
+      usage: { accountEmail: "team@example.com", loginMethod: "team", primary: { usedPercent: 100, windowMinutes: 300 }, updatedAt: "2026-11-24T20:59:00Z", ...extra },
+    }]);
+    const known = { observedAt: "2026-11-24T10:00:00.000Z", extraUsage: { usedAmount: 1500, limitAmount: 1500, currency: "USD" } };
+
+    const withFigures = claude({ creditsExhausted: true, lastKnownCredits: known });
+    expect(renderLimitsText(withFigures, now)).toContain("\tExtra usage exhausted: $1,500.00 / $1,500.00 used, last seen 2026-11-24");
+    expect(renderLimitsHtml(withFigures, { generatedAt: now })).toContain(">Extra usage exhausted: $1,500.00 / $1,500.00 used, last seen 2026-11-24</span>");
+
+    // No figure was ever recorded: say it is exhausted without inventing an amount.
+    expect(renderLimitsText(claude({ creditsExhausted: true }), now)).toContain("\tCredits exhausted");
+
+    // Kept figures are only shown while the provider reports the allowance spent, and live figures always win.
+    expect(renderLimitsText(claude({ lastKnownCredits: known }), now)).not.toContain("exhausted");
+    const live = claude({ creditsExhausted: true, lastKnownCredits: known, extraUsage: { usedAmount: 3, limitAmount: 50, currency: "USD" } });
+    expect(renderLimitsText(live, now)).toContain("\t$3.00 / $50.00 extra usage");
+    expect(renderLimitsText(live, now)).not.toContain("exhausted");
+  });
+
   test("hides expired or locked promotional cloud credits", () => {
     const now = Date.parse("2026-08-09T20:55:00Z");
     const accounts = normalizeCodexLimits([
@@ -857,6 +880,21 @@ describe("Claude profiles name and order accounts", () => {
     expect(accounts.map((account) => [account.name, account.email])).toEqual([
       ["Claude Primary", "owner@example.com"], ["Claude Secondary", "personal@example.com"], ["Claude Tertiary", "work@example.com"],
     ]);
+  });
+
+  test("a named Codex profile is its label, not its position among the signed-in accounts", () => {
+    const codex = (email: string, profile?: string) => ({ account: email, provider: "codex", usage: { accountEmail: email, loginMethod: "pro",
+      ...(profile ? { profile } : {}), primary: { usedPercent: 1, windowMinutes: 300 }, secondary: null, tertiary: null, updatedAt: "2026-11-24T20:00:00Z" } });
+    // Alphabetical email order puts the Business account between the other two; the profile names decide instead.
+    const accounts = normalizeCodexLimits([
+      codex("edihasaj@example.com", "secondary"), codex("edi@example.org", "tertiary"), codex("edi.hasaj@example.com", "primary"),
+    ]);
+    expect(accounts.map((account) => [account.name, account.email])).toEqual([
+      ["Codex Primary", "edi.hasaj@example.com"], ["Codex Secondary", "edihasaj@example.com"], ["Codex Tertiary", "edi@example.org"],
+    ]);
+    // A collector with no profile for the account keeps the profile another collector reported.
+    const merged = normalizeCodexLimits([codex("edi@example.org", "tertiary"), { ...codex("edi@example.org"), usage: { ...codex("edi@example.org").usage, updatedAt: "2026-11-24T21:00:00Z" } }]);
+    expect(merged[0]!.profile).toBe("tertiary");
   });
 
   test("the tertiary Claude card comes after every other provider", () => {

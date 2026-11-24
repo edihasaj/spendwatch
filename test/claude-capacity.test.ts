@@ -138,6 +138,29 @@ describe("Claude capacity", () => {
     expect(result?.usage.extraUsage).toBeUndefined();
   });
 
+  test("flags an exhausted extra-usage allowance the API reports as a disabled block with no amounts", () => {
+    const exhausted = claudeCapacityFromUsage({
+      ...usage,
+      iguana_necktie: null,
+      extra_usage: {
+        is_enabled: false, monthly_limit: null, used_credits: null, currency: "USD",
+        disabled_reason: "org_level_disabled_until", spend_limit_reached: true, credits_ever_enabled: true,
+      },
+    }, { email: "user@example.com" });
+    expect(exhausted?.usage.creditsExhausted).toBe(true);
+    expect(exhausted?.usage.extraUsage).toBeUndefined();
+    expect(exhausted?.usage.primary).not.toBeNull();
+
+    // A disabled block that never reached its limit is not an exhausted one, and live figures win over the flag.
+    const never = claudeCapacityFromUsage({ ...usage, extra_usage: { is_enabled: false, spend_limit_reached: false } }, { email: "user@example.com" });
+    expect(never?.usage).not.toHaveProperty("creditsExhausted");
+    const live = claudeCapacityFromUsage({
+      ...usage, extra_usage: { is_enabled: true, monthly_limit: 5000, used_credits: 5000, spend_limit_reached: true },
+    }, { email: "user@example.com" });
+    expect(live?.usage.extraUsage).toEqual({ usedAmount: 50, limitAmount: 50, currency: "USD" });
+    expect(live?.usage).not.toHaveProperty("creditsExhausted");
+  });
+
   test("discovers the default profile and named profiles", () => {
     const base = tempDir("spendwatch-claude-");
     const write = (home: string, metadata: string, email: string, plan: string) => {
