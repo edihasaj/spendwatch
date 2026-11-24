@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
-import { paceFor, type CapacityCloudCredits, type CapacityExtraUsage, type CapacityPaceWindow, type CapacityWindow } from "./capacity-current";
+import { paceFor, type CapacityCloudCredits, type CapacityExtraUsage, type CapacityLastKnownCredits, type CapacityPaceWindow, type CapacityWindow } from "./capacity-current";
 import { coordinatedCapacity, retryAfterMs } from "./capacity-poll";
 import {
   freshestClaudeKeychainCredential,
@@ -54,6 +54,10 @@ export interface ClaudeCapacityResult {
     cloudCredits?: CapacityCloudCredits;
     /** Paid extra usage beyond the plan, converted from cents. */
     extraUsage?: CapacityExtraUsage;
+    /** The provider reports the extra-usage spend limit reached and no longer returns a credit block. */
+    creditsExhausted?: true;
+    /** Last credit figures read before the provider stopped returning them; set by the poll store, never by the API. */
+    lastKnownCredits?: CapacityLastKnownCredits;
     updatedAt: string;
   };
   pace: {
@@ -97,6 +101,7 @@ interface RawExtraUsage {
   monthly_limit?: unknown;
   used_credits?: unknown;
   currency?: unknown;
+  spend_limit_reached?: unknown;
 }
 
 // The endpoint recomputes reset times per call, so the sub-second part drifts
@@ -168,6 +173,10 @@ export function claudeCapacityFromUsage(
   if (!primary && !secondary) return undefined;
   const cloudCredits = cloudCreditsFrom(raw.iguana_necktie);
   const extraUsage = extraUsageFrom(raw.extra_usage);
+  // An exhausted allowance is reported as a disabled block with the limit flag set and no amounts, so the
+  // flag, not the missing figures, is what says "spent" rather than "never had any".
+  const creditsExhausted = !cloudCredits && !extraUsage &&
+    raw.extra_usage?.spend_limit_reached === true && raw.extra_usage.is_enabled !== true;
   return {
     provider: "claude",
     account: identity.email,
@@ -181,6 +190,7 @@ export function claudeCapacityFromUsage(
       tertiary,
       ...(cloudCredits ? { cloudCredits } : {}),
       ...(extraUsage ? { extraUsage } : {}),
+      ...(creditsExhausted ? { creditsExhausted: true as const } : {}),
       updatedAt: new Date(now).toISOString(),
     },
     pace: {

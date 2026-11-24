@@ -423,3 +423,42 @@ test("a Claude snapshot keeps a plain profile name and drops anything else", () 
   expect((sanitizePollSnapshot(base("tertiary"), "claude:work@example.com", now).usage as { profile?: string }).profile).toBe("tertiary");
   expect((sanitizePollSnapshot(base("../x"), "claude:work@example.com", now).usage as { profile?: string }).profile).toBeUndefined();
 });
+
+test("keeps the last Claude credit figures when the provider stops returning them, until live ones return", () => {
+  const account = "claude@example.com";
+  const reading = (at: string, extra: object) => ({
+    provider: "claude" as const, account, pace: null,
+    usage: { accountEmail: account, primary: { usedPercent: 100, windowMinutes: 300 }, secondary: null, tertiary: null, updatedAt: at, ...extra },
+  });
+  const store = new CapacityPollStore(":memory:");
+  const poll = (value: object, now: number) => {
+    const claim = store.claim("claude", account, now);
+    expect(store.complete("claude", account, claim.lease!, { snapshot: value }, now)).toBe(true);
+    return store.cached("claude", account)!.usage as Record<string, unknown>;
+  };
+
+  const live = poll(reading("2026-11-20T10:00:00.000Z", { extraUsage: { usedAmount: 1500, limitAmount: 1500, currency: "USD" } }), Date.parse("2026-11-20T10:00:00Z"));
+  expect(live).not.toHaveProperty("lastKnownCredits");
+
+  // The API drops the block; the store overwrites its row but keeps what it last read, and when.
+  const gone = poll(reading("2026-11-20T20:00:00.000Z", { creditsExhausted: true }), Date.parse("2026-11-20T20:00:00Z"));
+  expect(gone.lastKnownCredits).toEqual({
+    observedAt: "2026-11-20T10:00:00.000Z",
+    extraUsage: { usedAmount: 1500, limitAmount: 1500, currency: "USD" },
+  });
+
+  // A later reading that still omits the block keeps the original observation time rather than moving it.
+  const later = poll(reading("2026-11-21T08:00:00.000Z", { creditsExhausted: true }), Date.parse("2026-11-21T08:00:00Z"));
+  expect(later.lastKnownCredits).toMatchObject({ observedAt: "2026-11-20T10:00:00.000Z" });
+
+  // A shared server that predates the field drops it from a cached copy; the local cache path keeps it.
+  store.cacheSnapshot("claude", account, reading("2026-11-21T08:02:00.000Z", { creditsExhausted: true }));
+  expect((store.cached("claude", account)!.usage as Record<string, unknown>).lastKnownCredits).toMatchObject({ observedAt: "2026-11-20T10:00:00.000Z" });
+
+  // Live figures replace the kept ones, and a malformed or future-dated kept block is rejected on the way in.
+  const back = poll(reading("2026-11-22T00:00:00.000Z", { extraUsage: { usedAmount: 0, limitAmount: 200, currency: "USD" }, lastKnownCredits: { observedAt: "2026-11-20T10:00:00.000Z", extraUsage: { usedAmount: 1, limitAmount: 2, currency: "USD" } } }), Date.parse("2026-11-22T00:00:00Z"));
+  expect(back).not.toHaveProperty("lastKnownCredits");
+  const forged = sanitizePollSnapshot(reading("2026-11-20T20:00:00.000Z", { creditsExhausted: true, lastKnownCredits: { observedAt: "2099-01-01T00:00:00.000Z", extraUsage: { usedAmount: 1, limitAmount: 2, currency: "USD" } } }), `claude:${account}`, Date.parse("2026-11-20T20:00:00Z"));
+  expect(forged.usage).not.toHaveProperty("lastKnownCredits");
+  store.close();
+});

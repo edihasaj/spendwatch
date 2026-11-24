@@ -48,6 +48,18 @@ export interface CapacityExtraUsage {
   currency: string;
 }
 
+/**
+ * The credit figures a provider last reported before it stopped reporting them.
+ * A provider that exhausts a credit allowance may drop the whole block, so the
+ * last readings are kept to show what was spent instead of showing nothing.
+ */
+export interface CapacityLastKnownCredits {
+  /** When the retained figures were last read from the provider (ISO). */
+  observedAt: string;
+  cloudCredits?: CapacityCloudCredits;
+  extraUsage?: CapacityExtraUsage;
+}
+
 export interface CapacityResult {
   provider: "codex";
   account: string;

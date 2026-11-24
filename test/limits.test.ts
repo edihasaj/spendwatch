@@ -602,6 +602,29 @@ describe("Codex limits", () => {
     expect(text).toContain("\tunlimited credits");
   });
 
+  test("shows an exhausted Claude allowance with its last known figures instead of hiding it", () => {
+    const now = Date.parse("2026-11-24T21:00:00Z");
+    const claude = (extra: object) => normalizeCodexLimits([{
+      provider: "claude",
+      account: "team@example.com",
+      usage: { accountEmail: "team@example.com", loginMethod: "team", primary: { usedPercent: 100, windowMinutes: 300 }, updatedAt: "2026-11-24T20:59:00Z", ...extra },
+    }]);
+    const known = { observedAt: "2026-11-24T10:00:00.000Z", extraUsage: { usedAmount: 1500, limitAmount: 1500, currency: "USD" } };
+
+    const withFigures = claude({ creditsExhausted: true, lastKnownCredits: known });
+    expect(renderLimitsText(withFigures, now)).toContain("\tExtra usage exhausted: $1,500.00 / $1,500.00 used, last seen 2026-11-24");
+    expect(renderLimitsHtml(withFigures, { generatedAt: now })).toContain(">Extra usage exhausted: $1,500.00 / $1,500.00 used, last seen 2026-11-24</span>");
+
+    // No figure was ever recorded: say it is exhausted without inventing an amount.
+    expect(renderLimitsText(claude({ creditsExhausted: true }), now)).toContain("\tCredits exhausted");
+
+    // Kept figures are only shown while the provider reports the allowance spent, and live figures always win.
+    expect(renderLimitsText(claude({ lastKnownCredits: known }), now)).not.toContain("exhausted");
+    const live = claude({ creditsExhausted: true, lastKnownCredits: known, extraUsage: { usedAmount: 3, limitAmount: 50, currency: "USD" } });
+    expect(renderLimitsText(live, now)).toContain("\t$3.00 / $50.00 extra usage");
+    expect(renderLimitsText(live, now)).not.toContain("exhausted");
+  });
+
   test("hides expired or locked promotional cloud credits", () => {
     const now = Date.parse("2026-08-09T20:55:00Z");
     const accounts = normalizeCodexLimits([

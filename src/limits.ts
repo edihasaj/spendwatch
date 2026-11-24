@@ -10,7 +10,7 @@ import { renderCapacityPlan } from "./capacity-card-plan";
 import { CAPACITY_CARD_CSS } from "./capacity-card-styles";
 import { compactDuration } from "./duration";
 import { normalizeLocalQwenCapacity } from "./local-capacity";
-import type { CapacityCloudCredits, CapacityExtraUsage } from "./capacity-current";
+import type { CapacityCloudCredits, CapacityExtraUsage, CapacityLastKnownCredits } from "./capacity-current";
 import type {
   OpenRouterCapacity,
   OpenRouterHistory,
@@ -93,6 +93,10 @@ export interface CodexLimitAccount {
   cloudCredits?: CapacityCloudCredits;
   /** Metered pay-as-you-go usage beyond the plan. */
   extraUsage?: CapacityExtraUsage;
+  /** The provider reports the credit allowance spent and no longer returns its figures. */
+  creditsExhausted?: true;
+  /** The credit figures last read before the provider stopped returning them. */
+  lastKnownCredits?: CapacityLastKnownCredits;
   /** Account balance and retained completed-day usage for OpenRouter. */
   openrouter?: OpenRouterCapacity;
   /** Spend for a plan-covered agent with no quota to report. */
@@ -143,6 +147,8 @@ interface RawCodexUsage {
   credits?: { balance?: unknown; unlimited?: unknown } | null;
   cloudCredits?: { limitUsd?: unknown; remainingUsd?: unknown; expiresAt?: unknown; locked?: unknown } | null;
   extraUsage?: { usedAmount?: unknown; limitAmount?: unknown; currency?: unknown } | null;
+  creditsExhausted?: unknown;
+  lastKnownCredits?: { observedAt?: unknown; cloudCredits?: unknown; extraUsage?: unknown } | null;
   updatedAt?: unknown;
 }
 
@@ -314,6 +320,16 @@ function validIso(value: unknown): string | undefined {
   return year >= 2000 && year <= 2100 ? value : undefined;
 }
 
+function normalizeLastKnownCredits(value: unknown): CapacityLastKnownCredits | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as NonNullable<RawCodexUsage["lastKnownCredits"]>;
+  const observedAt = validIso(raw.observedAt);
+  const cloudCredits = normalizeCloudCredits(raw.cloudCredits);
+  const extraUsage = normalizeExtraUsage(raw.extraUsage);
+  if (!observedAt || (!cloudCredits && !extraUsage)) return undefined;
+  return { observedAt, ...(cloudCredits ? { cloudCredits } : {}), ...(extraUsage ? { extraUsage } : {}) };
+}
+
 function normalizeUsageTotals(value: unknown): OpenRouterUsageTotals | undefined {
   if (!value || typeof value !== "object") return undefined;
   const raw = value as Record<string, unknown>;
@@ -460,6 +476,30 @@ function creditLines(account: CodexLimitAccount, nowMs: number, capitalizeUnlimi
       title: "Paid extra usage this month, used after the plan limits",
     });
   }
+  // A spent allowance is shown with the figures it last reported, never as an absent block.
+  if (account.creditsExhausted && !cloud && !extra) {
+    const known = account.lastKnownCredits;
+    const seen = known ? new Date(known.observedAt).toISOString().slice(0, 10) : undefined;
+    const when = seen ? `, last seen ${seen}` : "";
+    if (known?.extraUsage) {
+      lines.push({
+        text: `Extra usage exhausted: ${formatMoney(known.extraUsage.usedAmount, known.extraUsage.currency)} / ${formatMoney(known.extraUsage.limitAmount, known.extraUsage.currency)} used${when}`,
+        title: "The provider reports the extra-usage spend limit reached and no longer returns its balance; these are the last figures it reported",
+      });
+    }
+    if (known?.cloudCredits) {
+      lines.push({
+        text: `Cloud credits exhausted: ${formatMoney(known.cloudCredits.remainingUsd, "USD")} of ${formatMoney(known.cloudCredits.limitUsd, "USD")} left${when}`,
+        title: "The provider no longer returns the cloud-credit allowance; these are the last figures it reported",
+      });
+    }
+    if (!known) {
+      lines.push({
+        text: "Credits exhausted",
+        title: "The provider reports the extra-usage spend limit reached and returns no balance; no earlier figure was recorded",
+      });
+    }
+  }
   return lines;
 }
 
@@ -530,6 +570,11 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
     if (cloudCredits) account.cloudCredits = cloudCredits;
     const extraUsage = normalizeExtraUsage(usage.extraUsage);
     if (extraUsage) account.extraUsage = extraUsage;
+    if (provider === "claude" && usage.creditsExhausted === true) {
+      account.creditsExhausted = true;
+      const lastKnown = normalizeLastKnownCredits(usage.lastKnownCredits);
+      if (lastKnown) account.lastKnownCredits = lastKnown;
+    }
     if (provider === "openrouter") {
       const openrouter = normalizeOpenRouter(result.openrouter);
       if (!openrouter) continue;

@@ -82,6 +82,23 @@ part of strict snapshot validation. A null Codex balance is an absent credit
 reading, so it does not discard valid quota windows. Unlimited credits with no
 balance use the existing zero-balance representation.
 
+An exhausted Claude allowance is not an absent one. When extra usage runs out, the
+usage endpoint stops returning the credit blocks: the cloud-credit block is null and
+`extra_usage` becomes disabled with `spend_limit_reached: true` and no amounts. The
+collector marks that reading `creditsExhausted`, and only when no live credit figure
+is present, so a disabled block that never reached its limit stays unmarked. The
+capacity poll store holds one row per account and overwrites it on every poll, so it
+also carries the last credit figures forward as `lastKnownCredits`, with the time they
+were last read from the provider. A reading that still omits them keeps the original
+time; live figures replace and clear it. The carry runs in `complete`, in the local
+`cacheSnapshot`, and in the collector, so a shared server that predates the field
+cannot erase what this Mac already holds. The kept block is re-validated on every
+write and read, and a future-dated one is dropped. The card shows the kept figures as
+"exhausted" with their last-seen date, only while the provider reports the allowance
+spent, and says "Credits exhausted" without an amount when no figure was ever
+recorded. History tables do not store credit figures, so the first reading that omits
+a block can only keep what the store was already holding.
+
 Named Claude profiles can keep their login in macOS Keychain rather than in
 `.credentials.json`. Discovery uses only the profile's exact service,
 `Claude Code-credentials-` followed by the first eight SHA-256 hex characters
