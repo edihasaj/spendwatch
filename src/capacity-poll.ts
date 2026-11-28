@@ -210,8 +210,7 @@ export class CapacityPollStore {
       CREATE TABLE IF NOT EXISTS capacity_poll (
         account_key TEXT PRIMARY KEY, next_at INTEGER NOT NULL,
         lease TEXT NOT NULL, failures INTEGER NOT NULL DEFAULT 0, snapshot TEXT
-      );
-      CREATE TABLE IF NOT EXISTS capacity_direct (account_key TEXT PRIMARY KEY, next_at INTEGER NOT NULL);`);
+      );`);
   }
 
   claim(provider: PollProvider, account: string, now = Date.now()): PollClaim {
@@ -275,12 +274,22 @@ export class CapacityPollStore {
     }).immediate();
   }
 
+  // Created on first use, never in the constructor: only a collector reads
+  // directly, and the shared server store must not need a schema change.
+  private directTable = false;
+  private ensureDirectTable(): void {
+    if (this.directTable) return;
+    this.db.exec("CREATE TABLE IF NOT EXISTS capacity_direct (account_key TEXT PRIMARY KEY, next_at INTEGER NOT NULL)");
+    this.directTable = true;
+  }
+
   /**
    * Reserves this machine's direct read of an account whose shared snapshot is
    * stale. Local only: it never touches the shared lease or cooldown.
    */
   claimDirect(provider: PollProvider, account: string, now = Date.now()): boolean {
     const key = pollKey(provider, account);
+    this.ensureDirectTable();
     return this.db.transaction(() => {
       const row = this.db.query<{ next_at: number }, [string]>(
         "SELECT next_at FROM capacity_direct WHERE account_key=?").get(key);
@@ -294,6 +303,7 @@ export class CapacityPollStore {
   /** Pushes this machine's next direct read out after a rate limit. */
   deferDirect(provider: PollProvider, account: string, until: number): void {
     const key = pollKey(provider, account);
+    this.ensureDirectTable();
     this.db.query(`INSERT INTO capacity_direct(account_key,next_at) VALUES(?,?)
       ON CONFLICT(account_key) DO UPDATE SET next_at=MAX(next_at,excluded.next_at)`).run(key, until);
   }
