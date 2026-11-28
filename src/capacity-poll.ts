@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import type { CapacityCloudCredits, CapacityExtraUsage, CapacityLastKnownCredits, CapacityResult, CapacityWindow } from "./capacity-current";
 import type { ClaudeCapacityResult } from "./claude-capacity";
 import type { GeminiCapacityResult } from "./gemini-capacity";
-import { normalizeGeminiRows } from "./gemini-quota";
+import { normalizeGeminiRows, sanitizeGeminiWeek, updateGeminiWeek } from "./gemini-quota";
 import {
   CapacityCoordinatorUnavailableError,
   coordinatorAccessHeaders,
@@ -116,6 +116,27 @@ export function carryLastKnownCredits<T extends PollSnapshot>(previous: PollSnap
   return { ...next, usage: { ...usage, lastKnownCredits: kept } } as T;
 }
 
+/**
+ * Carries a Gemini account's seven-day window ledger forward. Google reports only the current five-hour window, so
+ * the ledger exists only because every reading folds itself into the one before it; the snapshot store overwrites
+ * its row on every poll, and without this the week would restart with each reading.
+ */
+export function carryGeminiWeek<T extends PollSnapshot>(previous: PollSnapshot | undefined, next: T): T {
+  if (next.provider !== "gemini") return next;
+  const usage = next.usage as GeminiCapacityResult["usage"];
+  const readAt = Date.parse(usage.updatedAt);
+  if (!Number.isFinite(readAt)) return next;
+  const prior = previous?.provider === "gemini" ? (previous.usage as GeminiCapacityResult["usage"]).week : undefined;
+  const week = updateGeminiWeek([prior, usage.week], usage.buckets ?? [], readAt);
+  const { week: _dropped, ...rest } = usage;
+  return { ...next, usage: week ? { ...rest, week } : rest } as T;
+}
+
+/** Every figure a reading inherits from the one before it. */
+export function carrySnapshot<T extends PollSnapshot>(previous: PollSnapshot | undefined, next: T): T {
+  return carryGeminiWeek(previous, carryLastKnownCredits(previous, next));
+}
+
 // Allowlist the projection before persisting anything supplied by a collector.
 // Tokens, provider responses and exception messages must never enter this table.
 export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now()): PollSnapshot {
@@ -191,6 +212,8 @@ export function sanitizePollSnapshot(value: unknown, key: string, now = Date.now
     const rows = normalizeGeminiRows((input.usage as { buckets?: unknown }).buckets);
     if (!rows) throw new Error("invalid capacity buckets");
     usage.buckets = rows;
+    const week = sanitizeGeminiWeek((input.usage as { week?: unknown }).week, now);
+    if (week) usage.week = week;
   }
   return { provider: input.provider, account: input.account, usage, pace: null } as PollSnapshot;
 }
@@ -246,7 +269,7 @@ export class CapacityPollStore {
       const previous = parseSnapshot(row?.snapshot);
       // A stale shared snapshot must not replace a newer reading this machine made itself.
       if (previous && snapshotTime(previous) > snapshotTime(fresh)) return;
-      const snapshot = carryLastKnownCredits(previous, fresh);
+      const snapshot = carrySnapshot(previous, fresh);
       this.db.query(`INSERT INTO capacity_poll(account_key,next_at,lease,failures,snapshot) VALUES(?,?, '',0,?)
         ON CONFLICT(account_key) DO UPDATE SET snapshot=excluded.snapshot`)
         .run(key, 0, JSON.stringify(snapshot));
@@ -260,7 +283,7 @@ export class CapacityPollStore {
     return this.db.transaction(() => {
       const row = this.db.query<PollRow, [string]>("SELECT * FROM capacity_poll WHERE account_key=?").get(key);
       if (!row || row.lease !== lease) return false;
-      const snapshot = fresh ? carryLastKnownCredits(parseSnapshot(row.snapshot), fresh) : undefined;
+      const snapshot = fresh ? carrySnapshot(parseSnapshot(row.snapshot), fresh) : undefined;
       const failures = snapshot ? 0 : Math.min(row.failures + 1, 8);
       const backoff = snapshot ? 0 : result.status === 429
         ? RATE_LIMIT_COOLDOWN_MS * 2 ** Math.min(failures - 1, 2)
@@ -404,7 +427,7 @@ export async function coordinatedCapacity<T extends PollSnapshot>(
       try {
         const direct = await read();
         if (!direct) return newest as T | undefined;
-        const kept = carryLastKnownCredits(newest, direct);
+        const kept = carrySnapshot(newest, direct);
         sanitizePollSnapshot(kept, key);
         local.cacheSnapshot(provider, account, kept);
         return kept;
@@ -423,7 +446,7 @@ export async function coordinatedCapacity<T extends PollSnapshot>(
       snapshot = await read();
       if (snapshot) {
         // The local cache holds the figures kept so far; a shared snapshot from a server without them must not erase them.
-        snapshot = carryLastKnownCredits(local.cached(provider, account) ?? claim.snapshot, snapshot);
+        snapshot = carrySnapshot(local.cached(provider, account) ?? claim.snapshot, snapshot);
         sanitizePollSnapshot(snapshot, key);
       }
     } catch (error) { failure = error; }

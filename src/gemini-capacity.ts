@@ -23,7 +23,7 @@ import { geminiQuotaFromBuckets, type GeminiQuotaRow } from "./gemini-quota";
 import { installedGeminiOAuthClient, type GeminiOAuthClient } from "./gemini-oauth-client";
 import { GeminiReadError } from "./gemini-read-error";
 import { readAntigravityQuota, type AntigravityReadOptions } from "./antigravity-capacity";
-import type { GeminiQuota } from "./gemini-quota";
+import type { GeminiQuota, GeminiWeek } from "./gemini-quota";
 
 /** Mirror of the CLI's own endpoint constants (chunk-37D3S3FZ.js:333387-333388). */
 export const GEMINI_CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
@@ -63,6 +63,8 @@ export interface GeminiCapacityResult {
     tertiary: CapacityWindow | null;
     /** One row per collapsed model allowance, most useful order first. */
     buckets: GeminiQuotaRow[];
+    /** The seven-day window ledger the poll store carries forward (Antigravity sign-ins). */
+    week?: GeminiWeek;
     updatedAt: string;
   };
   pace: {

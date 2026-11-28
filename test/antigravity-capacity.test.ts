@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { currentGeminiCapacity, type GeminiReadFailure } from "../src/gemini-capacity";
 import { antigravityUserAgent } from "../src/antigravity-capacity";
 import { scanGeminiHomes } from "../src/gemini-credential";
-import { geminiQuotaFromAntigravityModels, geminiQuotaFromRows } from "../src/gemini-quota";
+import { antigravityWeeklyCapped, geminiQuotaFromAntigravityModels, geminiQuotaFromRows, geminiWeekSummary, updateGeminiWeek } from "../src/gemini-quota";
+import { carrySnapshot, pollKey, sanitizePollSnapshot } from "../src/capacity-poll";
 import { normalizeCodexLimits, renderLimitsHtml } from "../src/limits";
 import { geminiLimits } from "../src/gemini-capacity-card";
 import { tempDir } from "./tmp";
@@ -94,15 +95,15 @@ async function read(home: string, url: string, command: string, failures: Gemini
 }
 
 describe("Antigravity quota pools", () => {
-  test("folds every Gemini model into one pool and leaves out Claude, GPT and internal models", () => {
+  test("folds every model into its pool and skips internal models", () => {
     const quota = geminiQuotaFromAntigravityModels(MODELS, NOW)!;
     expect(quota.rows.map((row) => [row.label, row.usedPercent, row.windowMinutes, row.models.length]))
-      .toEqual([["Gemini models", 20, 300, 4]]);
+      .toEqual([["Gemini models", 20, 300, 4], ["Claude & GPT models", 0, 300, 2]]);
     expect(quota.headline?.family).toBe("antigravity-gemini");
     expect(quota.primary).toEqual({ usedPercent: 20, windowMinutes: 300, resetsAt: "2026-11-28T05:35:54.000Z" });
-    expect(quota.secondary).toBeNull();
+    expect(quota.secondary?.resetsAt).toBe("2026-11-28T06:10:58.000Z");
     // A cached snapshot of these rows survives the dashboard's re-validation.
-    expect(geminiQuotaFromRows(quota.rows)?.rows.map((row) => row.label)).toEqual(["Gemini models"]);
+    expect(geminiQuotaFromRows(quota.rows)?.rows.map((row) => row.label)).toEqual(["Gemini models", "Claude & GPT models"]);
   });
 
   test("a pool reads at its tightest model, and bad figures are dropped", () => {
@@ -133,7 +134,55 @@ describe("Antigravity card", () => {
     ])!;
     const rows = geminiLimits({ gemini: two, updatedAt: new Date(NOW).toISOString() }, NOW);
     expect(rows).not.toContain("gemini-group-label");
-    expect(rows).toContain("<strong>70% left</strong><span></span>");
+    expect(rows).toContain("<strong>70% left</strong>");
+    expect(rows).toContain("Timer starts on first use");
+  });
+});
+
+describe("Antigravity weekly ledger", () => {
+  const row = (family: "antigravity-gemini" | "antigravity-partner", usedPercent: number, resetsAt: string) =>
+    ({ label: "x", family, models: ["m"], usedPercent, windowMinutes: 300, resetsAt });
+
+  test("keeps each window's peak, skips untouched pools and drops windows older than a week", () => {
+    const first = updateGeminiWeek([], [row("antigravity-gemini", 10, "2026-11-28T05:00:00Z"), row("antigravity-partner", 0, "2026-11-28T06:00:00Z")], NOW);
+    expect(first).toEqual({ "antigravity-gemini": [{ resetsAt: "2026-11-28T05:00:00.000Z", usedPercent: 10 }] });
+    // A later read of the same window (a few seconds of reset jitter) raises its peak instead of adding a window.
+    const second = updateGeminiWeek([first], [row("antigravity-gemini", 35, "2026-11-28T05:00:20Z")], NOW + 3_600_000);
+    expect(second?.["antigravity-gemini"]).toEqual([{ resetsAt: "2026-11-28T05:00:00.000Z", usedPercent: 35 }]);
+    // The next window adds to the week; a week and six hours on, only the first one has dropped out.
+    const third = updateGeminiWeek([second], [row("antigravity-gemini", 50, "2026-11-28T12:00:00Z")], NOW + 8 * 3_600_000);
+    expect(geminiWeekSummary(third?.["antigravity-gemini"], NOW + 8 * 3_600_000)).toEqual({ windowsUsed: 0.9, windows: 2, capped: false });
+    const later = updateGeminiWeek([third], [], NOW + 7 * 86_400_000 + 6 * 3_600_000);
+    expect(later?.["antigravity-gemini"]?.map((cycle) => cycle.resetsAt)).toEqual(["2026-11-28T12:00:00.000Z"]);
+  });
+
+  test("a spent pool whose reset is past one window is the weekly limit, and the card says so", () => {
+    const capped = row("antigravity-partner", 100, "2026-12-01T00:00:00Z");
+    expect(antigravityWeeklyCapped(capped, NOW)).toBe(true);
+    expect(antigravityWeeklyCapped(row("antigravity-partner", 100, "2026-11-28T05:30:00Z"), NOW)).toBe(false);
+    const week = updateGeminiWeek([{ "antigravity-partner": [{ resetsAt: "2026-11-27T20:00:00Z", usedPercent: 100 }] }], [capped], NOW);
+    expect(geminiWeekSummary(week?.["antigravity-partner"], NOW)).toEqual({ windowsUsed: 2, windows: 2, capped: true });
+    const quota = geminiQuotaFromRows([row("antigravity-gemini", 10, "2026-11-28T05:00:00Z"), capped])!;
+    quota.week = week;
+    const card = geminiLimits({ gemini: quota, updatedAt: new Date(NOW).toISOString() }, NOW);
+    expect(card).toContain("Weekly limit reached");
+    expect(card).toContain("Claude &amp; GPT 2 windows · weekly limit hit");
+  });
+
+  test("the poll store carries the week across readings and drops a malformed ledger", () => {
+    const reading = (usedPercent: number, at: number, week?: unknown) => ({
+      provider: "gemini", account: "user@example.com",
+      usage: { accountEmail: "user@example.com", primary: { usedPercent, windowMinutes: 300, resetsAt: "2026-11-28T05:00:00Z" },
+        secondary: null, tertiary: null, updatedAt: new Date(at).toISOString(),
+        buckets: [row("antigravity-gemini", usedPercent, "2026-11-28T05:00:00Z")], ...(week ? { week } : {}) },
+      pace: null,
+    });
+    const key = pollKey("gemini", "user@example.com");
+    const one = carrySnapshot(undefined, sanitizePollSnapshot(reading(10, NOW), key, NOW));
+    const two = carrySnapshot(one, sanitizePollSnapshot(reading(0, NOW + 60_000), key, NOW + 60_000));
+    expect((two.usage as { week?: unknown }).week).toEqual({ "antigravity-gemini": [{ resetsAt: "2026-11-28T05:00:00.000Z", usedPercent: 10 }] });
+    const bad = sanitizePollSnapshot(reading(5, NOW, { "antigravity-gemini": [{ resetsAt: "nope", usedPercent: 500 }], other: [1] }), key, NOW);
+    expect((bad.usage as { week?: unknown }).week).toBeUndefined();
   });
 });
 
@@ -157,7 +206,7 @@ describe("Antigravity sign-in", () => {
 });
 
 describe("Antigravity collect", () => {
-  test("a live token reads the Gemini pool without running agy", async () => {
+  test("a live token reads both pools without running agy", async () => {
     const home = antigravityHome();
     const google = fakeCodeAssist(STORED_ACCESS);
     const agy = fakeAgy();
@@ -170,16 +219,22 @@ describe("Antigravity collect", () => {
     expect(results).toHaveLength(1);
     expect(results[0]!.account).toBe("user@example.com");
     expect(results[0]!.usage.loginMethod).toBe("Google AI Ultra");
-    expect(results[0]!.usage.buckets.map((row) => row.label)).toEqual(["Gemini models"]);
+    expect(results[0]!.usage.buckets.map((row) => row.label)).toEqual(["Gemini models", "Claude & GPT models"]);
 
     const html = renderLimitsHtml(normalizeCodexLimits([results[0]!]), { generatedAt: NOW, nowMs: NOW });
     expect(html).toContain("Gemini models");
     expect(html).toContain("80% left");
     expect(html).toContain("4 models");
-    // One allowance is the headline alone: no group heading, no repeated row, no Claude & GPT pool.
+    // The two pools are two bars, like Codex or Claude windows: no group headings and no repeated rows.
     expect(html).not.toContain('class="gemini-group"');
-    expect(html).not.toContain("Claude &amp; GPT");
+    expect(html.match(/class="limit gemini-headline/g)).toHaveLength(2);
+    expect(html).toContain("Claude &amp; GPT models");
     expect(html).toContain('data-reset="2026-11-28T05:35:54.000Z"');
+    expect(html).toContain("Timer starts on first use");
+    // The collector folded the reading into the week: one Gemini window at 20%.
+    expect(results[0]!.usage.week).toEqual({ "antigravity-gemini": [{ resetsAt: "2026-11-28T05:35:54.000Z", usedPercent: 20 }] });
+    expect(html).toContain("This week");
+    expect(html).toContain("Gemini 0.2 windows");
     for (const secret of [STORED_ACCESS, STORED_REFRESH]) expect(html).not.toContain(secret);
   });
 
@@ -190,7 +245,7 @@ describe("Antigravity collect", () => {
     const google = fakeCodeAssist(REFRESHED_ACCESS);
     const agy = fakeAgy();
     const results = await read(home, google.url, agy.command);
-    expect(results[0]?.usage.buckets).toHaveLength(1);
+    expect(results[0]?.usage.buckets).toHaveLength(2);
     expect(google.calls.every((call) => call.auth === `Bearer ${REFRESHED_ACCESS}`)).toBe(true);
     const [scratch, argument] = readFileSync(agy.log, "utf8").trim().split(" ");
     expect(argument).toBe("models");

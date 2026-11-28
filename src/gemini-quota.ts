@@ -39,6 +39,8 @@ export interface GeminiQuotaRow {
 
 export interface GeminiQuota {
   rows: GeminiQuotaRow[];
+  /** The seven-day ledger the collector carries, when the reading has one. */
+  week?: GeminiWeek;
   /** The card headline: the most constrained Pro bucket, else the tightest row. */
   headline: GeminiQuotaRow | null;
   primary: CapacityWindow | null;
@@ -342,7 +344,8 @@ export function antigravityPool(modelId: string): "antigravity-gemini" | "antigr
 }
 
 /**
- * Antigravity's `fetchAvailableModels` answer as the Gemini pool row the card shows.
+ * Antigravity's `fetchAvailableModels` answer as the two pool rows the card shows: Gemini, and the Claude and GPT
+ * models the plan also serves (GateFox offers Claude Opus and Sonnet and GPT-OSS through its Gemini provider).
  *
  * The answer maps each model id to its `quotaInfo` (`remainingFraction`, `resetTime`). Every model in a pool reports
  * the same figures, so a pool is read at its tightest model; ids with no reset (tab completion and the like) are
@@ -354,9 +357,7 @@ export function geminiQuotaFromAntigravityModels(models: unknown, now = Date.now
   for (const [modelId, value] of Object.entries(models as Record<string, unknown>).slice(0, 128)) {
     if (!MODEL_PATTERN.test(modelId) || !value || typeof value !== "object") continue;
     const family = antigravityPool(modelId);
-    // The Claude and GPT pool is part of the plan, but GateFox sends nothing to it, so the card would only ever
-    // report it untouched. It is left out; `antigravityPool` still names it so it is never folded into Gemini.
-    if (family !== "antigravity-gemini") continue;
+    if (!family) continue;
     const info = (value as { quotaInfo?: unknown }).quotaInfo as RawBucket | undefined;
     if (!info || typeof info !== "object") continue;
     const fraction = fractionOf(info.remainingFraction);
@@ -373,4 +374,96 @@ export function geminiQuotaFromAntigravityModels(models: unknown, now = Date.now
   }
   const rows = [...pools.values()].sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
   return rowsToQuota(rows);
+}
+
+export type AntigravityPoolFamily = "antigravity-gemini" | "antigravity-partner";
+const POOLS: AntigravityPoolFamily[] = ["antigravity-gemini", "antigravity-partner"];
+
+/** One five-hour window of one pool: its reset instant and the most of it a reading saw used. */
+export interface GeminiWeekCycle {
+  resetsAt: string;
+  usedPercent: number;
+  /** The reading hit the weekly limit: the pool was spent and its reset sat past one five-hour window. */
+  capped?: true;
+}
+
+/**
+ * The last seven days of windows per pool. Google publishes no weekly figure and the API reports only the current
+ * window, so the collector keeps this ledger beside the reading and every snapshot carries it forward.
+ */
+export type GeminiWeek = Partial<Record<AntigravityPoolFamily, GeminiWeekCycle[]>>;
+
+export const GEMINI_WEEK_MS = 7 * 86_400_000;
+/** A spent pool whose reset is further away than one window plus this slack is held by the weekly limit. */
+const WEEKLY_CAP_SLACK_MS = 30 * 60_000;
+const MAX_CYCLES = 64;
+/** Reset instants of one window can differ by a few seconds between reads. */
+const SAME_CYCLE_MS = 2 * 60_000;
+
+export function antigravityWeeklyCapped(row: Pick<GeminiQuotaRow, "family" | "usedPercent" | "resetsAt">, readAtMs: number): boolean {
+  if (row.family !== "antigravity-gemini" && row.family !== "antigravity-partner") return false;
+  const reset = row.resetsAt ? Date.parse(row.resetsAt) : Number.NaN;
+  return row.usedPercent >= 100 && Number.isFinite(reset)
+    && reset - readAtMs > ANTIGRAVITY_WINDOW_MINUTES * 60_000 + WEEKLY_CAP_SLACK_MS;
+}
+
+/** Re-validate a ledger that arrived in a snapshot; anything malformed is dropped. */
+export function sanitizeGeminiWeek(value: unknown, now = Date.now()): GeminiWeek | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const week: GeminiWeek = {};
+  for (const pool of POOLS) {
+    const raw = (value as Record<string, unknown>)[pool];
+    if (!Array.isArray(raw)) continue;
+    const cycles: GeminiWeekCycle[] = [];
+    for (const item of raw.slice(0, MAX_CYCLES)) {
+      if (!item || typeof item !== "object") continue;
+      const entry = item as Record<string, unknown>;
+      const reset = typeof entry.resetsAt === "string" ? Date.parse(entry.resetsAt) : Number.NaN;
+      const used = Number(entry.usedPercent);
+      if (!Number.isFinite(reset) || reset - now > RESET_HORIZON_MS || !Number.isFinite(used) || used <= 0 || used > 100) continue;
+      cycles.push({ resetsAt: new Date(reset).toISOString(), usedPercent: used, ...(entry.capped === true ? { capped: true as const } : {}) });
+    }
+    if (cycles.length) week[pool] = cycles;
+  }
+  return Object.keys(week).length ? week : undefined;
+}
+
+/**
+ * Fold one reading into the ledgers it inherits. A window is keyed by its reset instant, so repeated reads of one
+ * window keep its highest figure; an untouched pool (0% used) is not a window anyone spent. Windows that ended
+ * more than seven days before the reading are dropped.
+ */
+export function updateGeminiWeek(priors: Array<GeminiWeek | undefined>, rows: GeminiQuotaRow[], readAtMs: number): GeminiWeek | undefined {
+  const week: GeminiWeek = {};
+  const add = (pool: AntigravityPoolFamily, cycle: GeminiWeekCycle) => {
+    const reset = Date.parse(cycle.resetsAt);
+    if (!Number.isFinite(reset) || reset <= readAtMs - GEMINI_WEEK_MS) return;
+    const cycles = week[pool] ?? (week[pool] = []);
+    const same = cycles.find((item) => Math.abs(Date.parse(item.resetsAt) - reset) <= SAME_CYCLE_MS);
+    if (!same) { cycles.push({ ...cycle, resetsAt: new Date(reset).toISOString() }); return; }
+    same.usedPercent = Math.max(same.usedPercent, cycle.usedPercent);
+    if (cycle.capped) same.capped = true;
+  };
+  for (const prior of priors) for (const pool of POOLS) for (const cycle of prior?.[pool] ?? []) add(pool, cycle);
+  for (const row of rows) {
+    if ((row.family !== "antigravity-gemini" && row.family !== "antigravity-partner") || row.usedPercent <= 0 || !row.resetsAt) continue;
+    add(row.family, {
+      resetsAt: row.resetsAt, usedPercent: row.usedPercent,
+      ...(antigravityWeeklyCapped(row, readAtMs) ? { capped: true as const } : {}),
+    });
+  }
+  for (const pool of POOLS) {
+    const cycles = week[pool];
+    if (!cycles) continue;
+    cycles.sort((a, b) => Date.parse(a.resetsAt) - Date.parse(b.resetsAt));
+    week[pool] = cycles.slice(-MAX_CYCLES);
+  }
+  return Object.keys(week).length ? week : undefined;
+}
+
+/** One pool's last seven days: full windows' worth used, how many windows, and whether the weekly limit was hit. */
+export function geminiWeekSummary(cycles: GeminiWeekCycle[] | undefined, nowMs: number): { windowsUsed: number; windows: number; capped: boolean } {
+  const recent = (cycles ?? []).filter((cycle) => Date.parse(cycle.resetsAt) > nowMs - GEMINI_WEEK_MS);
+  const percent = recent.reduce((sum, cycle) => sum + cycle.usedPercent, 0);
+  return { windowsUsed: Math.round(percent / 10) / 10, windows: recent.length, capped: recent.some((cycle) => cycle.capped) };
 }
