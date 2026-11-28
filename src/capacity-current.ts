@@ -325,13 +325,45 @@ async function liveProfileCapacity(profileHome: string, now: number): Promise<Ca
   }
 }
 
+/**
+ * Reads the first home that answers. Only one read is in flight at a time, so
+ * a healthy first home costs a single provider request. The first failure is
+ * rethrown when every home fails, so a rate limit keeps its status.
+ */
+export async function firstReadableHome<T>(
+  homes: readonly string[], read: (home: string) => Promise<T | undefined>,
+): Promise<T | undefined> {
+  let first: unknown;
+  let failed = false;
+  for (const home of homes) {
+    try {
+      const value = await read(home);
+      if (value) return value;
+    } catch (error) {
+      if (!failed) { first = error; failed = true; }
+      // A rate limit is per account, not per home; another home would hit it too.
+      const status = (error as { status?: number }).status;
+      if (status === 429 || /\b429\b|rate.?limit/iu.test((error as Error)?.message ?? "")) break;
+    }
+  }
+  if (failed) throw first;
+  return undefined;
+}
+
 export async function currentCodexCapacity(
   now = Date.now(),
   onFailure?: (failure: CodexCapacityReadFailure) => void,
 ): Promise<CapacityResult[]> {
   // Discover identity locally before starting app-server, and deduplicate homes
   // before any request. Several profiles may contain the same account.
-  const profiles = new Map<string, string>();
+  // Every home signed in to an email is kept, in discovery order, so a read that
+  // fails in one home (a revoked or expired login) falls back to the next.
+  const profiles = new Map<string, string[]>();
+  const addHome = (email: string, home: string) => {
+    const homes = profiles.get(email) ?? [];
+    if (!homes.includes(home)) homes.push(home);
+    profiles.set(email, homes);
+  };
   // A live quota read needs a login, not a rollout, so signed-in homes are found by
   // their own `auth.json` first. Feeding `codexClaims` a synthetic `<home>/sessions`
   // path asks it for exactly the file it already reads, without creating a directory
@@ -340,7 +372,7 @@ export async function currentCodexCapacity(
   const profileNames = new Map<string, string>();
   for (const home of codexCapacityProfileHomes()) {
     const { email } = codexClaims(join(home, "sessions"));
-    if (email && !profiles.has(email.toLowerCase())) profiles.set(email.toLowerCase(), home);
+    if (email) addHome(email.toLowerCase(), home);
     const name = codexProfileName(home);
     if (email && name && !profileNames.has(email.toLowerCase())) profileNames.set(email.toLowerCase(), name);
   }
@@ -349,11 +381,11 @@ export async function currentCodexCapacity(
   // accounts only they can name.
   for (const root of defaultCodexRoots()) {
     const { email } = codexClaims(root.path);
-    if (email && !profiles.has(email.toLowerCase())) profiles.set(email.toLowerCase(), dirname(root.path));
+    if (email && !profiles.has(email.toLowerCase())) addHome(email.toLowerCase(), dirname(root.path));
   }
   const profileEntries = [...profiles];
-  const settled = await Promise.allSettled(profileEntries.map(([email, home]) =>
-    coordinatedCapacity("codex", email, () => liveProfileCapacity(home, now)),
+  const settled = await Promise.allSettled(profileEntries.map(([email, homes]) =>
+    coordinatedCapacity("codex", email, () => firstReadableHome(homes, (home) => liveProfileCapacity(home, now))),
   ));
   const byAccount = new Map<string, CapacityResult>();
   for (const [index, item] of settled.entries()) {

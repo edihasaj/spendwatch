@@ -23,6 +23,10 @@ export const CLAUDE_POLL_INTERVAL_MS = 2 * 60_000;
 export const GEMINI_POLL_INTERVAL_MS = 5 * 60_000;
 export const MAX_FUTURE_SNAPSHOT_SKEW_MS = 5 * 60_000;
 const RATE_LIMIT_COOLDOWN_MS = 60 * 60_000;
+// A shared snapshot older than this, with no lease to refresh it, means the
+// account's lease holder keeps failing (for example a revoked login on another
+// Mac). Each machine may then read the account itself, at most once per window.
+export const STALE_SNAPSHOT_MS = 15 * 60_000;
 
 interface PollRow {
   next_at: number;
@@ -206,7 +210,8 @@ export class CapacityPollStore {
       CREATE TABLE IF NOT EXISTS capacity_poll (
         account_key TEXT PRIMARY KEY, next_at INTEGER NOT NULL,
         lease TEXT NOT NULL, failures INTEGER NOT NULL DEFAULT 0, snapshot TEXT
-      );`);
+      );
+      CREATE TABLE IF NOT EXISTS capacity_direct (account_key TEXT PRIMARY KEY, next_at INTEGER NOT NULL);`);
   }
 
   claim(provider: PollProvider, account: string, now = Date.now()): PollClaim {
@@ -239,7 +244,10 @@ export class CapacityPollStore {
     const fresh = sanitizePollSnapshot(value, key);
     this.db.transaction(() => {
       const row = this.db.query<PollRow, [string]>("SELECT * FROM capacity_poll WHERE account_key=?").get(key);
-      const snapshot = carryLastKnownCredits(parseSnapshot(row?.snapshot), fresh);
+      const previous = parseSnapshot(row?.snapshot);
+      // A stale shared snapshot must not replace a newer reading this machine made itself.
+      if (previous && snapshotTime(previous) > snapshotTime(fresh)) return;
+      const snapshot = carryLastKnownCredits(previous, fresh);
       this.db.query(`INSERT INTO capacity_poll(account_key,next_at,lease,failures,snapshot) VALUES(?,?, '',0,?)
         ON CONFLICT(account_key) DO UPDATE SET snapshot=excluded.snapshot`)
         .run(key, 0, JSON.stringify(snapshot));
@@ -267,7 +275,39 @@ export class CapacityPollStore {
     }).immediate();
   }
 
+  /**
+   * Reserves this machine's direct read of an account whose shared snapshot is
+   * stale. Local only: it never touches the shared lease or cooldown.
+   */
+  claimDirect(provider: PollProvider, account: string, now = Date.now()): boolean {
+    const key = pollKey(provider, account);
+    return this.db.transaction(() => {
+      const row = this.db.query<{ next_at: number }, [string]>(
+        "SELECT next_at FROM capacity_direct WHERE account_key=?").get(key);
+      if (row && row.next_at > now) return false;
+      this.db.query(`INSERT INTO capacity_direct(account_key,next_at) VALUES(?,?)
+        ON CONFLICT(account_key) DO UPDATE SET next_at=excluded.next_at`).run(key, now + STALE_SNAPSHOT_MS);
+      return true;
+    }).immediate();
+  }
+
+  /** Pushes this machine's next direct read out after a rate limit. */
+  deferDirect(provider: PollProvider, account: string, until: number): void {
+    const key = pollKey(provider, account);
+    this.db.query(`INSERT INTO capacity_direct(account_key,next_at) VALUES(?,?)
+      ON CONFLICT(account_key) DO UPDATE SET next_at=MAX(next_at,excluded.next_at)`).run(key, until);
+  }
+
   close(): void { this.db.close(); }
+}
+
+function snapshotTime(snapshot: PollSnapshot | undefined): number {
+  const time = snapshot?.usage ? Date.parse(snapshot.usage.updatedAt) : Number.NaN;
+  return Number.isFinite(time) ? time : 0;
+}
+
+function isRateLimited(error: { status?: number; message?: string } | undefined): boolean {
+  return error?.status === 429 || /\b429\b|rate.?limit/iu.test(error?.message ?? "");
 }
 
 export function pollingCoordinator(): string | undefined {
@@ -342,7 +382,31 @@ export async function coordinatedCapacity<T extends PollSnapshot>(
       sanitizePollSnapshot(claim.snapshot, key);
       if (coordinator) local.cacheSnapshot(provider, account, claim.snapshot);
     }
-    if (!claim.lease) return claim.snapshot as T | undefined;
+    if (!claim.lease) {
+      if (!coordinator) return claim.snapshot as T | undefined;
+      // The coordinator keeps backing off while its lease holder fails, so its
+      // snapshot can freeze for hours. Past the stale window, read directly,
+      // cache locally and leave the shared lease and cooldown untouched.
+      const cached = local.cached(provider, account);
+      const newest = snapshotTime(cached) > snapshotTime(claim.snapshot) ? cached : claim.snapshot;
+      if (newest && nowMs - snapshotTime(newest) <= STALE_SNAPSHOT_MS) return newest as T;
+      if (!local.claimDirect(provider, account, nowMs)) return newest as T | undefined;
+      try {
+        const direct = await read();
+        if (!direct) return newest as T | undefined;
+        const kept = carryLastKnownCredits(newest, direct);
+        sanitizePollSnapshot(kept, key);
+        local.cacheSnapshot(provider, account, kept);
+        return kept;
+      } catch (error) {
+        const failure = error as { status?: number; retryAfterMs?: number; message?: string };
+        if (isRateLimited(failure)) {
+          local.deferDirect(provider, account, nowMs + Math.max(RATE_LIMIT_COOLDOWN_MS, failure.retryAfterMs ?? 0));
+        }
+        // The shared snapshot stays the answer; the card reads as not current.
+        return newest as T | undefined;
+      }
+    }
     let snapshot: T | undefined;
     let failure: unknown;
     try {
@@ -356,7 +420,7 @@ export async function coordinatedCapacity<T extends PollSnapshot>(
     const error = failure as { status?: number; retryAfterMs?: number; message?: string } | undefined;
     const result = {
       snapshot,
-      status: error?.status ?? (/\b429\b|rate.?limit/iu.test(error?.message ?? "") ? 429 : undefined),
+      status: error?.status ?? (isRateLimited(error) ? 429 : undefined),
       retryAfterMs: error?.retryAfterMs,
     };
     if (coordinator) {
