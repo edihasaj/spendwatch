@@ -49,6 +49,18 @@ cooldown. When the coordinator is unavailable, a source can display only its
 validated locally cached shared result; it does not issue a provider fallback
 read or alter the remote lease or cooldown.
 
+A shared snapshot can freeze while the coordinator is reachable: if the machine
+that wins each lease keeps failing (for example a revoked login on one Mac), the
+coordinator backs off and every other machine keeps receiving the old reading.
+When a machine gets no lease and the newest snapshot it knows, shared or local, is
+more than 15 minutes old, it reads the account directly, at most once per
+15 minutes per account and at most once per hour after a rate limit. The result is
+cached locally only; the remote lease and cooldown are not touched, and an older
+shared snapshot never replaces a newer local reading. A Codex email signed in to
+several homes is read from the first home that answers, so one stale login does
+not hide a working one; a rate limit stops that fallback because it applies to
+the account.
+
 The server holds the poll store through `ReconnectingPollStore`. A managed
 PostgreSQL connection closes itself after a transport error and never reopens, so
 the store is discarded after any non-validation failure and the next request opens

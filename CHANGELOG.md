@@ -9,6 +9,13 @@
   and Secondary, Codex Primary and Secondary, Gemini, OpenRouter and Local Qwen, then
   Claude Tertiary and Codex Tertiary.
 
+- Stop a quota card from freezing as "not current" when the Mac that wins the shared
+  poll keeps failing. The coordinator backed off for up to hours and every other Mac
+  showed its old snapshot. A Mac without a lease now reads the account itself once the
+  newest known snapshot is over 15 minutes old (once per 15 minutes, hourly after a
+  rate limit), and a Codex email signed in to several homes falls back to the next home
+  when one login fails.
+
 - Show the Gemini quota card for GateFox's Antigravity sign-in. Google moved Google AI
   subscriptions to Antigravity CLI, and the collector still read the Gemini CLI's
   `oauth_creds.json`, so no Gemini card appeared. It now reads
