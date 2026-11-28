@@ -10,7 +10,7 @@ import {
   monitorFailureLine,
   type MonitorFailureDecision,
 } from "../src/monitor-failure-policy";
-import { ManagedDatabaseError } from "../src/managed/libpq";
+import { ManagedDatabaseError, ManagedWriterDeferredError } from "../src/managed/libpq";
 import { createCapacityMonitor } from "../src/push-server";
 import { PushStore, ReconnectingPushStore } from "../src/push-store";
 import { reportOperationalError } from "../src/telemetry";
@@ -233,12 +233,12 @@ describe("capacity monitor real ticks", () => {
 });
 
 describe("capacity monitor managed failure classes", () => {
-  test("a managed 55P03 at observe is expected contention, gated like SQLite busy", async () => {
+  test("a declined managed writer lock is reported separately with the same cadence", async () => {
     const capacityPath = file("capacity.json");
     writeFileSync(capacityPath, VALID_CAPACITY);
     let contended = true;
     const store = fakeStore({
-      observe: () => { if (contended) throw new ManagedDatabaseError(LOCK_CONTENTION_SQLSTATE); },
+      observe: () => { if (contended) throw new ManagedWriterDeferredError(); },
     });
     const h = drive({ capacityPath, store, reminderMs: 30 * 60_000 });
 
@@ -249,7 +249,7 @@ describe("capacity monitor managed failure classes", () => {
     await h.tick();
     expect(h.reports).toHaveLength(1);
     expect(h.reports[0]).toMatchObject({
-      stage: "observe", category: "managed-lock-contention", code: "55P03",
+      stage: "observe", category: "managed-writer-deferred", code: "55P03",
       contention: true, escalated: true,
     });
     await tick(h, 20);
@@ -258,7 +258,7 @@ describe("capacity monitor managed failure classes", () => {
     h.advance(30 * 60_000);
     await h.tick();                          // a long episode keeps reminding, rate bound
     expect(h.reports).toHaveLength(2);
-    expect(h.reports[1]).toMatchObject({ category: "managed-lock-contention", reminder: true });
+    expect(h.reports[1]).toMatchObject({ category: "managed-writer-deferred", reminder: true });
     h.advance(10 * 60_000);
     await tick(h, 5);
     expect(h.reports).toHaveLength(2);
@@ -420,7 +420,11 @@ describe("capacity monitor telemetry fields", () => {
     const sent = await reportOperationalError(
       "spendwatch.monitor.failure",
       new Error(`Managed database operation failed (${LOCK_CONTENTION_SQLSTATE}) for /Users/ops/private.db`),
-      { component: "capacity", stage: "observe", category: "managed-lock-contention", code: "55P03", path: "/Users/ops/private.db" },
+      {
+        component: "capacity", stage: "observe", category: "managed-lock-contention",
+        code: "55P03", operation: "capacity.observe.managed-lock-contention",
+        error_code: "55P03", path: "/Users/ops/private.db",
+      },
       {
         dsn: "https://public-key@errors.example/35",
         transport: async (_input, init) => {
@@ -438,6 +442,8 @@ describe("capacity monitor telemetry fields", () => {
       stage: "observe",
       category: "managed-lock-contention",
       code: "55P03",
+      operation: "capacity.observe.managed-lock-contention",
+      error_code: "55P03",
     });
     expect(JSON.stringify(body)).not.toContain("private.db");
     expect(JSON.stringify(body)).not.toContain("ops");

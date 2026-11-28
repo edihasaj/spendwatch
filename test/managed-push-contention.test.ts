@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { CodexLimitAccount } from "../src/limits";
-import { ManagedDatabaseError, PgConnection } from "../src/managed/libpq";
+import { ManagedDatabaseError, ManagedWriterDeferredError, PgConnection } from "../src/managed/libpq";
 import { ManagedPostgresDatabase } from "../src/managed/postgres-db";
 import { quoteIdentifier } from "../src/managed/sql-tokens";
 import { PushStore } from "../src/push-store";
@@ -98,7 +98,7 @@ suite("managed push writer contention", () => {
         let deferred: unknown;
         try { store.observe([first], 1); } catch (error) { deferred = error; }
         const elapsed = performance.now() - started;
-        expect(deferred).toBeInstanceOf(ManagedDatabaseError);
+        expect(deferred).toBeInstanceOf(ManagedWriterDeferredError);
         expect((deferred as ManagedDatabaseError).code).toBe("55P03");
         expect((deferred as ManagedDatabaseError).transport).toBe(false);
         // The session lock_timeout is 10s; a deferred tick must be prompt.
@@ -123,6 +123,28 @@ suite("managed push writer contention", () => {
         expect(store.observe([first], 4)).toBe(1); // 31% -> 28% left crosses 30
         expect(db.query("SELECT count(*) AS n FROM push_threshold_events").get()!.n).toBe(1);
         expect(store.pendingDeliveries().map((delivery) => delivery.threshold)).toEqual([30]);
+      } finally { competing.close(); store.close(); }
+    });
+  });
+
+  test("a PostgreSQL statement lock timeout stays distinct from writer deferral", () => {
+    fixture((store, database) => {
+      const db = managedDb(store);
+      const competing = new PgConnection(database);
+      try {
+        db.exec("PRAGMA busy_timeout=200");
+        competing.query("BEGIN");
+        competing.query("LOCK TABLE push_account_state IN ACCESS EXCLUSIVE MODE");
+        let failure: unknown;
+        try { store.observe([account(69)], 1); } catch (error) { failure = error; }
+        expect(failure).toBeInstanceOf(ManagedDatabaseError);
+        expect(failure).not.toBeInstanceOf(ManagedWriterDeferredError);
+        expect((failure as ManagedDatabaseError).code).toBe("55P03");
+        expect(db.inTransaction).toBe(false);
+        expect(competing.query(TRY_LOCK).rows[0]!.acquired).toBe(true);
+        competing.query(UNLOCK);
+        competing.query("ROLLBACK");
+        expect(store.observe([account(69)], 2)).toBe(0);
       } finally { competing.close(); store.close(); }
     });
   });

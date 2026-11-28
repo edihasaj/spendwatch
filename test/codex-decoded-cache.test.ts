@@ -95,19 +95,26 @@ describe("persistent decoded Codex archive cache", () => {
     expect(statSync(keep).isFile()).toBe(true);
   }));
 
-  test("paces cache fills to the configured write rate", () => withCache(() => {
-    const previous = process.env.SPENDWATCH_DECODE_WRITE_BYTES_PER_SECOND;
-    process.env.SPENDWATCH_DECODE_WRITE_BYTES_PER_SECOND = String(1024 * 1024);
-    try {
-      const source = archive(lines(120_000)); // about 2.6 MB decoded
-      const started = Date.now();
-      codexRolloutSnapshot(source);
-      expect(Date.now() - started).toBeGreaterThanOrEqual(900);
-    } finally {
-      if (previous === undefined) delete process.env.SPENDWATCH_DECODE_WRITE_BYTES_PER_SECOND;
-      else process.env.SPENDWATCH_DECODE_WRITE_BYTES_PER_SECOND = previous;
-    }
-  }));
+  test("paces cache fills to the configured write rate", () => withCache((root) => {
+    const source = archive(lines(120_000));
+    // The write budget is process-wide. Start with a fresh clock window.
+    const result = spawnSync(process.execPath, ["--eval", `
+      import { codexRolloutSnapshot } from ${JSON.stringify(join(import.meta.dir, "../src/codex-compressed-rollouts.ts"))};
+      const started = performance.now();
+      codexRolloutSnapshot(process.argv[1]);
+      console.log(performance.now() - started);
+    `, source], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        SPENDWATCH_CODEX_DECODED_CACHE: root,
+        SPENDWATCH_DECODE_WRITE_BYTES_PER_SECOND: String(1024 * 1024),
+      },
+      timeout: 10_000,
+    });
+    expect(result.status).toBe(0);
+    expect(Number(result.stdout.trim())).toBeGreaterThanOrEqual(900);
+  }), 15_000);
 
   test("defaults to a private per-user cache outside the temp directory", () => {
     const previous = process.env.SPENDWATCH_CODEX_DECODED_CACHE;

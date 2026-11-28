@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Capacity monitor reports now distinguish a declined shared writer lock from a
+  PostgreSQL statement lock failure. Both retain the existing reporting cadence.
+  The managed contention tests can start their own disposable PostgreSQL fixture.
+
 - Bring back the Gemini card's "Claude & GPT models" pool, now that GateFox serves Claude
   Opus 5.5, Claude Sonnet 5.5 and GPT-OSS 120B through Antigravity, and show both pools as
   bars. Add a weekly estimate: Google publishes no weekly limit, so each snapshot carries a

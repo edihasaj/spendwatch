@@ -84,11 +84,12 @@ driver diagnostics are matched against fixed patterns and discarded, so the recu
 per-database advisory lock with `pg_try_advisory_lock` before `BEGIN`: when another managed
 writer holds it, it defers with no transaction, no mutation and no replay, and throws a typed
 `ManagedDatabaseError('55P03')` that the next tick simply tries again. So a `55P03` at
-`observe` means the monitor was locked out by that writer — which specific lock is still
-suspected until timestamps are matched. A `55P03` at another stage, or outside the defer path,
-is PostgreSQL's own `lock_not_available` from a genuine lock wait. Both are contention and
-share the fourth-consecutive-poll gate; an ordinary managed failure keeps its immediate first
-report.
+`observe` carries category `managed-writer-deferred` when the shared writer try-lock
+declines before `BEGIN`. PostgreSQL's own `55P03` from a statement lock failure
+carries category `managed-lock-contention`. Both share the fourth-consecutive-poll
+gate. Historical events that use the older category do not identify the lock.
+GlitchTip intake receives the stage and category together in the `operation`
+tag and the SQLSTATE in `error_code`.
 
 The ordinary CLI must retain native `bun:sqlite`, including its self-contained
 build and local history archives. The managed server will select PostgreSQL
@@ -135,6 +136,21 @@ Its random credential stays outside Git. Run its regressions with
 Ordinary `bun test` skips that fixture. These tests cover binary/Unicode
 fidelity, both signed integer limits, parameter binding, constraint rollback
 and bounded connection failure.
+
+`bun run test:managed-contention` (`scripts/managed-fixture.ts`) supplies that fixture instead of asking every
+operator to keep one running. It starts a disposable PostgreSQL 18 container on `127.0.0.1:15487` through the
+machine's own Docker daemon, with a tmpfs data directory and a password generated for that run, waits on a
+bounded readiness probe that completes a real libpq query, writes the owner-only (`0600`) config to a private
+directory under `/tmp`, then runs `test/managed-libpq.test.ts` and `test/managed-push-contention.test.ts` with
+`SPENDWATCH_TEST_PG_CONFIG` set. It removes only the container and scratch directory it named, on success, on
+failure and on interrupt. If Docker is unreachable, the image cannot be fetched, or another server already owns
+15487, the run exits `2` saying the fixture was unavailable: it never falls back to a
+skip, and never borrows a database it did not start. It strips `SPENDWATCH_MANAGED_DATABASE_CONFIG`,
+`SPENDWATCH_ARCHIVE_COMMIT_URL` and `SPENDWATCH_ARCHIVE_COMMIT_TOKEN` from the test environment, so a session
+that happens to point at the serving archive cannot leak into the proof. The password is generated for the run and
+passed to Docker through the child's environment, never the argument vector, and `SIGINT`/`SIGTERM` terminate the
+command in flight and still take the fixture down. The only network use is an ordinary `docker pull` of the tagged
+image (`postgres:18-alpine`) when it is not already cached.
 
 The libSQL alternative was investigated using its maintained native Bun
 driver. It preserved blobs, integers and rollback but rejected the attached

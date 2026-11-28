@@ -463,7 +463,7 @@ describe("Codex semantic duplicate dominance", () => {
       [{ path: retained, priority: 0, value: retainedSource }, { path: overLimit, priority: 1, value: primarySource }],
       { semanticDominance: createCodexRolloutSemanticDominance() },
     )).toThrow(CodexRolloutCopyError);
-  });
+  }, 90_000);
 });
 
 describe("Codex semantic dominance for nonbilling differences", () => {

@@ -59,15 +59,17 @@ describe("a chain of alike calls", () => {
 
   test("moves as far as it goes, past any fixed number of rows", () => {
     const n = 10_000;
-    const ledger = load(Array.from({ length: n + 1 }, (_, i) => billed(`r${i}`, NOW + i * SPACING)));
+    // Keep every row in a readable ledger month near a UTC month rollover.
+    const start = NOW - n * SPACING;
+    const ledger = load(Array.from({ length: n + 1 }, (_, i) => billed(`r${i}`, start + i * SPACING)));
     // Call i stands on row i; row n is free, and only the first call can be moved onto it through all the others.
     let placed = 0;
-    for (let i = 0; i < n; i++) if (ledger.claim(MODEL, 1000, 50, NOW + i * SPACING + 100, { gatewayRows: true })) placed++;
+    for (let i = 0; i < n; i++) if (ledger.claim(MODEL, 1000, 50, start + i * SPACING + 100, { gatewayRows: true })) placed++;
     expect(placed).toBe(n);
-    expect(ledger.claim(MODEL, 1000, 50, NOW - SPACING, { gatewayRows: true })).toBe(true);
+    expect(ledger.claim(MODEL, 1000, 50, start - SPACING, { gatewayRows: true })).toBe(true);
     expect(bills(ledger)).toHaveLength(n + 1);
     // Every row has a call now.
-    expect(ledger.claim(MODEL, 1000, 50, NOW - SPACING, { gatewayRows: true })).toBe(false);
+    expect(ledger.claim(MODEL, 1000, 50, start - SPACING, { gatewayRows: true })).toBe(false);
   });
 
   test("a call that cannot reach a free row through the chain gets none, and the chain stays put", () => {

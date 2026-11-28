@@ -28,7 +28,9 @@ const LEVELS = new Set<TelemetryLevel>(["error", "warning"]);
  * backend supplied one. They exist so a recurring fault can be diagnosed without ever sending
  * an error message, which can carry file paths and endpoints.
  */
-const SAFE_TAGS = new Set(["category", "code", "command", "component", "method", "stage", "status"]);
+const SAFE_TAGS = new Set([
+  "category", "code", "command", "component", "error_code", "method", "operation", "stage", "status",
+]);
 const SAFE_VALUE = /^[a-z0-9_.:@-]{1,80}$/iu;
 
 export async function reportOperationalError(
