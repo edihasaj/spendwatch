@@ -172,6 +172,45 @@ Homebrew and `~/.local/bin` locations a launchd PATH lacks). Without an installe
 CLI an expired token cannot be refreshed, and the read reports `unavailable`
 without contacting Google; a still-valid access token keeps working.
 
+### Antigravity sign-in
+
+Google moved Google AI Pro and Ultra subscriptions from the Gemini CLI to
+Antigravity CLI (`agy`) on 18 June 2026, and GateFox's `gemini-subscription`
+provider now signs in through it. Its sign-in is
+`<gemini home>/.gemini/antigravity-cli/antigravity-oauth-token`
+(`{token:{access_token, refresh_token, expiry}, id_token_email}`); with GateFox's
+default home that is `<state>/gemini-home`. A home holding it is read before the
+older `oauth_creds.json`, under the same descriptor checks, and the account is
+named by `id_token_email`. `retrieveUserQuota` refuses an Antigravity login, so
+`src/antigravity-capacity.ts` reads what Antigravity itself reads:
+`loadCodeAssist` with `ideType: "ANTIGRAVITY"` for the project and plan, then
+`fetchAvailableModels`, which answers each model's `quotaInfo.remainingFraction`
+and `resetTime`. Code Assist serves this only to an Antigravity client, so the
+User-Agent is `antigravity/spendwatch (<platform>; <arch>)`.
+
+Antigravity reports two pools, and the card shows exactly those two rows:
+**Gemini models** (every `gemini-*` id, the headline and `primary` window) and
+**Claude & GPT models** (`claude-*` and `gpt-*`, the `secondary` window). Each
+pool is read at its tightest model; ids with no reset, such as tab completion,
+are internal and skipped. Both pools refill five hours after first use, so their
+`windowMinutes` is 300.
+
+`agy` ships its OAuth client without a usable secret, so an expired access token
+is refreshed the way GateFox refreshes it: `agy models` runs in a fresh 0700
+folder under `/tmp` holding a copy of the sign-in and the installation id, with
+only that folder as `HOME` and no Google variables. `models` only lists models
+and starts no conversation. The refreshed access token is read into memory, and
+the folder is deleted whatever happens. Google kept the same refresh grant across
+this refresh when checked on 28 November 2026, so discarding the copy never
+strands GateFox's login, and Spendwatch still never writes the gateway's file. A
+copy that comes back without a newer token is a sign-in problem (401), and no
+`agy` on PATH, in Homebrew or in `~/.local/bin` is `unavailable`. One read spends
+at most one refresh, ahead of expiry or after a 401.
+
+The manager capacity refresher polls `--provider gemini` only on a Mac whose
+GateFox state holds a Gemini sign-in, the way it polls OpenRouter only where its
+config is.
+
 A stored Gemini snapshot keeps its per-model rows, because those rows are the
 reading. A snapshot arrives from another machine's collector, so on every read
 each figure is checked again and the card's label is always re-derived from the

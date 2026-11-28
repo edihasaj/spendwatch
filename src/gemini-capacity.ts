@@ -21,6 +21,9 @@ import {
 } from "./gemini-credential";
 import { geminiQuotaFromBuckets, type GeminiQuotaRow } from "./gemini-quota";
 import { installedGeminiOAuthClient, type GeminiOAuthClient } from "./gemini-oauth-client";
+import { GeminiReadError } from "./gemini-read-error";
+import { readAntigravityQuota, type AntigravityReadOptions } from "./antigravity-capacity";
+import type { GeminiQuota } from "./gemini-quota";
 
 /** Mirror of the CLI's own endpoint constants (chunk-37D3S3FZ.js:333387-333388). */
 export const GEMINI_CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
@@ -101,12 +104,6 @@ export function reportGeminiFailure(
   write(`gemini capacity ${failure.reason}${who}: ${failure.message}\n`);
 }
 
-/** A read that failed, carrying only a fixed message and an HTTP status. */
-class GeminiReadError extends Error {
-  constructor(readonly status: number, readonly email?: string, readonly retryAfterMs?: number) {
-    super(`Gemini quota read failed with HTTP ${status}`);
-  }
-}
 
 /**
  * A 401 needs a human to sign in again, a 429 needs patience, and anything
@@ -119,7 +116,7 @@ export function classifyGeminiFailure(status: number): GeminiReadFailure["reason
   return "unavailable";
 }
 
-export interface GeminiReadOptions {
+export interface GeminiReadOptions extends AntigravityReadOptions {
   /** Test-only seam for the Code Assist base URL; never read from the environment. */
   codeAssistBaseUrl?: string;
   /** Test-only seam for the OAuth token endpoint; never read from the environment. */
@@ -308,11 +305,19 @@ export function geminiCapacityFromQuota(
   identity: { email: string; tier?: string },
   now = Date.now(),
 ): GeminiCapacityResult | undefined {
-  if (!identity.email.includes("@")) return undefined;
   const quota = quotaValue && typeof quotaValue === "object"
     ? geminiQuotaFromBuckets((quotaValue as { buckets?: unknown }).buckets, now)
     : undefined;
-  if (!quota) return undefined;
+  return geminiCapacityResult(quota, identity, now);
+}
+
+/** The dashboard row for one account's quota, whichever sign-in read it. */
+export function geminiCapacityResult(
+  quota: GeminiQuota | undefined,
+  identity: { email: string; tier?: string },
+  now = Date.now(),
+): GeminiCapacityResult | undefined {
+  if (!identity.email.includes("@") || !quota) return undefined;
   return {
     provider: "gemini",
     account: identity.email,
@@ -338,6 +343,10 @@ async function accountCapacity(
   now: number,
   options: GeminiReadOptions,
 ): Promise<GeminiCapacityResult | undefined> {
+  if (account.signIn === "antigravity") {
+    const { quota, tier } = await readAntigravityQuota(account, now, options);
+    return geminiCapacityResult(quota, { email: account.email, tier }, now);
+  }
   // Refresh ahead of expiry rather than spending a guaranteed 401 to discover
   // it; the token lives only in this session object.
   const session: TokenSession = { token: account.credential.accessToken };

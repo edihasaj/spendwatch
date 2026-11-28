@@ -16,7 +16,11 @@ import type { CapacityWindow } from "./capacity-current";
  */
 export const GEMINI_NOMINAL_WINDOW_MINUTES = 1440;
 
-export type GeminiModelFamily = "pro" | "flash" | "flash-lite" | "other";
+/**
+ * `antigravity-gemini` and `antigravity-partner` are the two pools an Antigravity sign-in reports: every Gemini
+ * model shares one allowance, and the Claude and GPT models Antigravity also serves share another.
+ */
+export type GeminiModelFamily = "pro" | "flash" | "flash-lite" | "other" | "antigravity-gemini" | "antigravity-partner";
 
 /** One collapsed quota row: several reported model ids can share one allowance. */
 export interface GeminiQuotaRow {
@@ -61,13 +65,23 @@ const TOKEN_TYPE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 // maths must not invent a window for.
 const RESET_HORIZON_MS = 366 * 86_400_000;
 
-const FAMILY_ORDER: Record<GeminiModelFamily, number> = { pro: 0, flash: 1, "flash-lite": 2, other: 3 };
+const FAMILY_ORDER: Record<GeminiModelFamily, number> = {
+  "antigravity-gemini": 0, "antigravity-partner": 1, pro: 2, flash: 3, "flash-lite": 4, other: 5,
+};
 const FAMILY_LABEL: Record<GeminiModelFamily, string> = {
   pro: "Gemini Pro",
   flash: "Gemini Flash",
   "flash-lite": "Gemini Flash Lite",
   other: "Gemini",
+  "antigravity-gemini": "Gemini models",
+  "antigravity-partner": "Claude & GPT models",
 };
+
+/**
+ * Antigravity refills each pool five hours after it was first used, and the models report only the reset instant,
+ * so five hours is the cycle the pace and burn maths compare against.
+ */
+export const ANTIGRAVITY_WINDOW_MINUTES = 300;
 
 // The CLI folds a model's version aliases onto one allowance rather than
 // rendering one line per released id (chunk-37D3S3FZ.js:406024-406032, with
@@ -249,8 +263,10 @@ export function geminiQuotaFromBuckets(buckets: unknown, now = Date.now()): Gemi
 
 function rowsToQuota(rows: GeminiQuotaRow[]): GeminiQuota | undefined {
   if (!rows.length) return undefined;
-  const headline = rows.find((row) => row.family === "pro") ?? [...rows].sort(moreConstrained)[0]!;
-  const flash = rows.filter((row) => row.family === "flash" || row.family === "flash-lite").sort(moreConstrained)[0];
+  const headline = rows.find((row) => row.family === "antigravity-gemini")
+    ?? rows.find((row) => row.family === "pro") ?? [...rows].sort(moreConstrained)[0]!;
+  const flash = rows.filter((row) => row !== headline
+    && (row.family === "antigravity-partner" || row.family === "flash" || row.family === "flash-lite")).sort(moreConstrained)[0];
   const rest = rows.filter((row) => row !== headline && row !== flash).sort(moreConstrained)[0];
   return {
     rows,
@@ -315,4 +331,44 @@ export function normalizeGeminiRows(value: unknown, now = Date.now()): GeminiQuo
 export function geminiQuotaFromRows(value: unknown): GeminiQuota | undefined {
   const rows = normalizeGeminiRows(value);
   return rows ? rowsToQuota(rows) : undefined;
+}
+
+/** The pool an Antigravity model id is charged against, or undefined for an internal model such as tab completion. */
+export function antigravityPool(modelId: string): "antigravity-gemini" | "antigravity-partner" | undefined {
+  const id = modelId.toLowerCase();
+  if (id.startsWith("gemini-")) return "antigravity-gemini";
+  if (id.startsWith("claude-") || id.startsWith("gpt-")) return "antigravity-partner";
+  return undefined;
+}
+
+/**
+ * Antigravity's `fetchAvailableModels` answer as the two pool rows the card shows.
+ *
+ * The answer maps each model id to its `quotaInfo` (`remainingFraction`, `resetTime`). Every model in a pool reports
+ * the same figures, so a pool is read at its tightest model; ids with no reset (tab completion and the like) are
+ * internal and skipped. The same validation as a Code Assist bucket applies to every figure.
+ */
+export function geminiQuotaFromAntigravityModels(models: unknown, now = Date.now()): GeminiQuota | undefined {
+  if (!models || typeof models !== "object" || Array.isArray(models)) return undefined;
+  const pools = new Map<GeminiModelFamily, GeminiQuotaRow>();
+  for (const [modelId, value] of Object.entries(models as Record<string, unknown>).slice(0, 128)) {
+    if (!MODEL_PATTERN.test(modelId) || !value || typeof value !== "object") continue;
+    const family = antigravityPool(modelId);
+    if (!family) continue;
+    const info = (value as { quotaInfo?: unknown }).quotaInfo as RawBucket | undefined;
+    if (!info || typeof info !== "object") continue;
+    const fraction = fractionOf(info.remainingFraction);
+    const resetsAt = geminiResetFrom(info.resetTime, now);
+    if (fraction === undefined || !resetsAt) continue;
+    const row: GeminiQuotaRow = {
+      label: FAMILY_LABEL[family], family, models: [modelId], usedPercent: clampPercent(fraction),
+      windowMinutes: ANTIGRAVITY_WINDOW_MINUTES, resetsAt,
+    };
+    const current = pools.get(family);
+    if (!current) { pools.set(family, row); continue; }
+    const tightest = moreConstrained(current, row) <= 0 ? current : row;
+    pools.set(family, { ...tightest, models: [...new Set([...current.models, modelId])].sort().slice(0, 32) });
+  }
+  const rows = [...pools.values()].sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
+  return rowsToQuota(rows);
 }
