@@ -41,7 +41,7 @@ export type CapacityProvider = "codex" | "claude" | "gemini" | "openrouter" | "l
 
 // Cards render in this order, so a provider without an allowance sits after
 // the metered ones instead of interleaving by name.
-const PROVIDER_ORDER: CapacityProvider[] = ["claude", "gemini", "codex", "openrouter", "lokai", "qwen"];
+const PROVIDER_ORDER: CapacityProvider[] = ["claude", "codex", "gemini", "openrouter", "lokai", "qwen"];
 
 export interface CloudRouteCapacity {
   ready: boolean;
@@ -672,11 +672,13 @@ function profileRank(profile: string | undefined): number {
   return rank === -1 ? PROFILE_RANK.length : rank;
 }
 
-// A Claude account kept in a named profile past `secondary` (the team plan in `~/.claude-tertiary`) is a
-// spare; its card goes after every other provider's. Primary, secondary and unnamed accounts stay with Claude.
+// A Claude or Codex account kept in a named profile past `secondary` (the team plans in `~/.claude-tertiary`
+// and `~/.codex-tertiary`) is a spare; its card goes after every other provider's, Claude's spares first and
+// then Codex's. Primary, secondary and unnamed accounts stay with their provider.
 function placement(account: CodexLimitAccount): number {
-  if (account.provider === "claude" && account.profile !== undefined && profileRank(account.profile) >= 2) {
-    return PROVIDER_ORDER.length;
+  if ((account.provider === "claude" || account.provider === "codex")
+    && account.profile !== undefined && profileRank(account.profile) >= 2) {
+    return PROVIDER_ORDER.length + (account.provider === "codex" ? 1 : 0);
   }
   return PROVIDER_ORDER.indexOf(account.provider);
 }

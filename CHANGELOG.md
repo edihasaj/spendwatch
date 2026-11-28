@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- Tidy the Gemini card and reorder the Capacity cards. The card now shows only the
+  Gemini pool: the Claude and GPT allowance in the Antigravity plan is real but unused
+  by GateFox. An untouched pool says "Timer starts on first use" instead of a reset that
+  stays five hours away, a lone row no longer repeats its percentage or its group
+  heading, and a one-allowance card is just its headline. Cards now run Claude Primary
+  and Secondary, Codex Primary and Secondary, Gemini, OpenRouter and Local Qwen, then
+  Claude Tertiary and Codex Tertiary.
+
 - Stop a quota card from freezing as "not current" when the Mac that wins the shared
   poll keeps failing. The coordinator backed off for up to hours and every other Mac
   showed its old snapshot. A Mac without a lease now reads the account itself once the

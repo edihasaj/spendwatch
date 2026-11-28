@@ -9,6 +9,7 @@ import { antigravityUserAgent } from "../src/antigravity-capacity";
 import { scanGeminiHomes } from "../src/gemini-credential";
 import { geminiQuotaFromAntigravityModels, geminiQuotaFromRows } from "../src/gemini-quota";
 import { normalizeCodexLimits, renderLimitsHtml } from "../src/limits";
+import { geminiLimits } from "../src/gemini-capacity-card";
 import { tempDir } from "./tmp";
 
 const NOW = Date.parse("2026-11-28T01:00:00Z");
@@ -93,15 +94,15 @@ async function read(home: string, url: string, command: string, failures: Gemini
 }
 
 describe("Antigravity quota pools", () => {
-  test("folds every model into its pool and skips internal models", () => {
+  test("folds every Gemini model into one pool and leaves out Claude, GPT and internal models", () => {
     const quota = geminiQuotaFromAntigravityModels(MODELS, NOW)!;
     expect(quota.rows.map((row) => [row.label, row.usedPercent, row.windowMinutes, row.models.length]))
-      .toEqual([["Gemini models", 20, 300, 4], ["Claude & GPT models", 0, 300, 2]]);
+      .toEqual([["Gemini models", 20, 300, 4]]);
     expect(quota.headline?.family).toBe("antigravity-gemini");
     expect(quota.primary).toEqual({ usedPercent: 20, windowMinutes: 300, resetsAt: "2026-11-28T05:35:54.000Z" });
-    expect(quota.secondary?.resetsAt).toBe("2026-11-28T06:10:58.000Z");
+    expect(quota.secondary).toBeNull();
     // A cached snapshot of these rows survives the dashboard's re-validation.
-    expect(geminiQuotaFromRows(quota.rows)?.rows.map((row) => row.label)).toEqual(["Gemini models", "Claude & GPT models"]);
+    expect(geminiQuotaFromRows(quota.rows)?.rows.map((row) => row.label)).toEqual(["Gemini models"]);
   });
 
   test("a pool reads at its tightest model, and bad figures are dropped", () => {
@@ -113,6 +114,26 @@ describe("Antigravity quota pools", () => {
     }, NOW)!;
     expect(quota.rows.map((row) => [row.label, row.usedPercent, row.models])).toEqual([["Gemini models", 60, ["gemini-a", "gemini-b"]]]);
     expect(geminiQuotaFromAntigravityModels([], NOW)).toBeUndefined();
+  });
+});
+
+describe("Antigravity card", () => {
+  test("an untouched pool says its timer has not started, and the row repeats no percentage", () => {
+    const untouched = geminiQuotaFromAntigravityModels({
+      "gemini-3-flash": { quotaInfo: { remainingFraction: 1, resetTime: "2026-11-28T06:00:00Z" } },
+    }, NOW)!;
+    const card = geminiLimits({ gemini: untouched, updatedAt: new Date(NOW).toISOString() }, NOW);
+    expect(card).toContain("100% left");
+    expect(card).toContain("Timer starts on first use");
+    expect(card).not.toContain("data-reset=");
+    // A cached two-row snapshot still renders rows, each without a repeated percentage or a lone heading.
+    const two = geminiQuotaFromRows([
+      { label: "x", family: "antigravity-gemini", models: ["gemini-3-flash"], usedPercent: 30, windowMinutes: 300, resetsAt: "2026-11-28T05:00:00Z" },
+      { label: "x", family: "antigravity-partner", models: ["claude-opus-5-5-high"], usedPercent: 0, windowMinutes: 300, resetsAt: "2026-11-28T06:00:00Z" },
+    ])!;
+    const rows = geminiLimits({ gemini: two, updatedAt: new Date(NOW).toISOString() }, NOW);
+    expect(rows).not.toContain("gemini-group-label");
+    expect(rows).toContain("<strong>70% left</strong><span></span>");
   });
 });
 
@@ -136,7 +157,7 @@ describe("Antigravity sign-in", () => {
 });
 
 describe("Antigravity collect", () => {
-  test("a live token reads both pools without running agy", async () => {
+  test("a live token reads the Gemini pool without running agy", async () => {
     const home = antigravityHome();
     const google = fakeCodeAssist(STORED_ACCESS);
     const agy = fakeAgy();
@@ -149,12 +170,16 @@ describe("Antigravity collect", () => {
     expect(results).toHaveLength(1);
     expect(results[0]!.account).toBe("user@example.com");
     expect(results[0]!.usage.loginMethod).toBe("Google AI Ultra");
-    expect(results[0]!.usage.buckets.map((row) => row.label)).toEqual(["Gemini models", "Claude & GPT models"]);
+    expect(results[0]!.usage.buckets.map((row) => row.label)).toEqual(["Gemini models"]);
 
     const html = renderLimitsHtml(normalizeCodexLimits([results[0]!]), { generatedAt: NOW, nowMs: NOW });
     expect(html).toContain("Gemini models");
     expect(html).toContain("80% left");
     expect(html).toContain("4 models");
+    // One allowance is the headline alone: no group heading, no repeated row, no Claude & GPT pool.
+    expect(html).not.toContain('class="gemini-group"');
+    expect(html).not.toContain("Claude &amp; GPT");
+    expect(html).toContain('data-reset="2026-11-28T05:35:54.000Z"');
     for (const secret of [STORED_ACCESS, STORED_REFRESH]) expect(html).not.toContain(secret);
   });
 
@@ -165,7 +190,7 @@ describe("Antigravity collect", () => {
     const google = fakeCodeAssist(REFRESHED_ACCESS);
     const agy = fakeAgy();
     const results = await read(home, google.url, agy.command);
-    expect(results[0]?.usage.buckets).toHaveLength(2);
+    expect(results[0]?.usage.buckets).toHaveLength(1);
     expect(google.calls.every((call) => call.auth === `Bearer ${REFRESHED_ACCESS}`)).toBe(true);
     const [scratch, argument] = readFileSync(agy.log, "utf8").trim().split(" ");
     expect(argument).toBe("models");
