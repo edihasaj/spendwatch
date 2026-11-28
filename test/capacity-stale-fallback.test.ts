@@ -99,3 +99,13 @@ test("a healthy first home costs one read and a rate limit stops the fallback", 
   })).rejects.toMatchObject({ status: 429 });
   expect(reads).toBe(1);
 });
+
+test("opening the shared poll store creates no direct-read table", () => {
+  const store = new CapacityPollStore(":memory:");
+  const tables = () => store.db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name);
+  try {
+    expect(tables()).not.toContain("capacity_direct");
+    expect(store.claimDirect("codex", "dev@example.com", 0)).toBe(true);
+    expect(tables()).toContain("capacity_direct");
+  } finally { store.close(); }
+});
