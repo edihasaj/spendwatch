@@ -7,7 +7,7 @@
 // blur together. Row markup matches the shared quota blocks so the same client
 // script hydrates each reset time.
 import { windowFreshness } from "./capacity-freshness";
-import { geminiRowName, type GeminiQuota, type GeminiQuotaRow } from "./gemini-quota";
+import { antigravityWeeklyCapped, geminiRowName, geminiWeekSummary, type GeminiQuota, type GeminiQuotaRow } from "./gemini-quota";
 
 const esc = (value: string) => value.replace(/[&<>"']/g, (char) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -69,7 +69,11 @@ function headlineBlock(row: GeminiQuotaRow, rows: GeminiQuotaRow[], updatedAt: s
   </section>`;
   }
   const left = Math.round(100 - row.usedPercent);
-  const spent = row.usedPercent >= 100
+  const readAt = updatedAt ? Date.parse(updatedAt) : nowMs;
+  const weekly = antigravityWeeklyCapped(row, Number.isFinite(readAt) ? readAt : nowMs);
+  const spent = weekly
+    ? `<strong title="The weekly limit is reached; the pool refills at the weekly reset">Weekly limit reached</strong>`
+    : row.usedPercent >= 100
     ? `<strong title="This allowance is used up">Ran out</strong>`
     : `<strong>${left}% left</strong>`;
   return `<section class="limit gemini-headline ${toneFor(left)}">
@@ -110,6 +114,25 @@ function groupBlock(rows: GeminiQuotaRow[], family: GeminiQuotaRow["family"], up
     + `</div>`;
 }
 
+const POOL_NAME = { "antigravity-gemini": "Gemini", "antigravity-partner": "Claude & GPT" } as const;
+
+/**
+ * The last seven days per pool, in full five-hour windows' worth. Google publishes no weekly figure, so this is
+ * what the account actually spent; a pool that hit the weekly limit says so with the amount it took to get there.
+ */
+function weekBlock(quota: GeminiQuota, nowMs: number): string {
+  if (!quota.week) return "";
+  const parts = (Object.keys(POOL_NAME) as Array<keyof typeof POOL_NAME>).flatMap((pool) => {
+    const summary = geminiWeekSummary(quota.week?.[pool], nowMs);
+    if (!summary.windows) return [];
+    const amount = `${summary.windowsUsed.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${summary.windowsUsed === 1 ? "window" : "windows"}`;
+    return [`${POOL_NAME[pool]} ${amount}${summary.capped ? " · weekly limit hit" : ""}`];
+  });
+  if (!parts.length) return "";
+  return `<div class="limit-meta split gemini-week" title="Each five-hour window's peak use over the last 7 days, added up. Google publishes no weekly limit; a pool that hits it is marked.">`
+    + `<span>This week</span><span>${esc(parts.join(" · "))}</span></div>`;
+}
+
 /** A placeholder-free card: no usable bucket means no rows to claim. */
 export function geminiLimits(account: GeminiCardAccount, nowMs: number): string {
   const quota = account.gemini;
@@ -118,7 +141,11 @@ export function geminiLimits(account: GeminiCardAccount, nowMs: number): string 
       + `<div class="limit-meta"><span>No usable bucket in the last read</span></div></section>`;
   }
   // A card with one allowance is its headline; listing that allowance again below adds nothing.
-  if (quota.rows.length === 1) return headlineBlock(quota.headline, quota.rows, account.updatedAt, nowMs);
+  if (quota.rows.length === 1) return headlineBlock(quota.headline, quota.rows, account.updatedAt, nowMs) + weekBlock(quota, nowMs);
+  // Antigravity's two pools are two allowances of equal standing, so each gets a bar like a Codex or Claude window.
+  if (quota.rows.every((row) => row.family === "antigravity-gemini" || row.family === "antigravity-partner")) {
+    return quota.rows.map((row) => headlineBlock(row, quota.rows, account.updatedAt, nowMs)).join("") + weekBlock(quota, nowMs);
+  }
   const groups = GROUP_ORDER
     .map((family) => groupBlock(
       quota.rows.filter((row) => row.family === family), family, account.updatedAt, nowMs))

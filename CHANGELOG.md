@@ -1,6 +1,13 @@
 # Changelog
 
 ## Unreleased
+- Bring back the Gemini card's "Claude & GPT models" pool, now that GateFox serves Claude
+  Opus 5.5, Claude Sonnet 5.5 and GPT-OSS 120B through Antigravity, and show both pools as
+  bars. Add a weekly estimate: Google publishes no weekly limit, so each snapshot carries a
+  seven-day ledger of five-hour windows, and the card adds them up ("This week: Gemini 1.4
+  windows"). A spent pool whose reset is past one window reads "Weekly limit reached", and
+  the ledger records how much it took to get there.
+
 - Tidy the Gemini card and reorder the Capacity cards. The card now shows only the
   Gemini pool: the Claude and GPT allowance in the Antigravity plan is real but unused
   by GateFox. An untouched pool says "Timer starts on first use" instead of a reset that

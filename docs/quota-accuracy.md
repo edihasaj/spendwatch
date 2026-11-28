@@ -201,15 +201,34 @@ and `resetTime`. Code Assist serves this only to an Antigravity client, so the
 User-Agent is `antigravity/spendwatch (<platform>; <arch>)`.
 
 Antigravity reports two pools: every `gemini-*` id shares one, and the Claude
-and GPT models the plan also includes (`claude-*`, `gpt-*`) share another. The
-card shows only **Gemini models**, read at its tightest model, as the headline
-and `primary` window. GateFox sends nothing to the Claude and GPT pool, so it
-would only ever read untouched; `antigravityPool` still names it so it can never
-be folded into the Gemini figure. Ids with no reset, such as tab completion, are
-internal and skipped. A pool refills five hours after first use, so
-`windowMinutes` is 300. Until a pool is used, Google reports its reset as five
-hours from every read, so an untouched pool (0% used) says "Timer starts on first
-use" instead of a countdown that never moves.
+and GPT models the plan also includes (`claude-*`, `gpt-*`) share another.
+GateFox serves Claude Opus 5.5, Claude Sonnet 5.5 and GPT-OSS 120B through its
+Gemini provider, so both pools are shown, each as its own bar like a Codex or
+Claude window: **Gemini models** (headline and `primary`) and **Claude & GPT
+models** (`secondary`). Each pool is read at its tightest model; ids with no
+reset, such as tab completion, are internal and skipped. A pool refills five
+hours after first use, so `windowMinutes` is 300. Until a pool is used, Google
+reports its reset as five hours from every read, so an untouched pool (0% used)
+says "Timer starts on first use" instead of a countdown that never moves.
+
+### Antigravity weekly usage
+
+Google applies a weekly limit on top of the five-hour windows but publishes no
+number, and the API reports only the current window. So the snapshot carries a
+seven-day ledger, `usage.week`: per pool, one entry per window (keyed by its
+reset instant, reads within two minutes of each other are the same window) with
+the highest used percentage any reading saw. `carryGeminiWeek` folds every
+reading into the ledger it inherits wherever the poll store already carries
+Claude's last known credits (the collector's read, the local cache, and the
+coordinator's `complete`), and windows that ended more than seven days before the
+reading are dropped. The card's **This week** line adds the windows up in full
+windows' worth ("Gemini 1.4 windows · Claude & GPT 0.3 windows").
+
+A pool that is fully spent while its reset sits more than five and a half hours
+away is held by the weekly limit, not the window: the bar says "Weekly limit
+reached" and counts down to that reset, and the ledger marks the window, so the
+weekly line reads "weekly limit hit" with the amount it took. After a week or two
+of use that amount is the account's real weekly allowance.
 
 A card with a single allowance is its headline alone, with no group heading and
 no repeated row. Where rows are listed, a group heading appears only above two or

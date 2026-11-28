@@ -12,7 +12,7 @@ import { compactDuration } from "./duration";
 import { normalizeLocalQwenCapacity } from "./local-capacity";
 import type { CapacityCloudCredits, CapacityExtraUsage, CapacityLastKnownCredits } from "./capacity-current";
 import { geminiLimits } from "./gemini-capacity-card";
-import { geminiQuotaFromRows, geminiRowName, type GeminiQuota } from "./gemini-quota";
+import { geminiQuotaFromRows, geminiRowName, sanitizeGeminiWeek, type GeminiQuota } from "./gemini-quota";
 import type {
   OpenRouterCapacity,
   OpenRouterHistory,
@@ -586,6 +586,8 @@ export function normalizeCodexLimits(input: unknown): CodexLimitAccount[] {
     if (provider === "gemini") {
       const gemini = geminiQuotaFromRows(usage.buckets);
       if (!gemini) continue;
+      const week = sanitizeGeminiWeek((usage as { week?: unknown }).week);
+      if (week) gemini.week = week;
       account.gemini = gemini;
     }
     if (provider === "openrouter") {
