@@ -21,7 +21,7 @@
  * reported is a stage, a category from a closed list, and an optional exact SQLSTATE or
  * errno name.
  */
-import { ManagedDatabaseError } from "./managed/libpq";
+import { ManagedDatabaseError, ManagedWriterDeferredError } from "./managed/libpq";
 
 /** The fixed stages of one monitor tick. A failure is attributed to exactly one. */
 export type MonitorStage = "load-capacity" | "observe" | "pending-deliveries";
@@ -35,6 +35,7 @@ export type MonitorFailureCategory =
   | "managed-transport"
   | "managed-timeout"
   | "managed-lock-contention"
+  | "managed-writer-deferred"
   | "managed-server"
   | "parse"
   | "filesystem"
@@ -81,11 +82,8 @@ function isSqliteBusy(error: unknown): boolean {
 }
 
 /**
- * `observe` is where a managed contention failure is expected: the managed writer takes the
- * shared per-database advisory lock before its transaction (`ManagedPostgresDatabase.begin`).
- * Classification below maps its SQLSTATE to `managed-lock-contention`. Which lock was held
- * stays unclaimed: the category says only that another writer locked the monitor out and the
- * stage says where. Naming a specific lock stays suspected until timestamps are matched.
+ * A declined writer try-lock is known before BEGIN. A PostgreSQL 55P03 raised by a
+ * statement carries no such attribution, so keep its category distinct.
  */
 
 export interface ClassifiedMonitorError {
@@ -103,6 +101,9 @@ export interface ClassifiedMonitorError {
 export function classifyMonitorError(error: unknown): ClassifiedMonitorError {
   if (error instanceof ManagedDatabaseError) {
     const code = normalizeSqlstate(error.code);
+    if (error instanceof ManagedWriterDeferredError) {
+      return { category: "managed-writer-deferred", code, contention: true };
+    }
     if (code === LOCK_CONTENTION_SQLSTATE) return { category: "managed-lock-contention", code, contention: true };
     if (code === TIMEOUT_SQLSTATE) return { category: "managed-timeout", code, contention: false };
     if (error.transport || (code !== undefined && TRANSPORT_SQLSTATES.has(code))) {

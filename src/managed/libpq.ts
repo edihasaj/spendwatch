@@ -66,6 +66,13 @@ export class ManagedDatabaseError extends Error {
   }
 }
 
+/** The shared writer try-lock was declined before a transaction began. */
+export class ManagedWriterDeferredError extends ManagedDatabaseError {
+  constructor() {
+    super("55P03");
+  }
+}
+
 /**
  * The reasons libpq reports when the peer is unreachable at the socket level before any
  * protocol state is reached. Each is the whole reason on the location line, matched

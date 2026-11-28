@@ -148,7 +148,8 @@ export function createCapacityMonitor(
       component: "capacity",
       stage: decision.stage,
       category: decision.category,
-      ...(decision.code ? { code: decision.code } : {}),
+      operation: `capacity.${decision.stage}.${decision.category}`,
+      ...(decision.code ? { code: decision.code, error_code: decision.code } : {}),
     },
   ));
   const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));

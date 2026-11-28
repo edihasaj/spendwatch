@@ -37,6 +37,7 @@
     "report": "bun src/cli.ts report",
     "watch": "bun src/cli.ts watch",
     "test": "bun test",
+    "test:managed-contention": "bun scripts/managed-fixture.ts",
     "build": "bun scripts/build.ts"
   },
   "dependencies": {

@@ -1,7 +1,7 @@
 import { Database } from "./database";
 import { crossedWeeklyThreshold, type WeeklyAlertThreshold } from "./capacity-alerts";
 import type { CodexLimitAccount } from "./limits";
-import { ManagedDatabaseError } from "./managed/libpq";
+import { ManagedDatabaseError, ManagedWriterDeferredError } from "./managed/libpq";
 import { ManagedPostgresDatabase } from "./managed/postgres-db";
 
 const PUSH_SCHEMA = `
@@ -226,7 +226,7 @@ export class PushStore {
       // contention and retries on the next tick; the statements are never
       // replayed here (see ReconnectingPushStore) and no transaction or
       // mutation was started. Native SQLite keeps the blocking path.
-      if (!this.db.tryTransactionNonblocking(body)) throw new ManagedDatabaseError("55P03");
+      if (!this.db.tryTransactionNonblocking(body)) throw new ManagedWriterDeferredError();
       return created;
     }
     this.db.transaction(body)();
