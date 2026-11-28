@@ -1,6 +1,15 @@
 # Changelog
 
 ## Unreleased
+- Show the Gemini quota card for GateFox's Antigravity sign-in. Google moved Google AI
+  subscriptions to Antigravity CLI, and the collector still read the Gemini CLI's
+  `oauth_creds.json`, so no Gemini card appeared. It now reads
+  `.gemini/antigravity-cli/antigravity-oauth-token`, asks Code Assist's
+  `fetchAvailableModels` for the per-model quota, and shows two rows, "Gemini models"
+  and "Claude & GPT models", with their five-hour resets. An expired token is refreshed
+  by running `agy models` in a disposable home that is deleted afterwards; the
+  gateway's sign-in file is never written.
+
 - Name Codex accounts by their profile instead of their position. With three signed-in
   Codex accounts, the card order followed email, so the Business account became
   "Codex Secondary" and the personal account "Codex 3". The collector now reads the

@@ -18,9 +18,16 @@ const GROUP_LABEL = {
   flash: "Flash",
   "flash-lite": "Flash Lite",
   other: "Other models",
+  "antigravity-gemini": "Gemini",
+  "antigravity-partner": "Claude & GPT",
 } as const;
 
-const GROUP_ORDER = ["pro", "flash", "flash-lite", "other"] as const;
+const GROUP_ORDER = ["antigravity-gemini", "antigravity-partner", "pro", "flash", "flash-lite", "other"] as const;
+
+/** A pool can hold a dozen model ids; the line names a few and the tooltip keeps them all. */
+function modelSummary(models: string[]): string {
+  return models.length > 3 ? `${models.length} models` : models.join(", ");
+}
 
 export interface GeminiCardAccount {
   gemini?: GeminiQuota;
@@ -39,12 +46,13 @@ function headlineBlock(row: GeminiQuotaRow, rows: GeminiQuotaRow[], updatedAt: s
     updatedAt, nowMs,
   );
   const models = row.models.join(", ");
+  const summary = modelSummary(row.models);
   if (freshness !== "live") {
     const last = Math.round(100 - row.usedPercent);
     return `<section class="limit unreadable ${freshness}" title="This reading is no longer current">
     <div class="limit-head"><span>${esc(name)}</span><strong>${freshness === "expired" ? "Cycle ended" : "Not current"}</strong></div>
     <div class="track stale" role="img" aria-label="${esc(name)} is not current"><i style="width:${Math.min(100, Math.max(0, last))}%"></i></div>
-    <div class="limit-meta"><span>Last read ${last}% left</span><span title="${esc(models)}">${esc(models)}</span></div>
+    <div class="limit-meta"><span>Last read ${last}% left</span><span title="${esc(models)}">${esc(summary)}</span></div>
   </section>`;
   }
   const left = Math.round(100 - row.usedPercent);
@@ -54,7 +62,7 @@ function headlineBlock(row: GeminiQuotaRow, rows: GeminiQuotaRow[], updatedAt: s
   return `<section class="limit gemini-headline ${toneFor(left)}">
     <div class="limit-head"><span>${esc(name)}</span>${spent}</div>
     <div class="track" role="progressbar" aria-label="${esc(name)} remaining" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${left}"><i style="width:${Math.min(100, Math.max(0, left))}%"></i></div>
-    <div class="limit-meta"><span class="reset" data-reset="${esc(row.resetsAt ?? "")}">${row.resetsAt ? "Reset time loading" : "Resets on a Google schedule"}</span><span title="${esc(models)}">${esc(models)}</span></div>
+    <div class="limit-meta"><span class="reset" data-reset="${esc(row.resetsAt ?? "")}">${row.resetsAt ? "Reset time loading" : "Resets on a Google schedule"}</span><span title="${esc(models)}">${esc(summary)}</span></div>
   </section>`;
 }
 

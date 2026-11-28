@@ -24,10 +24,18 @@ export interface GeminiCredential {
   expiresAt?: number;
 }
 
+/**
+ * Which sign-in a home holds. Google moved Google AI Pro and Ultra subscriptions to Antigravity CLI (`agy`) on
+ * 18 June 2026, and GateFox's `gemini-subscription` provider now signs in through it, so `antigravity` is the
+ * current login and `gemini-cli` the older one.
+ */
+export type GeminiSignIn = "antigravity" | "gemini-cli";
+
 export interface GeminiAccount {
   home: string;
   email: string;
   credential: GeminiCredential;
+  signIn: GeminiSignIn;
 }
 
 /** Why a credential file was refused. Fixed reasons only: never a path. */
@@ -35,6 +43,15 @@ export type GeminiCredentialRejection = "symlink" | "not-owned" | "not-private" 
 
 export function credentialPath(home: string): string {
   return join(home, ".gemini", "oauth_creds.json");
+}
+
+/** Where `agy` keeps its sign-in inside a home (harness-gateway src/providers/antigravity-home.ts). */
+export function antigravityDirectory(home: string): string {
+  return join(home, ".gemini", "antigravity-cli");
+}
+
+export function antigravityCredentialPath(home: string): string {
+  return join(antigravityDirectory(home), "antigravity-oauth-token");
 }
 
 /**
@@ -193,6 +210,31 @@ function readGeminiCredential(path: string): { credential?: GeminiCredential; re
 }
 
 /**
+ * The Antigravity sign-in: `{token:{access_token, refresh_token, expiry}, id_token_email}`. Unlike the Gemini CLI,
+ * the account label lives in the same file, so one trusted read names the account too.
+ */
+function readAntigravityCredential(path: string): { credential?: GeminiCredential; email?: string; rejection?: GeminiCredentialRejection } {
+  const read = readPrivateFile(path);
+  if (!read) return {};
+  if ("rejection" in read) return { rejection: read.rejection };
+  const stored = parseJsonObject(read.text);
+  const token = stored?.token && typeof stored.token === "object" && !Array.isArray(stored.token)
+    ? stored.token as Record<string, unknown> : undefined;
+  const accessToken = stringField(token, "access_token");
+  if (!accessToken) return {};
+  const expiry = Date.parse(stringField(token, "expiry") ?? "");
+  const email = stringField(stored, "id_token_email");
+  return {
+    credential: {
+      accessToken,
+      refreshToken: stringField(token, "refresh_token"),
+      expiresAt: Number.isFinite(expiry) && expiry > 0 ? expiry : undefined,
+    },
+    email: email && email.length <= 320 && ACCOUNT_PATTERN.test(email) ? email : undefined,
+  };
+}
+
+/**
  * Every usable signed-in account, de-duplicated by email so one login reads once.
  *
  * Nothing is dropped silently: a home that holds a credential file but yields no
@@ -211,7 +253,18 @@ export function scanGeminiHomes(homes: string[]): GeminiHomeScan {
   const accounts: GeminiAccount[] = [];
   const refusals: Array<{ home: string; reason: GeminiHomeRefusal }> = [];
   const seen = new Set<string>();
+  const add = (home: string, email: string, credential: GeminiCredential, signIn: GeminiSignIn) => {
+    if (seen.has(email.toLowerCase())) return;
+    seen.add(email.toLowerCase());
+    accounts.push({ home, email, credential, signIn });
+  };
   for (const home of homes) {
+    // The Antigravity sign-in is read first: it is the one a current subscription uses, and an older Gemini CLI
+    // login for the same address in the same home would only report a quota Google no longer serves there.
+    const antigravity = readAntigravityCredential(antigravityCredentialPath(home));
+    if (antigravity.rejection) refusals.push({ home, reason: antigravity.rejection });
+    else if (antigravity.credential && !antigravity.email) refusals.push({ home, reason: "unnamed-account" });
+    else if (antigravity.credential && antigravity.email) add(home, antigravity.email, antigravity.credential, "antigravity");
     const path = credentialPath(home);
     const read = readGeminiCredential(path);
     if (read.rejection) {
@@ -227,9 +280,7 @@ export function scanGeminiHomes(homes: string[]): GeminiHomeScan {
       refusals.push({ home, reason: "unnamed-account" });
       continue;
     }
-    if (seen.has(email.toLowerCase())) continue;
-    seen.add(email.toLowerCase());
-    accounts.push({ home, email, credential });
+    add(home, email, credential, "gemini-cli");
   }
   return { accounts, refusals };
 }
@@ -238,4 +289,13 @@ export function scanGeminiHomes(homes: string[]): GeminiHomeScan {
 export function geminiNeedsRefresh(expiresAt: number | undefined, nowMs: number): boolean {
   if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt) || expiresAt <= 0) return true;
   return expiresAt - REFRESH_SKEW_MS <= nowMs;
+}
+
+/**
+ * The Antigravity sign-in's bytes, for a disposable copy only. The same descriptor-checked read as the parse, so a
+ * file swapped or relinked after the scan is refused here too.
+ */
+export function readAntigravitySignIn(home: string): string | undefined {
+  const read = readPrivateFile(antigravityCredentialPath(home));
+  return read && "text" in read ? read.text : undefined;
 }
