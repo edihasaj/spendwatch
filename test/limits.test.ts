@@ -907,6 +907,22 @@ describe("Claude profiles name and order accounts", () => {
     expect(order.indexOf("Codex")).toBeLessThan(order.indexOf("Claude Tertiary"));
   });
 
+  test("cards run Claude, Codex, Gemini, then the Claude and Codex spares", () => {
+    const codex = (email: string, profile: string) => ({ account: email, provider: "codex", usage: { accountEmail: email, loginMethod: "pro",
+      profile, primary: { usedPercent: 1, windowMinutes: 300 }, secondary: null, tertiary: null, updatedAt: "2026-11-17T20:00:00Z" } });
+    const gemini = { account: "g@example.com", provider: "gemini", usage: { accountEmail: "g@example.com", loginMethod: "Google AI Ultra",
+      primary: { usedPercent: 0, windowMinutes: 300 }, secondary: null, tertiary: null, updatedAt: "2026-11-17T20:00:00Z",
+      buckets: [{ label: "Gemini models", family: "antigravity-gemini", models: ["gemini-3-flash"], usedPercent: 0, windowMinutes: 300,
+        resetsAt: "2026-11-18T01:00:00Z" }] } };
+    const accounts = normalizeCodexLimits([
+      codex("t@example.com", "tertiary"), gemini, claude("work@example.com", "tertiary"), codex("s@example.com", "secondary"),
+      claude("personal@example.com", "secondary"), codex("p@example.com", "primary"), claude("owner@example.com", "primary"),
+    ]);
+    expect(accounts.map((account) => account.provider === "gemini" ? "gemini" : account.name)).toEqual([
+      "Claude Primary", "Claude Secondary", "Codex Primary", "Codex Secondary", "gemini", "Claude Tertiary", "Codex Tertiary",
+    ]);
+  });
+
   test("a newer snapshot without a profile keeps the profile another collector reported", () => {
     const older = claude("work@example.com", "tertiary");
     const newer = claude("work@example.com");

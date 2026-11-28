@@ -342,7 +342,7 @@ export function antigravityPool(modelId: string): "antigravity-gemini" | "antigr
 }
 
 /**
- * Antigravity's `fetchAvailableModels` answer as the two pool rows the card shows.
+ * Antigravity's `fetchAvailableModels` answer as the Gemini pool row the card shows.
  *
  * The answer maps each model id to its `quotaInfo` (`remainingFraction`, `resetTime`). Every model in a pool reports
  * the same figures, so a pool is read at its tightest model; ids with no reset (tab completion and the like) are
@@ -354,7 +354,9 @@ export function geminiQuotaFromAntigravityModels(models: unknown, now = Date.now
   for (const [modelId, value] of Object.entries(models as Record<string, unknown>).slice(0, 128)) {
     if (!MODEL_PATTERN.test(modelId) || !value || typeof value !== "object") continue;
     const family = antigravityPool(modelId);
-    if (!family) continue;
+    // The Claude and GPT pool is part of the plan, but GateFox sends nothing to it, so the card would only ever
+    // report it untouched. It is left out; `antigravityPool` still names it so it is never folded into Gemini.
+    if (family !== "antigravity-gemini") continue;
     const info = (value as { quotaInfo?: unknown }).quotaInfo as RawBucket | undefined;
     if (!info || typeof info !== "object") continue;
     const fraction = fractionOf(info.remainingFraction);

@@ -188,12 +188,21 @@ named by `id_token_email`. `retrieveUserQuota` refuses an Antigravity login, so
 and `resetTime`. Code Assist serves this only to an Antigravity client, so the
 User-Agent is `antigravity/spendwatch (<platform>; <arch>)`.
 
-Antigravity reports two pools, and the card shows exactly those two rows:
-**Gemini models** (every `gemini-*` id, the headline and `primary` window) and
-**Claude & GPT models** (`claude-*` and `gpt-*`, the `secondary` window). Each
-pool is read at its tightest model; ids with no reset, such as tab completion,
-are internal and skipped. Both pools refill five hours after first use, so their
-`windowMinutes` is 300.
+Antigravity reports two pools: every `gemini-*` id shares one, and the Claude
+and GPT models the plan also includes (`claude-*`, `gpt-*`) share another. The
+card shows only **Gemini models**, read at its tightest model, as the headline
+and `primary` window. GateFox sends nothing to the Claude and GPT pool, so it
+would only ever read untouched; `antigravityPool` still names it so it can never
+be folded into the Gemini figure. Ids with no reset, such as tab completion, are
+internal and skipped. A pool refills five hours after first use, so
+`windowMinutes` is 300. Until a pool is used, Google reports its reset as five
+hours from every read, so an untouched pool (0% used) says "Timer starts on first
+use" instead of a countdown that never moves.
+
+A card with a single allowance is its headline alone, with no group heading and
+no repeated row. Where rows are listed, a group heading appears only above two or
+more rows, and the amount column stays empty unless Google reported an absolute
+amount, rather than repeating the percentage.
 
 `agy` ships its OAuth client without a usable secret, so an expired access token
 is refreshed the way GateFox refreshes it: `agy models` runs in a fresh 0700
